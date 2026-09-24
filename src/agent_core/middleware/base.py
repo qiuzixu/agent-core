@@ -25,6 +25,7 @@ import asyncio
 import logging
 import time
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -67,6 +68,9 @@ class MiddlewareContext:
     tool_result:  str | None         = None
     llm_response: Message | None     = None
     metadata:     dict[str, Any]     = field(default_factory=dict)
+    # 运行时事件上报入口。它让通用中间件可以记录压缩、重试等事件，
+    # 同时保持对独立单元测试和旧 Vanilla 调用方的兼容。
+    emit:         Callable[..., Any] | None = None
 
 
 # ──────────────────────────────────────────────
@@ -360,11 +364,17 @@ class TokenLimitMiddleware(Middleware):
         return total // self._chars_per_token
 
     def _trim_messages(self, messages: list[Message]) -> list[Message]:
-        """保留 system 消息 + 最近 keep_messages 条，丢弃中间旧消息。"""
+        """保留 system 消息和最近消息，并避免留下孤儿 tool 结果。"""
         system_msgs = [m for m in messages if m.role == "system"]
         other_msgs  = [m for m in messages if m.role != "system"]
-        kept = other_msgs[-self._keep_messages:] if len(other_msgs) > self._keep_messages else other_msgs
-        return system_msgs + kept
+        if len(other_msgs) <= self._keep_messages:
+            return system_msgs + other_msgs
+
+        start = len(other_msgs) - self._keep_messages
+        # 工具结果必须和此前的 assistant tool_call 一起保留，否则提供商会拒绝请求。
+        while start > 0 and other_msgs[start].role == "tool":
+            start -= 1
+        return system_msgs + other_msgs[start:]
 
     async def before_model(self, ctx: MiddlewareContext) -> MiddlewareResult:
         estimated = self._estimate_tokens(ctx.messages)

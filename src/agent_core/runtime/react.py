@@ -169,6 +169,7 @@ class ReActAgent:
                 messages=messages,
                 iteration=int(checkpoint.get("iteration", start_iteration)),
                 metadata=metadata,
+                emit=runtime_context.emit,
             )
             # 然后补执行之前未完成的工具：
             messages = await self._execute_tools(
@@ -191,7 +192,12 @@ class ReActAgent:
         for iteration in range(start_iteration, self._max_iterations):
             # 5.1 设置当前轮次
             runtime_context.iteration = iteration
-            ctx = MiddlewareContext(messages=messages, iteration=iteration, metadata=metadata)
+            ctx = MiddlewareContext(
+                messages=messages,
+                iteration=iteration,
+                metadata=metadata,
+                emit=runtime_context.emit,
+            )
 
             # before_model
             mw_result = await self._middleware_manager.execute_before_model(ctx)
@@ -396,6 +402,7 @@ class ReActAgent:
                 messages=messages,
                 iteration=int(checkpoint.get("iteration", start_iteration)),
                 metadata=metadata,
+                emit=runtime_context.emit,
             )
             messages = await self._execute_tools(
                 pending_tool_calls,
@@ -417,7 +424,12 @@ class ReActAgent:
 
         for iteration in range(start_iteration, self._max_iterations):
             runtime_context.iteration = iteration
-            ctx = MiddlewareContext(messages=messages, iteration=iteration, metadata=metadata)
+            ctx = MiddlewareContext(
+                messages=messages,
+                iteration=iteration,
+                metadata=metadata,
+                emit=runtime_context.emit,
+            )
 
             # before_model
             mw_result = await self._middleware_manager.execute_before_model(ctx)
@@ -682,6 +694,7 @@ class ReActAgent:
                 tool_args=tc.get("args", {}),
                 llm_response=ctx.llm_response,
                 metadata=dict(ctx.metadata),
+                emit=runtime_context.emit if runtime_context is not None else ctx.emit,
             )
             if runtime_context is not None:
                 runtime_context.emit(
