@@ -167,20 +167,39 @@ class HumanInTheLoopMiddleware(Middleware):
     def __init__(
         self,
         queue: ApprovalQueue | None = None,
-        approval_needed: list[str] = (),
+        approval_needed: list[str] | None = None,
         thread_id: str = "default",
         auto_approve: bool = False,
+        approval_callback: Any | None = None,
         timeout_seconds: float = 300.0,
     ) -> None:
         self._queue = queue or ApprovalQueue()
-        self._needed = set(approval_needed)
+        self._needed = set(approval_needed or ())
         self._thread = thread_id
         self._auto = auto_approve
+        self._callback = approval_callback
         self._timeout = timeout_seconds
 
     async def before_tool(self, ctx: MiddlewareContext) -> MiddlewareResult:
         if ctx.tool_name not in self._needed or self._auto:
             return MiddlewareResult(action=MiddlewareAction.CONTINUE)
+        if self._callback is not None:
+            try:
+                approved = await asyncio.wait_for(
+                    self._callback(ctx.tool_name, ctx.tool_args),
+                    timeout=self._timeout,
+                )
+            except asyncio.TimeoutError:
+                return MiddlewareResult(
+                    action=MiddlewareAction.STOP,
+                    data={"reason": "approval_timeout", "tool": ctx.tool_name},
+                )
+            if approved:
+                return MiddlewareResult(action=MiddlewareAction.CONTINUE)
+            return MiddlewareResult(
+                action=MiddlewareAction.STOP,
+                data={"reason": "approval_denied", "tool": ctx.tool_name},
+            )
         request = self._queue.create_request(
             thread_id=self._thread,
             tool_name=ctx.tool_name or "unknown",

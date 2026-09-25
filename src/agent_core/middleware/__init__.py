@@ -1,7 +1,6 @@
 """Agent 中间件。"""
 
 from agent_core.middleware.base import (
-    HumanInTheLoopMiddleware,
     LoggingMiddleware,
     Middleware,
     MiddlewareAction,
@@ -9,8 +8,10 @@ from agent_core.middleware.base import (
     MiddlewareManager,
     MiddlewareResult,
     RetryMiddleware,
-    TokenLimitMiddleware,
 )
+# 兼容旧导入路径；能力实现分别归属 hitl 和 compaction 领域模块。
+from agent_core.compaction.token_limit import TokenLimitMiddleware
+from agent_core.hitl.core import HumanInTheLoopMiddleware
 
 __all__ = [
     "HumanInTheLoopMiddleware",

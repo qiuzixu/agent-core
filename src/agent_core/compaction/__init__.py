@@ -21,6 +21,7 @@ from agent_core.compaction.types import (
     CompactionError,
     CompactionResult,
 )
+from agent_core.compaction.token_limit import TokenLimitMiddleware
 
 __all__ = [
     "DEFAULT_COMPACTION_INSTRUCTION",
@@ -34,6 +35,7 @@ __all__ = [
     "CompactionError",
     "CompactionMiddleware",
     "CompactionResult",
+    "TokenLimitMiddleware",
     "PruneConfig",
     "SpillStore",
     "balanced_cut",
