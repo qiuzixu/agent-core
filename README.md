@@ -12,6 +12,7 @@
 
 - ReAct Agent Loop，支持普通和流式执行
 - 工具注册、参数基础校验、超时、审批和并发执行
+- Skill JSON 清单加载、注册、按需激活及 Function/MCP 工具绑定
 - Middleware、重试和上下文长度限制
 - 提示词版本注册、输入输出 Guardrails 和可观测性统计
 - 统一访问上下文、HITL 审批队列和审批存储端口
@@ -100,4 +101,50 @@ agent = ReActAgent(
 )
 
 answer = await agent.run("查询数据")
+```
+
+Skill 以目录形式交付，使用 `skill.json` 声明元数据和工具，使用 `SKILL.md`
+保存可选的模型指令。Core 不从清单动态导入 Python；应用显式注入 Function 和 MCP 客户端：
+
+```python
+from agent_core import SkillRegistry, ToolExecutor, ToolRegistry
+
+skills = SkillRegistry()
+skills.load_directory("./skills")
+
+tools = ToolRegistry()
+activation = skills.activate(
+    ["cesium-scene"],
+    tool_registry=tools,
+    functions={"lookup_flight": lookup_flight},
+    mcp_clients={"cesium": cesium_mcp_client},
+)
+
+agent = ReActAgent(
+    llm=model,
+    tool_executor=ToolExecutor(tools),
+    system_prompt=activation.compose_system_prompt("你是一个助手"),
+    tool_definitions=activation.tool_definitions,
+)
+```
+
+最小 `skill.json` 示例：
+
+```json
+{
+  "name": "cesium-scene",
+  "description": "Cesium 场景控制",
+  "version": "1.0.0",
+  "instructions_file": "SKILL.md",
+  "tools": [
+    {
+      "name": "list_entities",
+      "kind": "mcp",
+      "server": "cesium",
+      "target": "entity_list",
+      "description": "列出地图实体",
+      "parameters": {"type": "object", "properties": {}}
+    }
+  ]
+}
 ```

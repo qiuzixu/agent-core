@@ -28,6 +28,8 @@ from agent_core import (
     StateMachineBuilder,
     ReActAgent,
     RunContext,
+    SkillLoader,
+    SkillRegistry,
     StreamChunk,
     ModelProviderRegistry,
     create_model_provider,
@@ -237,6 +239,11 @@ class TestAgentCorePublicApi(unittest.IsolatedAsyncioTestCase):
             [event.event_type for event in events.events],
             ["run_started", "model_finished", "run_completed"],
         )
+
+    def test_skill_types_are_exported_from_public_api(self) -> None:
+        """新 Agent 可以只通过 agent_core 公共入口使用 Skill 能力。"""
+        self.assertEqual(SkillLoader.__module__, "agent_core.skills.loader")
+        self.assertEqual(SkillRegistry.__module__, "agent_core.skills.registry")
 
     async def test_runtime_resume_uses_recoverable_checkpoint(self) -> None:
         model = _FakeModel(responses=[assistant_message("恢复完成")])

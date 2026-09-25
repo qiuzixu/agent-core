@@ -7,7 +7,7 @@ Cesium、低空航线、业务 API、React 页面等应用能力不属于 Agent 
 ## 1. 核心定位
 
 Agent Core 是一套不依赖 LangChain、LangGraph 或 FastAPI 的手写 Agent 框架核心。
-它负责模型、工具、Agent Loop、运行生命周期、上下文、记忆、审批、工作流、持久化、
+它负责模型、Skill、工具、Agent Loop、运行生命周期、上下文、记忆、审批、工作流、持久化、
 可观测性和 ACP 协议。上层项目负责业务工具、业务规则、提示词和应用接口。
 
 ## 2. 能力总览
@@ -17,6 +17,7 @@ Agent Core 是一套不依赖 LangChain、LangGraph 或 FastAPI 的手写 Agent 
 | `runtime` | ReAct Agent Loop、同步/流式运行、后台 Run、取消、checkpoint 恢复和 Worker 租约 | `ReActAgent`、`AgentRuntime` |
 | `protocol` | 消息、运行上下文、运行事件、审批、工具结果和能力声明 | `Message`、`RunContext`、`RunEvent`、`ApprovalRecord`、`ToolResult`、`AgentCapabilities` |
 | `model` | 模型协议、Provider 注册表、统一工厂、上下文使用量和安全模型目录 | `ModelAdapter`、`ModelProviderRegistry`、`create_model_provider` |
+| `skills` | Skill 清单加载、严格校验、注册、按需激活及 Function/MCP 绑定 | `SkillLoader`、`SkillRegistry`、`SkillSpec`、`SkillActivation` |
 | `tools` | 工具注册、Schema、参数基础校验、超时、单个和批量并发执行 | `ToolRegistry`、`ToolExecutor`、`ToolSpec` |
 | `mcp` | MCP 工具发现和调用、超时及统一错误 | `McpToolClient`、`McpToolCaller` |
 | `middleware` | Agent、模型和工具执行前后的扩展链 | `Middleware`、`MiddlewareManager` |
@@ -75,7 +76,22 @@ Agent Core 是一套不依赖 LangChain、LangGraph 或 FastAPI 的手写 Agent 
 
 模型 SDK 都是可选依赖。只使用 Core 的协议、工作流或存储时，不需要安装所有模型 SDK。
 
-## 5. 工具和 MCP
+## 5. Skill、工具和 MCP
+
+Skill 层已经实现：
+
+- 从单个目录、`skill.json` 或 Skill 根目录递归加载清单；
+- 从清单内联读取 instructions，或安全读取同一 Skill 目录内的 `SKILL.md`；
+- 校验必填字段、未知字段、工具名称、JSON Schema、重复名称和指令文件路径越界；
+- 注册、替换、移除、查询和批量加载 Skill；
+- 按名称选择要激活的 Skill，并合并其 instructions；
+- 将 Skill 声明的本地 Function 或 MCP Tool 绑定到 `ToolRegistry`；
+- 只生成本次激活 Skill 的模型 Tool Schema；
+- 在真正注册工具前完成依赖和冲突检查，避免失败后留下部分工具；
+- 禁止清单动态导入 Python，所有 Function 和 MCP 客户端必须由应用显式注入。
+
+一个 Skill 可以只提供 instructions、只提供工具，也可以同时提供两者。Core 负责通用加载和绑定，
+具体 Skill 内容、业务 Function、MCP Server 地址和允许激活的 Skill 集合仍由应用 Agent 决定。
 
 工具系统已经实现：
 
@@ -212,7 +228,7 @@ Checkpoint、状态机和 Middleware。上层 API 可以据此统一映射 HTTP 
 基于 Core 创建一个新 Agent 时，上层项目通常只需要提供：
 
 1. 系统提示词和业务 Prompt；
-2. 业务工具、MCP 配置和允许调用的工具范围；
+2. 业务 Skill、Function、MCP 配置和允许激活的 Skill/工具范围；
 3. 确定性业务工作流或业务编排器；
 4. 业务数据模型、权限规则和外部服务客户端；
 5. HTTP、SSE、WebSocket、CLI 或其他应用入口；
