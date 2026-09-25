@@ -19,9 +19,13 @@ from typing import Any
 
 from agent_core import (
     AgentRuntime,
+    ApprovalQueue,
+    DurableWorkflowRunner,
     MemoryCheckpointer,
     MemoryEventSink,
+    MemoryRunLeaseStore,
     MemoryRunStore,
+    StateMachineBuilder,
     ReActAgent,
     RunContext,
     StreamChunk,
@@ -29,15 +33,22 @@ from agent_core import (
     create_model_provider,
     ToolExecutor,
     ToolRegistry,
+    WorkflowPause,
     assistant_message,
 )
 from agent_core.access import AccessContext
 from agent_core.acp import AcpSession, AcpStdioServer, AcpUpdate
 from agent_core.protocol import user_message
 from agent_core.storage import (
+    MemoryContextStore,
+    MemoryRuntimeStore,
+    MemorySessionStore,
+    MemoryWorkflowExecutionStore,
     SqliteContextStore,
+    SqliteRunLeaseStore,
     SqliteRuntimeStore,
     SqliteSessionStore,
+    RuntimeConcurrencyError,
     SqliteWorkflowExecutionStore,
     WorkflowExecution,
 )
@@ -115,6 +126,21 @@ class _FakeAcpBackend:
 
     async def cancel(self, _session: AcpSession) -> None:
         return None
+
+
+class _LeaseLossStore(MemoryRunLeaseStore):
+    """首次心跳就模拟租约被其他 Worker 接管。"""
+
+    async def renew(
+        self,
+        thread_id: str,
+        run_id: str,
+        worker_id: str,
+        *,
+        ttl_seconds: float,
+    ) -> bool:
+        del thread_id, run_id, worker_id, ttl_seconds
+        return False
 
 
 def _make_agent(
@@ -371,6 +397,267 @@ class TestAgentCorePublicApi(unittest.IsolatedAsyncioTestCase):
             context = RunContext(thread_id="thread-1", run_id="run-1")
             await runs.save_run(context)
             self.assertEqual((await runs.load_run("thread-1", "run-1")).version, 1)
+
+    async def test_session_store_enforces_user_and_tenant_scope(self) -> None:
+        """带访问身份写入的 Session 只能由所有者或同租户管理员读取。"""
+        store = MemorySessionStore()
+        owner = AccessContext(user_id="alice", tenant_id="tenant-a")
+        other = AccessContext(user_id="bob", tenant_id="tenant-a")
+        admin = AccessContext(
+            user_id="admin",
+            tenant_id="tenant-a",
+            roles=frozenset({"tenant_admin"}),
+        )
+
+        await store.append("thread-secure", [user_message("私有消息")], access=owner)
+        self.assertEqual((await store.load("thread-secure", access=owner))[0].content, "私有消息")
+        self.assertEqual((await store.load("thread-secure", access=admin))[0].content, "私有消息")
+        with self.assertRaises(PermissionError):
+            await store.load("thread-secure", access=other)
+        self.assertEqual(await store.list_threads(access=owner), ["thread-secure"])
+        self.assertEqual(await store.list_threads(access=other), [])
+
+    async def test_run_lease_prevents_concurrent_workers_and_allows_takeover(self) -> None:
+        """未过期租约不可抢占，过期后另一个 Worker 可以接管。"""
+        leases = MemoryRunLeaseStore()
+        self.assertTrue(
+            await leases.claim("thread", "run", "worker-a", ttl_seconds=0.02)
+        )
+        self.assertFalse(
+            await leases.claim("thread", "run", "worker-b", ttl_seconds=1.0)
+        )
+        await asyncio.sleep(0.03)
+        self.assertTrue(
+            await leases.claim("thread", "run", "worker-b", ttl_seconds=1.0)
+        )
+        self.assertFalse(await leases.release("thread", "run", "worker-a"))
+        self.assertTrue(await leases.release("thread", "run", "worker-b"))
+
+    async def test_agent_runtime_claims_and_releases_run_lease(self) -> None:
+        """AgentRuntime 执行期间持有租约，终态保存后释放。"""
+        leases = MemoryRunLeaseStore()
+        runtime = AgentRuntime(
+            _make_agent(_FakeModel(responses=[assistant_message("完成")])),
+            lease_store=leases,
+            worker_id="runtime-worker",
+            lease_seconds=1.0,
+            heartbeat_seconds=0.1,
+        )
+
+        context = await runtime.run("thread-runtime-lease", "执行")
+        self.assertEqual(context.status, "completed")
+        self.assertTrue(
+            await leases.claim(
+                context.thread_id,
+                context.run_id,
+                "next-worker",
+                ttl_seconds=1.0,
+            )
+        )
+
+    async def test_agent_runtime_marks_run_interrupted_after_lease_loss(self) -> None:
+        """心跳续租失败时停止执行，并把最终状态保存为 interrupted。"""
+
+        class SlowModel(_FakeModel):
+            async def chat(self, _messages: Any, *, tools: Any = None) -> Any:
+                del _messages, tools
+                await asyncio.sleep(1.0)
+                return assistant_message("不应完成")
+
+        run_store = MemoryRunStore()
+        runtime = AgentRuntime(
+            _make_agent(SlowModel()),
+            run_store=run_store,
+            lease_store=_LeaseLossStore(),
+            worker_id="runtime-worker",
+            lease_seconds=0.1,
+            heartbeat_seconds=0.01,
+        )
+        handle = await runtime.start("thread-lease-loss", "执行")
+
+        with self.assertRaises(RuntimeConcurrencyError):
+            await runtime.wait(handle.context.thread_id, handle.context.run_id)
+        stored = await run_store.load_run(handle.context.thread_id, handle.context.run_id)
+        assert stored is not None
+        self.assertEqual(stored.status, "interrupted")
+
+    async def test_resume_releases_lease_when_run_save_fails(self) -> None:
+        """恢复前保存 queued 状态失败时，不遗留阻塞其他 Worker 的租约。"""
+
+        class FailingRunStore(MemoryRunStore):
+            def __init__(self) -> None:
+                super().__init__()
+                self.fail_next_save = False
+
+            async def save_run(self, context: RunContext) -> None:
+                if self.fail_next_save:
+                    self.fail_next_save = False
+                    raise RuntimeError("模拟保存失败")
+                await super().save_run(context)
+
+        run_store = FailingRunStore()
+        leases = MemoryRunLeaseStore()
+        context = RunContext(
+            thread_id="thread-resume-failure",
+            run_id="run-resume-failure",
+            status="interrupted",
+            checkpoint={"phase": "model"},
+        )
+        await run_store.save_run(context)
+        run_store.fail_next_save = True
+        runtime = AgentRuntime(
+            _make_agent(_FakeModel()),
+            run_store=run_store,
+            lease_store=leases,
+            worker_id="runtime-worker",
+            lease_seconds=1.0,
+            heartbeat_seconds=0.1,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "模拟保存失败"):
+            await runtime.resume(context.thread_id, context.run_id)
+        self.assertTrue(
+            await leases.claim(
+                context.thread_id,
+                context.run_id,
+                "next-worker",
+                ttl_seconds=1.0,
+            )
+        )
+
+    async def test_strict_access_mode_rejects_missing_identity(self) -> None:
+        """生产严格模式不允许调用方遗漏用户和租户身份。"""
+        owner = AccessContext(user_id="alice", tenant_id="tenant-a")
+
+        sessions = MemorySessionStore(require_access=True)
+        with self.assertRaises(PermissionError):
+            await sessions.load("thread")
+        await sessions.append("thread", [user_message("消息")], access=owner)
+
+        contexts = MemoryContextStore(require_access=True)
+        with self.assertRaises(PermissionError):
+            await contexts.get("thread")
+        self.assertEqual(
+            (await contexts.update("thread", {"preference": "简洁"}, access=owner))["preference"],
+            "简洁",
+        )
+
+        approvals = ApprovalQueue(require_access=True)
+        with self.assertRaises(PermissionError):
+            await approvals.create_request_async("thread", "tool", {})
+        request = await approvals.create_request_async(
+            "thread",
+            "tool",
+            {},
+            user_id=owner.user_id,
+            tenant_id=owner.tenant_id,
+        )
+        with self.assertRaises(PermissionError):
+            await approvals.load_request(request.request_id)
+        self.assertIs(
+            await approvals.load_request(request.request_id, access=owner),
+            request,
+        )
+
+        runtime = AgentRuntime(
+            _make_agent(_FakeModel(responses=[assistant_message("完成")])),
+            require_access=True,
+        )
+        with self.assertRaises(PermissionError):
+            await runtime.start("thread", "执行")
+        completed = await runtime.run(
+            "thread",
+            "执行",
+            user_id=owner.user_id,
+            tenant_id=owner.tenant_id,
+        )
+        with self.assertRaises(PermissionError):
+            await runtime.get(completed.thread_id, completed.run_id)
+
+    async def test_sqlite_run_lease_is_shared_between_store_instances(self) -> None:
+        """SQLite 租约在多个 Store 实例间保持互斥。"""
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "lease.db"
+            first = SqliteRunLeaseStore(database)
+            second = SqliteRunLeaseStore(database)
+            self.assertTrue(
+                await first.claim("thread", "run", "worker-a", ttl_seconds=1.0)
+            )
+            self.assertFalse(
+                await second.claim("thread", "run", "worker-b", ttl_seconds=1.0)
+            )
+            self.assertTrue(await first.release("thread", "run", "worker-a"))
+            self.assertTrue(
+                await second.claim("thread", "run", "worker-b", ttl_seconds=1.0)
+            )
+
+    async def test_approval_can_be_resolved_by_another_queue_instance(self) -> None:
+        """审批结果通过 Store 跨队列实例传播，不依赖同一个 asyncio.Event。"""
+        store = MemoryRuntimeStore()
+        waiting_queue = ApprovalQueue(store, poll_interval_seconds=0.01)
+        deciding_queue = ApprovalQueue(store, poll_interval_seconds=0.01)
+        request = await waiting_queue.create_request_async(
+            "thread",
+            "dangerous_tool",
+            {"value": 1},
+            user_id="alice",
+            tenant_id="tenant-a",
+        )
+        waiter = asyncio.create_task(
+            waiting_queue.wait_for_decision(request, timeout_seconds=1.0)
+        )
+
+        self.assertTrue(
+            await deciding_queue.approve(
+                request.request_id,
+                access=AccessContext(user_id="alice", tenant_id="tenant-a"),
+            )
+        )
+        self.assertEqual((await waiter).value, "approved")
+
+    async def test_durable_workflow_resumes_from_interrupted_node(self) -> None:
+        """工作流暂停后从已保存节点恢复，不重复之前完成的节点。"""
+        calls = {"prepare": 0, "approve": 0}
+        should_pause = True
+
+        async def prepare(_state: dict[str, Any]) -> dict[str, Any]:
+            calls["prepare"] += 1
+            return {"prepared": True}
+
+        async def approve(_state: dict[str, Any]) -> dict[str, Any]:
+            nonlocal should_pause
+            calls["approve"] += 1
+            if should_pause:
+                should_pause = False
+                raise WorkflowPause("等待批准", {"approval_id": "approval-1"})
+            return {"approved": True}
+
+        machine = (
+            StateMachineBuilder()
+            .add_node("prepare", prepare)
+            .add_node("approve", approve)
+            .add_edge("__start__", "prepare")
+            .add_edge("prepare", "approve")
+            .add_edge("approve", "__end__")
+            .build()
+        )
+        store = MemoryWorkflowExecutionStore()
+        runner = DurableWorkflowRunner(machine, store)
+        execution = await runner.start(
+            "demo",
+            {"input": "value"},
+            access=AccessContext(user_id="alice", tenant_id="tenant-a"),
+        )
+
+        self.assertEqual(execution.status, "interrupted")
+        self.assertEqual(execution.current_step, "approve")
+        completed = await runner.resume(
+            execution.execution_id,
+            access=AccessContext(user_id="alice", tenant_id="tenant-a"),
+        )
+        self.assertEqual(completed.status, "completed")
+        self.assertEqual(completed.result_data["approved"], True)
+        self.assertEqual(calls, {"prepare": 1, "approve": 2})
 
 
 if __name__ == "__main__":

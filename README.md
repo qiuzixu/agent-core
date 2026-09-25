@@ -13,14 +13,16 @@
 - Middleware、重试和上下文长度限制
 - 提示词版本注册、输入输出 Guardrails 和可观测性统计
 - 统一访问上下文、HITL 审批队列和审批存储端口
+- Session 用户/租户归属校验、跨进程审批结果同步
 - 上下文压缩、工具结果瘦身、spill 和模型超长恢复
 - RunContext、RunEvent、ApprovalRecord 和 ToolResult
 - Checkpoint、历史版本和回滚
-- 通用异步状态机
+- 通用异步状态机、节点级持久化和中断恢复
 - 模型调用 Protocol、模型提供商注册表和统一模型工厂
 - 脱敏模型目录和运行时模型选择协议
 - 用户/租户级模型选择存储：测试内存、开发 SQLite、生产 PostgreSQL
 - ACP JSON-RPC/stdio 服务端与业务 Runtime 适配端口
+- Run Worker 租约、心跳、互斥认领和过期恢复
 - 会话、长期上下文、运行状态、审批和工作流执行的存储实现
   - 内存：测试和临时运行
   - SQLite：开发环境，零额外依赖
@@ -55,13 +57,23 @@ Vanilla 项目原有的 `low_altitude_agent_vanilla.core` 和
 ```python
 from agent_core.storage import create_context_store, create_runtime_store, create_session_store
 
-sessions = create_session_store("development", sqlite_path="./agent.db")
-contexts = create_context_store("development", sqlite_path="./agent.db")
+sessions = create_session_store(
+    "development",
+    sqlite_path="./agent.db",
+    require_access=True,
+)
+contexts = create_context_store(
+    "development",
+    sqlite_path="./agent.db",
+    require_access=True,
+)
 runs = create_runtime_store("development", sqlite_path="./agent.db")
 ```
 
 生产环境传入 `postgres_url` 并安装 `handwritten-agent-core[production]`；
 PostgreSQL 存储的 `initialize()` 负责连接池和幂等建表，服务关闭时调用 `close()`。
+新项目建议启用 `require_access=True`，并在每次调用时传入 `AccessContext`。默认值为 `False`，
+用于兼容尚未传递用户和租户身份的现有 Agent。
 
 ```python
 from agent_core import (

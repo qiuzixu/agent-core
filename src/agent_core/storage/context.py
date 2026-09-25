@@ -11,12 +11,14 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
-import sqlite3 
+import sqlite3
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Generator
+from typing import Any
 
 from agent_core.access import AccessContext
+
 
 # ──────────────────────────────────────────────
 # 上下文存储实现
@@ -24,8 +26,14 @@ from agent_core.access import AccessContext
 class ContextStore:
     """按 thread 隔离的持久化上下文存储。"""
 
-    def __init__(self, path: str | Path | None = "./agent_context.json") -> None:
+    def __init__(
+        self,
+        path: str | Path | None = "./agent_context.json",
+        *,
+        require_access: bool = False,
+    ) -> None:
         self._path = Path(path) if path else None
+        self._strict_access = require_access
         self._data: dict[str, dict[str, Any]] = {}
         self._lock = asyncio.Lock()
         self._loaded = False
@@ -46,7 +54,7 @@ class ContextStore:
             except (OSError, json.JSONDecodeError):
                 self._data = {}
         self._loaded = True
-    
+
     # 刷新上下文数据到文件
     async def _flush(self) -> None:
         if not self._path:
@@ -59,25 +67,41 @@ class ContextStore:
         tmp.replace(self._path)
 
     # 检查上下文数据访问权限
-    @staticmethod
-    def _check_scope(data: dict[str, Any], access: AccessContext | None) -> None:
+    def _check_scope(
+        self,
+        data: dict[str, Any],
+        access: AccessContext | None,
+    ) -> None:
+        if self._strict_access and access is None:
+            raise PermissionError("该 ContextStore 要求提供 AccessContext")
         owner = data.get("_access")
+        if self._strict_access and data and not isinstance(owner, dict):
+            raise PermissionError("该 thread 的上下文尚未绑定所有者")
         if access and isinstance(owner, dict) and not access.can_access(
             owner.get("user_id"), owner.get("tenant_id")
         ):
             raise PermissionError("无权访问该 thread 的上下文")
-    
+
     # 获取上下文数据
-    async def get(self, thread_id: str, *, access: AccessContext | None = None) -> dict[str, Any]:
+    async def get(
+        self,
+        thread_id: str,
+        *,
+        access: AccessContext | None = None,
+    ) -> dict[str, Any]:
         async with self._lock:
             await self._ensure_loaded()
             value = copy.deepcopy(self._data.get(thread_id, {}))
             self._check_scope(value, access)
             return value
-    
+
     # 更新上下文数据
     async def update(
-        self, thread_id: str, values: dict[str, Any], *, access: AccessContext | None = None
+        self,
+        thread_id: str,
+        values: dict[str, Any],
+        *,
+        access: AccessContext | None = None,
     ) -> dict[str, Any]:
         async with self._lock:
             await self._ensure_loaded()
@@ -88,9 +112,14 @@ class ContextStore:
             current.update(copy.deepcopy(values))
             await self._flush()
             return copy.deepcopy(current)
-    
+
     # 清除上下文数据
-    async def clear(self, thread_id: str, *, access: AccessContext | None = None) -> None:
+    async def clear(
+        self,
+        thread_id: str,
+        *,
+        access: AccessContext | None = None,
+    ) -> None:
         async with self._lock:
             await self._ensure_loaded()
             self._check_scope(self._data.get(thread_id, {}), access)
@@ -98,14 +127,25 @@ class ContextStore:
             await self._flush()
 
     # 统一端口名称，同时保留业务层已有的 get/update/clear 调用。
-    async def get_context(self, thread_id: str) -> dict[str, Any]:
-        return await self.get(thread_id)
+    async def get_context(
+        self, thread_id: str, *, access: AccessContext | None = None
+    ) -> dict[str, Any]:
+        return await self.get(thread_id, access=access)
 
-    async def update_context(self, thread_id: str, values: dict[str, Any]) -> dict[str, Any]:
-        return await self.update(thread_id, values)
+    async def update_context(
+        self,
+        thread_id: str,
+        values: dict[str, Any],
+        *,
+        access: AccessContext | None = None,
+    ) -> dict[str, Any]:
+        return await self.update(thread_id, values, access=access)
 
-    async def clear_context(self, thread_id: str) -> None:
-        await self.clear(thread_id)
+    async def clear_context(
+        self, thread_id: str, *, access: AccessContext | None = None
+    ) -> None:
+        await self.clear(thread_id, access=access)
+
 
 # ──────────────────────────────────────────────
 # 内存上下文存储实现
@@ -113,8 +153,9 @@ class ContextStore:
 class MemoryContextStore(ContextStore):
     """测试专用内存上下文。"""
 
-    def __init__(self) -> None:
-        super().__init__(path=None)
+    def __init__(self, *, require_access: bool = False) -> None:
+        super().__init__(path=None, require_access=require_access)
+
 
 # ──────────────────────────────────────────────
 # SQLite 上下文存储实现
@@ -122,8 +163,14 @@ class MemoryContextStore(ContextStore):
 class SqliteContextStore(ContextStore):
     """开发环境 SQLite 上下文存储。"""
 
-    def __init__(self, db_path: str | Path = "./sessions.db") -> None:
+    def __init__(
+        self,
+        db_path: str | Path = "./sessions.db",
+        *,
+        require_access: bool = False,
+    ) -> None:
         self._db_path = str(Path(db_path).resolve())
+        self._strict_access = require_access
         with self._connect() as conn:
             conn.execute(
                 """CREATE TABLE IF NOT EXISTS agent_context (
@@ -134,48 +181,66 @@ class SqliteContextStore(ContextStore):
             )
 
     # 连接 SQLite 数据库
-    @contextmanager # 上下文管理器，确保数据库连接在使用后关闭
-    def _connect(self) -> Generator[sqlite3.Connection, None, None]: # 连接 SQLite 数据库
-        conn = sqlite3.connect(self._db_path) # 连接 SQLite 数据库
+    @contextmanager
+    def _connect(self) -> Generator[sqlite3.Connection, None, None]:
+        """打开一个自动提交或回滚的 SQLite 连接。"""
+        conn = sqlite3.connect(self._db_path)
         try:
-            yield conn # 返回数据库连接对象
-            conn.commit() # 提交事务
+            yield conn
+            conn.commit()
         except Exception:
-            conn.rollback() # 回滚事务
-            raise # 抛出异常，让调用者处理异常
+            conn.rollback()
+            raise
         finally:
-            conn.close() # 关闭数据库连接
+            conn.close()
 
     # 获取上下文数据
-    async def get(self, thread_id: str, *, access: AccessContext | None = None) -> dict[str, Any]:
-        with self._connect() as conn: # 连接 SQLite 数据库
+    async def get(
+        self,
+        thread_id: str,
+        *,
+        access: AccessContext | None = None,
+    ) -> dict[str, Any]:
+        with self._connect() as conn:
             row = conn.execute(
                 "SELECT data FROM agent_context WHERE thread_id = ?", (thread_id,)
-            ).fetchone() # 查询上下文数据
-        value = json.loads(row[0]) if row else {} # 解析 JSON 字符串为字典
-        self._check_scope(value, access) # 检查上下文数据访问权限
-        return value     # 返回上下文数据
+            ).fetchone()
+        value = json.loads(row[0]) if row else {}
+        self._check_scope(value, access)
+        return value
 
     # 更新上下文数据
-    async def update(self, thread_id: str, values: dict[str, Any], *, access: AccessContext | None = None) -> dict[str, Any]:
-        current = await self.get(thread_id, access=access) # 获取当前上下文数据
-        if access and "_access" not in current: # 检查上下文数据是否包含访问权限
-            current["_access"] = access.to_dict() # 添加访问权限
-        current.update(copy.deepcopy(values)) # 更新上下文数据
-        with self._connect() as conn: # 连接 SQLite 数据库
-            conn.execute( # 插入或更新上下文数据
-                """INSERT INTO agent_context(thread_id, data) VALUES (?, ?) 
+    async def update(
+        self,
+        thread_id: str,
+        values: dict[str, Any],
+        *,
+        access: AccessContext | None = None,
+    ) -> dict[str, Any]:
+        current = await self.get(thread_id, access=access)
+        if access and "_access" not in current:
+            current["_access"] = access.to_dict()
+        current.update(copy.deepcopy(values))
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO agent_context(thread_id, data) VALUES (?, ?)
                 ON CONFLICT(thread_id) DO UPDATE SET data=excluded.data,
                 updated_at=CURRENT_TIMESTAMP""",
                 (thread_id, json.dumps(current, ensure_ascii=False)),
             )
         return copy.deepcopy(current)
-    
+
     # 清除上下文数据
-    async def clear(self, thread_id: str, *, access: AccessContext | None = None) -> None:
-        await self.get(thread_id, access=access) # 获取上下文数据
-        with self._connect() as conn: # 连接 SQLite 数据库
-            conn.execute("DELETE FROM agent_context WHERE thread_id = ?", (thread_id,)) # 删除上下文数据
+    async def clear(
+        self,
+        thread_id: str,
+        *,
+        access: AccessContext | None = None,
+    ) -> None:
+        await self.get(thread_id, access=access)
+        with self._connect() as conn:
+            conn.execute("DELETE FROM agent_context WHERE thread_id = ?", (thread_id,))
+
 
 # ──────────────────────────────────────────────
 # PostgreSQL 上下文存储实现
@@ -183,19 +248,22 @@ class SqliteContextStore(ContextStore):
 class PostgresContextStore(ContextStore):
     """生产环境 PostgreSQL 上下文存储。"""
 
-    def __init__(self, dsn: str) -> None:
-        self._dsn = dsn.replace("postgresql+asyncpg://", "postgresql://") # 替换 asyncpg 协议为 PostgreSQL 协议
+    def __init__(self, dsn: str, *, require_access: bool = False) -> None:
+        self._dsn = dsn.replace("postgresql+asyncpg://", "postgresql://")
         self._pool: Any = None
+        self._strict_access = require_access
 
     # 初始化 PostgreSQL 数据库连接池
     # 创建上下文表
     async def initialize(self) -> None:
         try:
-            import asyncpg  # type: ignore[import-untyped] 
+            import asyncpg  # type: ignore[import-untyped]
         except ImportError as exc:
-            raise ImportError("PostgresContextStore 需要 asyncpg，请执行：uv sync --extra production") from exc
-        self._pool = await asyncpg.create_pool(self._dsn, min_size=2, max_size=10) # 创建 PostgreSQL 数据库连接池
-        async with self._pool.acquire() as conn: # 获取数据库连接
+            raise ImportError(
+                "PostgresContextStore 需要 asyncpg，请执行：uv sync --extra production"
+            ) from exc
+        self._pool = await asyncpg.create_pool(self._dsn, min_size=2, max_size=10)
+        async with self._pool.acquire() as conn:
             # 创建上下文表
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS agent_context (
@@ -213,17 +281,36 @@ class PostgresContextStore(ContextStore):
         if self._pool:
             await self._pool.close()
 
-    async def get(self, thread_id: str, *, access: AccessContext | None = None) -> dict[str, Any]:
+    async def get(
+        self,
+        thread_id: str,
+        *,
+        access: AccessContext | None = None,
+    ) -> dict[str, Any]:
         self._check()
         async with self._pool.acquire() as conn:
-            row = await conn.fetchrow("SELECT data FROM agent_context WHERE thread_id=$1", thread_id)
+            row = await conn.fetchrow(
+                "SELECT data FROM agent_context WHERE thread_id=$1",
+                thread_id,
+            )
         if row is None:
+            self._check_scope({}, access)
             return {}
-        value = json.loads(row["data"]) if isinstance(row["data"], str) else dict(row["data"])
+        value = (
+            json.loads(row["data"])
+            if isinstance(row["data"], str)
+            else dict(row["data"])
+        )
         self._check_scope(value, access)
         return value
 
-    async def update(self, thread_id: str, values: dict[str, Any], *, access: AccessContext | None = None) -> dict[str, Any]:
+    async def update(
+        self,
+        thread_id: str,
+        values: dict[str, Any],
+        *,
+        access: AccessContext | None = None,
+    ) -> dict[str, Any]:
         self._check()
         current = await self.get(thread_id, access=access)
         if access and "_access" not in current:
@@ -238,13 +325,23 @@ class PostgresContextStore(ContextStore):
                 thread_id,
                 json.dumps(values, ensure_ascii=False),
             )
-        return json.loads(row["data"]) if isinstance(row["data"], str) else dict(row["data"])
+        return (
+            json.loads(row["data"])
+            if isinstance(row["data"], str)
+            else dict(row["data"])
+        )
 
-    async def clear(self, thread_id: str, *, access: AccessContext | None = None) -> None:
+    async def clear(
+        self,
+        thread_id: str,
+        *,
+        access: AccessContext | None = None,
+    ) -> None:
         await self.get(thread_id, access=access)
         self._check()
         async with self._pool.acquire() as conn:
             await conn.execute("DELETE FROM agent_context WHERE thread_id=$1", thread_id)
+
 
 # ──────────────────────────────────────────────
 # 创建上下文存储
@@ -254,13 +351,14 @@ def create_context_store(
     *,
     sqlite_path: str = "./sessions.db",
     postgres_url: str | None = None,
+    require_access: bool = False,
 ) -> ContextStore:
     """按环境创建上下文存储。"""
     normalized = env.lower()
     if normalized in {"test", "testing"}:
-        return MemoryContextStore()
+        return MemoryContextStore(require_access=require_access)
     if normalized in {"production", "prod"}:
         if not postgres_url:
             raise ValueError("生产环境需要配置 PostgreSQL 连接地址")
-        return PostgresContextStore(postgres_url)
-    return SqliteContextStore(sqlite_path)
+        return PostgresContextStore(postgres_url, require_access=require_access)
+    return SqliteContextStore(sqlite_path, require_access=require_access)

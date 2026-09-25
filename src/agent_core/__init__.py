@@ -1,5 +1,14 @@
 """不依赖 LangChain/LangGraph 的可复用手写 Agent Core。"""
 
+from agent_core.access import AccessContext
+from agent_core.acp import (
+    AcpBackend,
+    AcpProtocolError,
+    AcpSession,
+    AcpStdioServer,
+    AcpUpdate,
+    run_acp_stdio,
+)
 from agent_core.checkpoint import (
     Checkpointer,
     CheckpointVersion,
@@ -18,15 +27,6 @@ from agent_core.compaction import (
     SpillStore,
     build_spill_tool,
 )
-from agent_core.access import AccessContext
-from agent_core.acp import (
-    AcpBackend,
-    AcpProtocolError,
-    AcpSession,
-    AcpStdioServer,
-    AcpUpdate,
-    run_acp_stdio,
-)
 from agent_core.errors import (
     AgentError,
     CheckpointError,
@@ -39,17 +39,6 @@ from agent_core.errors import (
     ModelOutputValidationError,
     StateMachineError,
     ToolExecutionError,
-)
-from agent_core.middleware import (
-    HumanInTheLoopMiddleware,
-    LoggingMiddleware,
-    Middleware,
-    MiddlewareAction,
-    MiddlewareContext,
-    MiddlewareManager,
-    MiddlewareResult,
-    RetryMiddleware,
-    TokenLimitMiddleware,
 )
 from agent_core.guardrails import (
     BlockedKeywordsGuard,
@@ -64,6 +53,16 @@ from agent_core.hitl import (
     ApprovalRequest,
     ApprovalStatus,
     HumanInTheLoopMiddleware,
+)
+from agent_core.middleware import (
+    LoggingMiddleware,
+    Middleware,
+    MiddlewareAction,
+    MiddlewareContext,
+    MiddlewareManager,
+    MiddlewareResult,
+    RetryMiddleware,
+    TokenLimitMiddleware,
 )
 from agent_core.model import (
     AnthropicProvider,
@@ -95,6 +94,25 @@ from agent_core.mcp import (
     McpToolClient,
     McpToolError,
 )
+from agent_core.observability import (
+    AgentStats,
+    CallRecord,
+    ObservabilityMiddleware,
+    ThreadStats,
+    ToolRecord,
+    agent_stats,
+    setup_tracing,
+)
+from agent_core.ports import (
+    ApprovalStore,
+    ContextStore,
+    EventSink,
+    ModelSelectionStore,
+    RunStore,
+    SessionStore,
+    WorkflowStore,
+)
+from agent_core.prompts import PromptEntry, PromptRegistry, PromptVersion
 from agent_core.protocol import (
     AgentCapabilities,
     ApprovalRecord,
@@ -108,17 +126,6 @@ from agent_core.protocol import (
     tool_message,
     user_message,
 )
-from agent_core.ports import ApprovalStore, ContextStore, EventSink, ModelSelectionStore, RunStore, SessionStore, WorkflowStore
-from agent_core.observability import (
-    AgentStats,
-    CallRecord,
-    ObservabilityMiddleware,
-    ThreadStats,
-    ToolRecord,
-    agent_stats,
-    setup_tracing,
-)
-from agent_core.prompts import PromptEntry, PromptRegistry, PromptVersion
 from agent_core.runtime import (
     AgentRuntime,
     MemoryEventSink,
@@ -132,38 +139,51 @@ from agent_core.runtime import (
     message_json,
     now_iso,
 )
-from agent_core.tools import ToolExecutor, ToolRegistry, ToolSpec
-from agent_core.workflow import END, START, StateMachine, StateMachineBuilder
 from agent_core.storage import (
     BaseSessionStore,
     MemoryContextStore,
+    MemoryModelSelectionStore,
+    MemoryRunLeaseStore,
     MemoryRuntimeStore,
     MemorySessionStore,
     MemoryWorkflowExecutionStore,
+    ModelSelection,
+    ModelSelectionScope,
+    ModelSelectionStore,
     PostgresContextStore,
+    PostgresModelSelectionStore,
+    PostgresRunLeaseStore,
     PostgresRuntimeStore,
     PostgresSessionStore,
     PostgresWorkflowExecutionStore,
     RuntimeConcurrencyError,
+    RunLease,
+    RunLeaseStore,
     RuntimeStore,
     SessionManager,
     SqliteContextStore,
+    SqliteModelSelectionStore,
+    SqliteRunLeaseStore,
     SqliteRuntimeStore,
     SqliteSessionStore,
     SqliteWorkflowExecutionStore,
     WorkflowExecution,
     WorkflowExecutionStore,
     create_context_store,
+    create_model_selection_store,
+    create_run_lease_store,
     create_runtime_store,
     create_session_store,
     create_workflow_execution_store,
-    MemoryModelSelectionStore,
-    ModelSelection,
-    ModelSelectionScope,
-    ModelSelectionStore,
-    PostgresModelSelectionStore,
-    SqliteModelSelectionStore,
-    create_model_selection_store,
+)
+from agent_core.tools import ToolExecutor, ToolRegistry, ToolSpec
+from agent_core.workflow import (
+    END,
+    START,
+    DurableWorkflowRunner,
+    StateMachine,
+    StateMachineBuilder,
+    WorkflowPause,
 )
 
 __all__ = [
@@ -209,9 +229,15 @@ __all__ = [
     "create_session_store",
     "RuntimeStore",
     "RuntimeConcurrencyError",
+    "RunLease",
+    "RunLeaseStore",
+    "MemoryRunLeaseStore",
     "MemoryRuntimeStore",
+    "SqliteRunLeaseStore",
     "SqliteRuntimeStore",
+    "PostgresRunLeaseStore",
     "PostgresRuntimeStore",
+    "create_run_lease_store",
     "create_runtime_store",
     "WorkflowExecution",
     "WorkflowExecutionStore",
@@ -226,6 +252,7 @@ __all__ = [
     "PostgresModelSelectionStore",
     "SqliteModelSelectionStore",
     "create_model_selection_store",
+    "DurableWorkflowRunner",
     "END",
     "EventSink",
     "FileCheckpointer",
@@ -294,6 +321,7 @@ __all__ = [
     "ToolResult",
     "ToolSpec",
     "WorkflowStore",
+    "WorkflowPause",
     "PromptEntry",
     "PromptRegistry",
     "PromptVersion",

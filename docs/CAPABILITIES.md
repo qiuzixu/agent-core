@@ -13,7 +13,7 @@ Agent Core 是一套不依赖 LangChain、LangGraph 或 FastAPI 的手写 Agent 
 
 | 模块 | 已实现能力 | 主要公开接口 |
 | --- | --- | --- |
-| `runtime` | ReAct Agent Loop、同步运行、流式运行、后台 Run、取消和 checkpoint 恢复 | `ReActAgent`、`AgentRuntime` |
+| `runtime` | ReAct Agent Loop、同步/流式运行、后台 Run、取消、checkpoint 恢复和 Worker 租约 | `ReActAgent`、`AgentRuntime` |
 | `protocol` | 消息、运行上下文、运行事件、审批、工具结果和能力声明 | `Message`、`RunContext`、`RunEvent`、`ApprovalRecord`、`ToolResult`、`AgentCapabilities` |
 | `model` | 模型协议、Provider 注册表、统一工厂、上下文使用量和安全模型目录 | `ModelAdapter`、`ModelProviderRegistry`、`create_model_provider` |
 | `tools` | 工具注册、Schema、参数基础校验、超时、单个和批量并发执行 | `ToolRegistry`、`ToolExecutor`、`ToolSpec` |
@@ -21,8 +21,8 @@ Agent Core 是一套不依赖 LangChain、LangGraph 或 FastAPI 的手写 Agent 
 | `middleware` | Agent、模型和工具执行前后的扩展链 | `Middleware`、`MiddlewareManager` |
 | `compaction` | Token 估算、历史摘要、消息裁剪、工具结果瘦身、spill 和超长恢复 | `CompactionMiddleware`、`TokenLimitMiddleware`、`SpillStore` |
 | `checkpoint` | 内存/文件 checkpoint、历史版本、回滚和时间旅行 | `MemoryCheckpointer`、`FileCheckpointer`、`TimeTravelCheckpointer` |
-| `hitl` | 人工审批请求、等待、批准、拒绝、超时和中间件接入 | `ApprovalQueue`、`HumanInTheLoopMiddleware` |
-| `workflow` | 异步状态机、节点、固定边、条件边和最大步数保护 | `StateMachine`、`StateMachineBuilder` |
+| `hitl` | 人工审批请求、等待、批准、拒绝、超时、跨进程决策同步和中间件接入 | `ApprovalQueue`、`HumanInTheLoopMiddleware` |
+| `workflow` | 异步状态机、节点、条件边、节点级持久化、中断和恢复 | `StateMachine`、`DurableWorkflowRunner` |
 | `storage` | 会话、上下文、Run、审批、模型选择和工作流实例持久化 | 各类 `Memory*`、`Sqlite*`、`Postgres*Store` |
 | `guardrails` | 关键词、长度、PII 脱敏和输出格式检查 | `GuardrailsMiddleware` |
 | `prompts` | Prompt 注册、版本保存、当前版本切换和历史查询 | `PromptRegistry` |
@@ -52,6 +52,11 @@ Agent Core 是一套不依赖 LangChain、LangGraph 或 FastAPI 的手写 Agent 
 - 使用 `idempotency_key` 防止重复创建；
 - 发布新增的 `RunEvent`；
 - 将用户、租户、输入、状态和 checkpoint 一起保存。
+- 可选 Run Lease，在多 Worker 环境中互斥认领 Run；
+- 定期 heartbeat 续租，租约丢失时停止本地执行；
+- 扫描过期租约，将异常退出的 Run 标记为中断并选择是否自动恢复。
+- 可选 `require_access=True` 严格模式，创建 Run 时强制绑定用户和租户，查询、恢复和取消时
+  强制提供 `AccessContext`。
 
 ## 4. 模型层
 
@@ -112,6 +117,11 @@ Core 将几类状态分开保存：
 | Checkpoint | 保存 Agent Loop 或工作流可恢复的执行位置 |
 | WorkflowExecution | 保存工作流执行实例、状态、输入输出和版本 |
 
+Session Store 在调用方传入 `AccessContext` 时，会在首次写入时绑定 Thread 所有者，之后按用户和
+租户校验读取、计数、删除和列表操作。同租户管理员可以访问租户内会话；未传身份的旧调用路径继续
+保持兼容，便于现有 Agent 分阶段迁移。Session Store 和 Context Store 都支持
+`require_access=True`；启用后，遗漏身份或访问未绑定所有者的历史数据会直接失败。
+
 上下文压缩支持：
 
 - 粗略 Token 估算和压缩阈值；
@@ -136,6 +146,9 @@ Checkpoint 支持内存和文件后端。`TimeTravelCheckpointer` 在基础 Chec
 - `START`、`END` 生命周期；
 - 最大执行步数保护；
 - 节点和路由异常统一包装。
+- `WorkflowPause` 主动中断；
+- `DurableWorkflowRunner` 在节点边界保存状态和下一节点；
+- 进程重启后从最后保存的下一节点恢复，避免重复执行已经完成的节点。
 
 工作流定义由上层项目编写，工作流执行实例可通过 `WorkflowExecutionStore` 持久化。
 
@@ -147,6 +160,10 @@ Core 提供两层审批能力：
 - `HumanInTheLoopMiddleware`：在指定工具执行前触发审批。
 
 审批状态、请求参数、用户、租户、创建时间和过期时间可写入 Runtime Store。
+等待端会轮询持久化状态，因此另一个进程提交的审批结果也能被当前执行感知；审批服务重启后仍可
+按审批 ID 加载并处理原请求。
+`ApprovalQueue(require_access=True)` 会要求审批创建时绑定用户和租户，并要求查询、批准和拒绝操作
+携带 `AccessContext`。`DurableWorkflowRunner` 也提供相同的严格模式。
 Web 弹窗、消息通知和审批人选择属于上层应用职责。
 
 ## 10. 存储和并发
@@ -158,9 +175,12 @@ Web 弹窗、消息通知和审批人选择属于上层应用职责。
 | Run、事件和审批 | 支持 | 支持 | 支持 |
 | 模型选择 | 支持 | 支持 | 支持 |
 | 工作流执行实例 | 支持 | 支持 | 支持 |
+| Run Worker 租约 | 支持 | 支持 | 支持 |
 
 推荐用途：内存用于单元测试和临时运行，SQLite 用于本地开发，PostgreSQL 用于生产环境。
 Runtime Store 已包含版本号、乐观并发冲突、幂等键、Thread 所属用户/租户和陈旧 Run 标记能力。
+`RunLeaseStore` 额外提供 Worker 认领、续租、释放和过期扫描；租约与 Run 状态分开保存，便于接入
+独立任务队列或 Worker 服务。
 
 ## 11. ACP 协议
 

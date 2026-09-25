@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any, Protocol
 
+from agent_core.access import AccessContext
 from agent_core.protocol.messages import Message
 from agent_core.protocol.runtime import ApprovalRecord, RunContext, RunEvent
 from agent_core.storage.model_selection import ModelSelection, ModelSelectionScope
@@ -70,32 +71,58 @@ class RunStore(Protocol):
 class SessionStore(Protocol):
     """对话消息历史存储协议。"""
 
-    async def load_messages(self, thread_id: str) -> list[Message]:
+    async def load_messages(
+        self, thread_id: str, *, access: AccessContext | None = None
+    ) -> list[Message]:
         ...
 
-    async def append_messages(self, thread_id: str, messages: Sequence[Message]) -> None:
+    async def append_messages(
+        self,
+        thread_id: str,
+        messages: Sequence[Message],
+        *,
+        access: AccessContext | None = None,
+    ) -> None:
         ...
 
-    async def replace_messages(self, thread_id: str, messages: Sequence[Message]) -> None:
+    async def replace_messages(
+        self,
+        thread_id: str,
+        messages: Sequence[Message],
+        *,
+        access: AccessContext | None = None,
+    ) -> None:
         ...
 
-    async def delete_thread(self, thread_id: str) -> None:
+    async def delete_thread(
+        self, thread_id: str, *, access: AccessContext | None = None
+    ) -> None:
         ...
 
-    async def list_threads(self) -> list[str]:
+    async def list_threads(self, *, access: AccessContext | None = None) -> list[str]:
         ...
 
 
 class ContextStore(Protocol):
     """结构化长期上下文存储协议。"""
 
-    async def get_context(self, thread_id: str) -> dict[str, Any]:
+    async def get_context(
+        self, thread_id: str, *, access: AccessContext | None = None
+    ) -> dict[str, Any]:
         ...
 
-    async def update_context(self, thread_id: str, values: dict[str, Any]) -> dict[str, Any]:
+    async def update_context(
+        self,
+        thread_id: str,
+        values: dict[str, Any],
+        *,
+        access: AccessContext | None = None,
+    ) -> dict[str, Any]:
         ...
 
-    async def clear_context(self, thread_id: str) -> None:
+    async def clear_context(
+        self, thread_id: str, *, access: AccessContext | None = None
+    ) -> None:
         ...
 
 

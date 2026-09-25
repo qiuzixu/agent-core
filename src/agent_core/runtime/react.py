@@ -156,6 +156,7 @@ class ReActAgent:
             run_id=str(metadata.get("run_id") or uuid.uuid4()),
             metadata=metadata,
         )
+        metadata = self._runtime_metadata(runtime_context, metadata)
         runtime_context.status = "running"
         # 恢复执行时沿用已有上下文的会话 ID，避免快照落到默认会话。
         checkpoint_thread = thread_id or runtime_context.thread_id
@@ -387,6 +388,7 @@ class ReActAgent:
             run_id=str(metadata.get("run_id") or uuid.uuid4()),
             metadata=metadata,
         )
+        metadata = self._runtime_metadata(runtime_context, metadata)
         runtime_context.status = "running"
         # 流式执行与普通执行使用同一套会话隔离规则。
         checkpoint_thread = thread_id or runtime_context.thread_id
@@ -559,6 +561,21 @@ class ReActAgent:
     # ──────────────────────────────────────────────
     # 内部辅助方法
     # ──────────────────────────────────────────────
+
+    @staticmethod
+    def _runtime_metadata(
+        runtime_context: RunContext,
+        metadata: dict[str, Any],
+    ) -> dict[str, Any]:
+        """把 Run 身份写入中间件元数据，供审批和审计中间件使用。"""
+        result = {**runtime_context.metadata, **metadata}
+        result["run_id"] = runtime_context.run_id
+        result["thread_id"] = runtime_context.thread_id
+        if runtime_context.user_id is not None:
+            result["user_id"] = runtime_context.user_id
+        if runtime_context.tenant_id is not None:
+            result["tenant_id"] = runtime_context.tenant_id
+        return result
 
     def _build_initial_messages(
         self,

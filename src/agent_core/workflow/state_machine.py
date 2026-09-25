@@ -10,9 +10,10 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from copy import deepcopy
 from inspect import isawaitable
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 from agent_core.errors import StateMachineError
 
@@ -28,6 +29,19 @@ NodeFunc = Callable[
 ]
 # 条件路由函数签名：返回下一个节点名称
 ConditionalRouteFunc = Callable[[dict[str, Any]], str | Awaitable[str]]
+StepCallback = Callable[
+    [str, str, dict[str, Any], int],
+    None | Awaitable[None],
+]
+
+
+class WorkflowPause(Exception):
+    """节点主动暂停工作流，等待外部条件满足后恢复。"""
+
+    def __init__(self, reason: str, data: dict[str, Any] | None = None) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.data = dict(data or {})
 
 
 class StateMachine:
@@ -106,12 +120,24 @@ class StateMachine:
         Raises:
             StateMachineError: 节点不存在、超过最大步数等错误。
         """
-        # 深拷贝避免节点修改嵌套列表时污染调用方传入的初始状态。
-        state = deepcopy(initial_state)
-        current_node = START
-        steps = 0
+        return await self.ainvoke_from(initial_state, start_node=START)
 
-        logger.info("StateMachine: starting execution from %s", START)
+    async def ainvoke_from(
+        self,
+        initial_state: dict[str, Any],
+        *,
+        start_node: str = START,
+        on_step: StepCallback | None = None,
+    ) -> dict[str, Any]:
+        """从指定节点执行，并在每个节点完成后发布可持久化快照。"""
+        if start_node != START and start_node != END and start_node not in self._nodes:
+            raise StateMachineError(f"Node {start_node!r} not found.")
+        state = deepcopy(initial_state)
+        current_node = start_node
+        steps = 0
+        completed_nodes = 0
+
+        logger.info("StateMachine: starting execution from %s", current_node)
 
         while current_node != END:
             steps += 1
@@ -134,6 +160,9 @@ class StateMachine:
                         updates = await updates
                     if updates:
                         state.update(updates)
+                    completed_nodes += 1
+                except WorkflowPause:
+                    raise
                 except Exception as exc:
                     raise StateMachineError(
                         f"Node {current_node!r} raised exception: {exc}"
@@ -141,11 +170,20 @@ class StateMachine:
 
             # 决定下一个节点
             next_node = await self._get_next_node(current_node, state)
+            if on_step is not None:
+                checkpoint = on_step(current_node, next_node, deepcopy(state), completed_nodes)
+                if isawaitable(checkpoint):
+                    await checkpoint
             logger.debug("StateMachine: %r -> %r", current_node, next_node)
             current_node = next_node
 
         logger.info("StateMachine: execution completed in %d steps", steps)
         return state
+
+    @property
+    def node_count(self) -> int:
+        """返回已注册的实际节点数量。"""
+        return len(self._nodes)
 
     async def _get_next_node(self, current_node: str, state: dict[str, Any]) -> str:
         """根据边的规则决定下一个节点。
