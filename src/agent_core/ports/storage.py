@@ -1,7 +1,7 @@
-"""Agent Core 的可替换存储和事件端口。
+"""Agent Core 的可替换存储端口。
 
-这里只定义协议，不实现数据库访问。SQLite、PostgreSQL、Redis 或业务自己的存储
-都可以实现这些接口，Core 不需要知道具体驱动。
+协议描述运行时需要的最小能力；内置 SQLite/PostgreSQL 实现位于
+``agent_core.storage``，Redis 或业务自己的存储也可以实现这些协议。
 """
 
 from __future__ import annotations
@@ -10,7 +10,36 @@ from collections.abc import Sequence
 from typing import Any, Protocol
 
 from agent_core.protocol.messages import Message
-from agent_core.protocol.runtime import RunContext, RunEvent
+from agent_core.protocol.runtime import ApprovalRecord, RunContext, RunEvent
+from agent_core.storage.model_selection import ModelSelection, ModelSelectionScope
+
+
+class ModelSelectionStore(Protocol):
+    """按用户/租户保存和解析有效模型的存储端口。"""
+
+    async def resolve(self, *, user_id: str | None, tenant_id: str | None) -> ModelSelection | None:
+        ...
+
+    async def save(
+        self,
+        provider: str,
+        model: str,
+        *,
+        scope: ModelSelectionScope,
+        user_id: str | None,
+        tenant_id: str | None,
+    ) -> ModelSelection:
+        ...
+
+
+class ApprovalStore(Protocol):
+    """审批记录持久化协议。"""
+
+    async def save_approval(self, approval: ApprovalRecord) -> None:
+        ...
+
+    async def load_approval(self, approval_id: str) -> ApprovalRecord | None:
+        ...
 
 
 class RunStore(Protocol):

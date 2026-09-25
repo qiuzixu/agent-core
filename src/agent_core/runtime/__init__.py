@@ -3,11 +3,25 @@
 from agent_core.runtime.service import AgentRuntime, MemoryEventSink, RuntimeRun
 from agent_core.runtime.react import ReActAgent
 from agent_core.runtime.store import MemoryRunStore
+from agent_core.runtime.compat import (
+    RunRecord,
+    ThreadRecord,
+    content_text,
+    extract_prompt,
+    message_json,
+    now_iso,
+)
 
 __all__ = [
     "AgentRuntime",
     "MemoryEventSink",
     "MemoryRunStore",
     "ReActAgent",
+    "RunRecord",
     "RuntimeRun",
+    "ThreadRecord",
+    "content_text",
+    "extract_prompt",
+    "message_json",
+    "now_iso",
 ]

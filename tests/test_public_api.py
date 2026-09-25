@@ -9,6 +9,7 @@ import asyncio
 import os
 import subprocess
 import sys
+import tempfile
 import unittest
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -22,9 +23,20 @@ from agent_core import (
     ReActAgent,
     RunContext,
     StreamChunk,
+    ModelProviderRegistry,
+    create_model_provider,
     ToolExecutor,
     ToolRegistry,
     assistant_message,
+)
+from agent_core.access import AccessContext
+from agent_core.protocol import user_message
+from agent_core.storage import (
+    SqliteContextStore,
+    SqliteRuntimeStore,
+    SqliteSessionStore,
+    SqliteWorkflowExecutionStore,
+    WorkflowExecution,
 )
 
 
@@ -92,6 +104,49 @@ def _make_agent(
 
 
 class TestAgentCorePublicApi(unittest.IsolatedAsyncioTestCase):
+    def test_model_provider_registry_is_sdk_agnostic(self) -> None:
+        """Core 只负责注册和选择，不需要导入具体模型 SDK。"""
+        registry = ModelProviderRegistry()
+
+        def build_fake(config: Any, *, model: str | None = None) -> dict[str, Any]:
+            return {"provider": config.llm_provider, "model": model or config.model_name}
+
+        registry.register("Fake", build_fake)
+        config = type("Config", (), {"llm_provider": "fake", "model_name": "demo"})()
+        self.assertEqual(
+            create_model_provider(config, registry=registry),
+            {"provider": "fake", "model": "demo"},
+        )
+        self.assertEqual(registry.names(), ("fake",))
+        with self.assertRaises(ValueError):
+            registry.register("fake", build_fake)
+        with self.assertRaises(ValueError):
+            create_model_provider(
+                type("Config", (), {"llm_provider": "missing"})(),
+                registry=registry,
+            )
+
+    def test_builtin_model_providers_are_registered_in_core(self) -> None:
+        """Core 内置 Provider 已注册，但导入时不要求安装对应 SDK。"""
+        from agent_core.model import (
+            AnthropicProvider,
+            GeminiProvider,
+            MODEL_PROVIDER_REGISTRY,
+            OllamaProvider,
+            OpenAIProvider,
+        )
+
+        self.assertEqual(
+            MODEL_PROVIDER_REGISTRY.names(),
+            ("anthropic", "gemini", "ollama", "openai"),
+        )
+        self.assertTrue(all(cls.__module__ == "agent_core.model.providers" for cls in (
+            OpenAIProvider,
+            AnthropicProvider,
+            GeminiProvider,
+            OllamaProvider,
+        )))
+
     async def test_runtime_owns_lifecycle_and_publishes_events(self) -> None:
         model = _FakeModel(responses=[assistant_message("运行完成")])
         events = MemoryEventSink()
@@ -220,6 +275,33 @@ class TestAgentCorePublicApi(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "ReActAgent RunContext")
+
+    async def test_sqlite_storage_is_available_from_core(self) -> None:
+        """Core 内置 SQLite 存储不依赖业务包或第三方驱动。"""
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "agent.db"
+
+            sessions = SqliteSessionStore(database)
+            await sessions.append("thread-1", [user_message("你好")])
+            self.assertEqual((await sessions.load_messages("thread-1"))[0].content, "你好")
+
+            contexts = SqliteContextStore(database)
+            await contexts.update(
+                "thread-1",
+                {"language": "zh-CN"},
+                access=AccessContext(user_id="user-1", tenant_id="tenant-1"),
+            )
+            self.assertEqual((await contexts.get_context("thread-1"))["language"], "zh-CN")
+
+            workflows = SqliteWorkflowExecutionStore(database)
+            execution = WorkflowExecution(definition_id="demo", tenant_id="tenant-1")
+            await workflows.save_execution(execution)
+            self.assertEqual((await workflows.load_execution(execution.execution_id)).version, 1)
+
+            runs = SqliteRuntimeStore(database)
+            context = RunContext(thread_id="thread-1", run_id="run-1")
+            await runs.save_run(context)
+            self.assertEqual((await runs.load_run("thread-1", "run-1")).version, 1)
 
 
 if __name__ == "__main__":
