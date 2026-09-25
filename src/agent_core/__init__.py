@@ -16,6 +16,7 @@ from agent_core.compaction import (
     CompactionResult,
     PruneConfig,
     SpillStore,
+    build_spill_tool,
 )
 from agent_core.access import AccessContext
 from agent_core.errors import (
@@ -76,6 +77,15 @@ from agent_core.model import (
     catalog_payload,
     default_model_catalog,
     register_model_provider,
+)
+from agent_core.mcp import (
+    JsonObject,
+    McpConnectionError,
+    McpError,
+    McpTimeoutError,
+    McpToolCaller,
+    McpToolClient,
+    McpToolError,
 )
 from agent_core.protocol import (
     AgentCapabilities,
@@ -214,6 +224,7 @@ __all__ = [
     "PIIRedactionGuard",
     "PruneConfig",
     "SpillStore",
+    "JsonObject",
     "DEFAULT_COMPACTION_INSTRUCTION",
     "DEFAULT_SUMMARY_SECTIONS",
     "HumanInTheLoopMiddleware",
@@ -228,6 +239,12 @@ __all__ = [
     "MiddlewareError",
     "MiddlewareManager",
     "MiddlewareResult",
+    "McpConnectionError",
+    "McpError",
+    "McpTimeoutError",
+    "McpToolCaller",
+    "McpToolClient",
+    "McpToolError",
     "ModelAdapter",
     "ModelInvocationError",
     "ModelProviderFactory",
@@ -268,6 +285,7 @@ __all__ = [
     "PromptRegistry",
     "PromptVersion",
     "assistant_message",
+    "build_spill_tool",
     "build_tool_definition",
     "create_model_provider",
     "create_llm_provider",

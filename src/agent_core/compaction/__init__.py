@@ -13,6 +13,7 @@ from agent_core.compaction.region import (
     select_cut,
 )
 from agent_core.compaction.spill import SpillStore
+from agent_core.compaction.spill_tool import build_spill_tool
 from agent_core.compaction.types import (
     SUMMARY_CLOSE,
     SUMMARY_OPEN,
@@ -39,6 +40,7 @@ __all__ = [
     "PruneConfig",
     "SpillStore",
     "balanced_cut",
+    "build_spill_tool",
     "build_checkpoint",
     "estimate_message_tokens",
     "estimate_tokens",

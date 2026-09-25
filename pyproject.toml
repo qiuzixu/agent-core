@@ -22,6 +22,10 @@ production = [
   "asyncpg>=0.30,<1",
 ]
 
+mcp = [
+  "mcp>=1.27,<2",
+]
+
 openai = [
   "openai>=1.0,<2",
   "httpx>=0.28,<1",
