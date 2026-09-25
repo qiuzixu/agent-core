@@ -19,6 +19,14 @@ from agent_core.compaction import (
     build_spill_tool,
 )
 from agent_core.access import AccessContext
+from agent_core.acp import (
+    AcpBackend,
+    AcpProtocolError,
+    AcpSession,
+    AcpStdioServer,
+    AcpUpdate,
+    run_acp_stdio,
+)
 from agent_core.errors import (
     AgentError,
     CheckpointError,
@@ -163,6 +171,11 @@ __all__ = [
     "AgentCapabilities",
     "AgentRuntime",
     "AccessContext",
+    "AcpBackend",
+    "AcpProtocolError",
+    "AcpSession",
+    "AcpStdioServer",
+    "AcpUpdate",
     "ApprovalRecord",
     "ApprovalQueue",
     "ApprovalRequest",
@@ -292,6 +305,7 @@ __all__ = [
     "default_model_provider_registry",
     "known_context_window",
     "register_model_provider",
+    "run_acp_stdio",
     "setup_tracing",
     "system_message",
     "tool_message",

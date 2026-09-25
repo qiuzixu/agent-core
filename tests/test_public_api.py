@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import asyncio
+import io
+import json
 import os
 import subprocess
 import sys
@@ -30,6 +32,7 @@ from agent_core import (
     assistant_message,
 )
 from agent_core.access import AccessContext
+from agent_core.acp import AcpSession, AcpStdioServer, AcpUpdate
 from agent_core.protocol import user_message
 from agent_core.storage import (
     SqliteContextStore,
@@ -74,6 +77,44 @@ class _FakeModel:
             yield chunk
             if index == 0 and self.first_chunk_ready is not None:
                 await self.first_chunk_ready.wait()
+
+
+class _FakeAcpBackend:
+    """验证 ACP stdio 服务端的最小 Runtime 适配器。"""
+
+    agent_name = "测试 Agent"
+    agent_version = "1.0.0"
+    supports_load_session = True
+
+    async def create_session(
+        self,
+        session_id: str,
+        cwd: str,
+        _mcp_servers: list[dict[str, Any]],
+    ) -> AcpSession:
+        return AcpSession(session_id=session_id, cwd=cwd)
+
+    async def load_session(
+        self,
+        session_id: str,
+        cwd: str,
+        mcp_servers: list[dict[str, Any]],
+    ) -> AcpSession:
+        return await self.create_session(session_id, cwd, mcp_servers)
+
+    async def prompt(
+        self,
+        _session: AcpSession,
+        text: str,
+        emit: Any,
+        _request_permission: Any,
+    ) -> dict[str, Any]:
+        await emit(AcpUpdate.thought(f"正在处理：{text}"))
+        await emit(AcpUpdate.text("处理完成"))
+        return {"stopReason": "end_turn"}
+
+    async def cancel(self, _session: AcpSession) -> None:
+        return None
 
 
 def _make_agent(
@@ -275,6 +316,34 @@ class TestAgentCorePublicApi(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "ReActAgent RunContext")
+
+    async def test_acp_stdio_emits_session_updates_and_final_result(self) -> None:
+        """ACP 服务端能完成初始化、创建会话、流式更新和最终响应。"""
+        output = io.StringIO()
+        server = AcpStdioServer(_FakeAcpBackend(), stdin=io.StringIO(), stdout=output)
+
+        await server._handle_request("initialize", "initialize", {"protocolVersion": 1})
+        await server._handle_request("new", "session/new", {"cwd": "E:/workspace"})
+        records = [json.loads(line) for line in output.getvalue().splitlines()]
+        session_id = records[-1]["result"]["sessionId"]
+
+        await server._handle_request(
+            "prompt",
+            "session/prompt",
+            {
+                "sessionId": session_id,
+                "prompt": [{"type": "text", "text": "查询机场"}],
+            },
+        )
+        records = [json.loads(line) for line in output.getvalue().splitlines()]
+
+        self.assertEqual(records[0]["result"]["protocolVersion"], 1)
+        updates = [item for item in records if item.get("method") == "session/update"]
+        self.assertEqual(
+            [item["params"]["update"]["sessionUpdate"] for item in updates],
+            ["agent_thought_chunk", "agent_message_chunk"],
+        )
+        self.assertEqual(records[-1]["result"], {"stopReason": "end_turn"})
 
     async def test_sqlite_storage_is_available_from_core(self) -> None:
         """Core 内置 SQLite 存储不依赖业务包或第三方驱动。"""
