@@ -2,6 +2,7 @@
 
 本文只记录 `handwritten-agent-core` 已经实现并可被其他 Agent 项目复用的能力。
 Cesium、低空航线、业务 API、React 页面等应用能力不属于 Agent Core。
+整体模块关系和应用调用链见 [Agent Core 架构](ARCHITECTURE.md)。
 
 ## 1. 核心定位
 

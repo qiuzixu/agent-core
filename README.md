@@ -3,8 +3,10 @@
 可复用的手写 Agent 框架核心，不依赖 LangChain、LangGraph 或 FastAPI；
 模型和数据库 SDK 通过可选 extras 按需启用。
 
-完整的已实现能力、模块归属、存储支持和框架边界见
-[`docs/CAPABILITIES.md`](docs/CAPABILITIES.md)。
+完整文档：
+
+- [Agent Core 架构与应用调用关系](docs/ARCHITECTURE.md)
+- [已实现能力、模块归属和框架边界](docs/CAPABILITIES.md)
 
 当前公共能力：
 
