@@ -187,8 +187,8 @@ instructions 和 Tool Schema 交给 `ReActAgent`。清单不会动态导入 Pyth
 
 ```mermaid
 sequenceDiagram
-    actor User as 用户
-    participant UI as Web/Client
+    participant User as 用户
+    participant UI as Web Client
     participant App as 应用 Agent API
     participant Session as SessionManager
     participant Runtime as AgentRuntime
@@ -196,7 +196,7 @@ sequenceDiagram
     participant Model as ModelAdapter
     participant Tools as ToolExecutor
     participant MCP as MCP Server
-    participant Store as Runtime/Checkpoint Store
+    participant Store as Runtime Store
 
     User->>UI: 发送消息
     UI->>App: 请求 + agent/model/thread
