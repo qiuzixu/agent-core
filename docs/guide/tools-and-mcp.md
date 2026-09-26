@@ -73,6 +73,6 @@ async with McpToolClient(
 
 ## 传输边界
 
-Core 的 `McpToolClient` 是 Agent 到 MCP Server 的客户端适配。浏览器与 Cesium Gateway 的
+Core 的 `McpToolClient` 是 Agent 到 MCP Server 的客户端适配。浏览器到 MCP Gateway 的
 WebSocket 连接属于应用基础设施，不由 Core 建立；应用可以实现 `McpToolCaller` Protocol，把
 已有网关调用封装成同样的 `list_tools()` 和 `call_tool()` 接口。

@@ -1,7 +1,7 @@
 # Agent Core 已实现能力
 
 本文只记录 `handwritten-agent-core` 已经实现并可被其他 Agent 项目复用的能力。
-Cesium、低空航线、业务 API、React 页面等应用能力不属于 Agent Core。
+地图控制、业务规则、业务 API、前端页面等应用能力不属于 Agent Core。
 整体模块关系和应用调用链见 [Agent Core 架构](ARCHITECTURE.md)。
 
 ## 1. 核心定位
@@ -238,11 +238,11 @@ Checkpoint、状态机和 Middleware。上层 API 可以据此统一映射 HTTP 
 
 以下内容应留在具体 Agent 项目中：
 
-- Cesium 地图控制和 Cesium MCP Gateway 配置；
-- 低空航线、飞行计划、空域、审批等业务规则；
-- FastAPI 路由和 Web React 接口；
-- 具体业务数据库表和业务 DTO；
+- 特定领域的地图、IoT 或外部系统控制；
+- 业务规则、业务流程和业务数据模型；
+- HTTP/SSE/WebSocket 路由和前端页面；
+- 业务数据库表和业务 DTO；
 - Agent 品牌、页面文案和部署端口；
-- 某个业务特有的工作流节点。
+- 业务特有的工作流节点。
 
-这个边界保证 `agent-core` 可以被低空 Agent 以外的新 Agent 项目直接依赖。
+这个边界保证 `agent-core` 可以被任何新 Agent 项目直接依赖。

@@ -61,10 +61,16 @@ export default withMermaid(
             { text: "Skill", link: "/guide/skills" },
             { text: "中间件与 HITL", link: "/guide/middleware-and-hitl" },
             { text: "上下文与记忆", link: "/guide/context-and-memory" },
-            { text: "工作流与 Checkpoint", link: "/guide/workflows-and-checkpoints" },
+            {
+              text: "工作流与 Checkpoint",
+              link: "/guide/workflows-and-checkpoints",
+            },
             { text: "存储与生产部署", link: "/guide/storage-and-production" },
             { text: "ACP", link: "/guide/acp" },
-            { text: "可观测性与 Guardrails", link: "/guide/observability-and-guardrails" },
+            {
+              text: "可观测性与 Guardrails",
+              link: "/guide/observability-and-guardrails",
+            },
           ],
         },
         {
@@ -80,7 +86,10 @@ export default withMermaid(
           text: "维护者",
           items: [
             { text: "发布流程", link: "/maintainers/release" },
-            { text: "贡献指南", link: "https://github.com/qiuzixu/agent-core/blob/main/CONTRIBUTING.md" },
+            {
+              text: "贡献指南",
+              link: "https://github.com/qiuzixu/agent-core/blob/main/CONTRIBUTING.md",
+            },
           ],
         },
       ],
@@ -103,8 +112,7 @@ export default withMermaid(
         },
       },
       editLink: {
-        pattern:
-          "https://github.com/qiuzixu/agent-core/edit/main/docs/:path",
+        pattern: "https://github.com/qiuzixu/agent-core/edit/main/docs/:path",
         text: "编辑此页",
       },
       footer: {
@@ -117,6 +125,11 @@ export default withMermaid(
       flowchart: {
         htmlLabels: false,
         curve: "basis",
+      },
+    },
+    vite: {
+      optimizeDeps: {
+        include: ["fastdom"],
       },
     },
   }),

@@ -87,16 +87,16 @@ pnpm docs:build
 
 ## 项目边界
 
-Core 提供框架通用能力。应用 Agent 仍负责：
+Core 只提供框架通用能力（Agent Loop、模型适配、工具执行、会话与存储等），
+不包含任何特定业务。应用侧仍负责：
 
-- HTTP、WebSocket 或 SSE API；
+- HTTP、WebSocket 或 SSE 等 API 接入；
 - 身份认证、业务授权和密钥读取；
 - 业务提示词、业务工具和业务数据模型；
-- 浏览器与 Cesium Gateway 等前端通信；
+- 前端通信与外部系统集成；
 - 部署编排、监控后端和数据库运维。
 
-新 Agent 直接依赖 `agent_core`。现有 Vanilla 应用中的兼容模块可以继续导出 Core API，
-但不要在 Core 中引入 Cesium 或低空业务依赖。
+新 Agent 直接依赖 `agent_core`。Core 不感知、也不依赖任何具体业务域。
 
 ## 开发
 

@@ -95,7 +95,7 @@ flowchart TB
 
 - `protocol` 只定义跨模块传递的数据结构；
 - `ports` 定义依赖接口及接口使用的值对象，具体数据库实现放在 `storage`，禁止反向依赖；
-- `runtime` 负责一次 Run 和 Agent Loop，不包含 Cesium、航线等业务判断；
+- `runtime` 负责一次 Run 和 Agent Loop，不包含任何业务判断；
 - `skills` 负责加载和激活 Skill，应用显式提供本地 Function 和 MCP 客户端绑定；
 - `tools` 统一调度本地函数和 MCP 工具，模型只看到统一的 Tool Schema；
 - `middleware` 承载可组合的横切能力，例如审批、压缩、安全和可观测性；
@@ -231,69 +231,43 @@ sequenceDiagram
     UI-->>User: 展示结果
 ```
 
-## 4. 当前项目接入拓扑
+## 4. 应用接入示例
 
 ```mermaid
 flowchart LR
-    WEB["web-app-react<br/>Agent / 模型 / MCP 切换"]
-    MCPSETTINGS["浏览器 MCP 设置<br/>localStorage 持久化<br/>新增 / 启停 / 测试 / 重连"]
+    WEB["Web / CLI / ACP Client"]
+    SETTINGS["应用设置<br/>模型 / Skill / MCP 配置"]
 
-    subgraph LANGGRAPH["my-cesium-agent :2024"]
-        LGAPI["应用 API"]
-        LGFLOW["LangGraph 业务工作流"]
-        LGACP["agent-core ACP 适配"]
-        LGSKILL["agent-core Skills<br/>LangChain StructuredTool 适配"]
-        LGMCP["Cesium MCP Client"]
+    subgraph AGENT["应用 Agent"]
+        API["应用 API"]
+        BUSINESS["业务编排"]
+        CORE["agent-core<br/>Runtime / ReAct / Model / Skills / Tools<br/>Memory / Checkpoint / HITL / ACP"]
+        MCP["MCP Client"]
     end
 
-    subgraph VANILLA["my-cesium-agent-vanilla :2025"]
-        VAPI["应用 API"]
-        VBUSINESS["低空业务编排"]
-        VCORE["agent-core<br/>Runtime / ReAct / Model / Skills / Tools<br/>Memory / Checkpoint / HITL / ACP"]
-        VMCP["agent-core MCP Client"]
-    end
+    GW["MCP Server"]
+    VIEWER["前端界面"]
+    BUSINESSAPI["业务服务"]
 
-    GW1["Cesium MCP Gateway :3010"]
-    GW2["Cesium MCP Gateway :3011"]
-    CUSTOMGW["自定义 Cesium MCP 服务"]
-    VIEWER["CesiumJS Viewer"]
-    BUSINESSAPI["低空业务服务"]
-    SHAREDSKILLS["共享 Skill 包<br/>skill.json + SKILL.md"]
-
-    MCPSETTINGS --> WEB
+    SETTINGS --> WEB
     WEB --> VIEWER
-    WEB -->|选择 LangGraph Agent| LGAPI
-    WEB -->|选择 Vanilla Agent| VAPI
-    WEB -->|WebSocket / SSE| GW1
-    WEB -->|WebSocket / SSE| GW2
-    WEB -->|WebSocket / SSE| CUSTOMGW
+    WEB -->|HTTP / SSE / WebSocket| API
+    WEB -->|WebSocket / SSE| GW
 
-    LGAPI --> LGFLOW
-    LGAPI --> LGACP
-    LGFLOW --> LGSKILL
-    SHAREDSKILLS --> LGSKILL
-    LGSKILL --> LGMCP
-    LGFLOW --> LGMCP
-    LGFLOW --> BUSINESSAPI
-    LGMCP --> GW1
+    API --> BUSINESS
+    API --> CORE
+    BUSINESS --> CORE
+    CORE --> MCP
+    BUSINESS --> BUSINESSAPI
+    MCP --> GW
 
-    VAPI --> VBUSINESS
-    VAPI --> VCORE
-    VBUSINESS --> VCORE
-    SHAREDSKILLS --> VCORE
-    VCORE --> VMCP
-    VBUSINESS --> BUSINESSAPI
-    VMCP --> GW2
-
-    GW1 --> VIEWER
-    GW2 --> VIEWER
-    CUSTOMGW --> VIEWER
+    GW --> VIEWER
 ```
 
-当前 `my-cesium-agent-vanilla` 直接使用 Core 加载 Skill 并注册到手写工具执行器；
-`my-cesium-agent` 仍以 LangGraph 工作流为主，通过应用适配器把 Core Skill 转换成 LangChain
-`StructuredTool`。两者读取同一套共享 Skill 清单和指令，但分别注入自己的 Function 与 MCP 客户端，
-并分别运行 Agent API 和 Cesium MCP Gateway，避免进程与端口冲突。
+应用 Agent 直接使用 Core 加载 Skill、注册工具、运行 Agent Loop；
+业务层负责提示词、业务工具和业务数据，通过应用适配器把 Core 能力接入自己的协议。
+两者读取同一套共享 Skill 清单和指令，但分别注入自己的 Function 与 MCP 客户端，
+并分别运行应用 API 和 MCP Server，避免进程与端口冲突。
 
 ## 5. 架构图维护待办
 
@@ -306,8 +280,8 @@ flowchart LR
 
 | 日期 | 代码基线 | 架构同步内容 |
 | --- | --- | --- |
-| 2026-09-26 | `08a5fa1` | 建立 Core 内部架构、应用调用关系、工具调用时序和双 Agent 接入拓扑。 |
+| 2026-09-26 | `08a5fa1` | 建立 Core 内部架构、应用调用关系、工具调用时序和应用接入拓扑。 |
 | 2026-09-26 | 本次提交 | 新增 SkillLoader、SkillRegistry、SkillSpec 和 SkillActivation，并同步应用绑定关系。 |
-| 2026-09-26 | 双 Agent Skill 接入 | 两个 Agent 共享 Skill 包，分别接入手写工具执行器和 LangChain StructuredTool。 |
-| 2026-09-26 | Web MCP 动态配置 | Web 端可持久化、测试并重连内置或自定义 Cesium MCP 服务；同步浏览器与 Gateway 的连接关系。 |
+| 2026-09-26 | 应用 Skill 接入 | 应用 Agent 共享 Skill 包，分别接入手写工具执行器和 LangChain StructuredTool。 |
+| 2026-09-26 | Web MCP 动态配置 | Web 端可持久化、测试并重连内置或自定义 MCP 服务；同步浏览器与 Gateway 的连接关系。 |
 | 2026-09-26 | Core 边界治理 | 模型选择值对象和唯一存储端口收口到 `ports`；`storage` 仅保留实现，并修复审批持久化与中间件导入环。 |
