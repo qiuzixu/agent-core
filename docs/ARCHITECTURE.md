@@ -241,6 +241,7 @@ flowchart LR
         LGAPI["应用 API"]
         LGFLOW["LangGraph 业务工作流"]
         LGACP["agent-core ACP 适配"]
+        LGSKILL["agent-core Skills<br/>LangChain StructuredTool 适配"]
         LGMCP["Cesium MCP Client"]
     end
 
@@ -255,12 +256,16 @@ flowchart LR
     GW2["Cesium MCP Gateway :3011"]
     VIEWER["CesiumJS Viewer"]
     BUSINESSAPI["低空业务服务"]
+    SHAREDSKILLS["共享 Skill 包<br/>skill.json + SKILL.md"]
 
     WEB -->|选择 LangGraph Agent| LGAPI
     WEB -->|选择 Vanilla Agent| VAPI
 
     LGAPI --> LGFLOW
     LGAPI --> LGACP
+    LGFLOW --> LGSKILL
+    SHAREDSKILLS --> LGSKILL
+    LGSKILL --> LGMCP
     LGFLOW --> LGMCP
     LGFLOW --> BUSINESSAPI
     LGMCP --> GW1
@@ -268,6 +273,7 @@ flowchart LR
     VAPI --> VBUSINESS
     VAPI --> VCORE
     VBUSINESS --> VCORE
+    SHAREDSKILLS --> VCORE
     VCORE --> VMCP
     VBUSINESS --> BUSINESSAPI
     VMCP --> GW2
@@ -276,9 +282,10 @@ flowchart LR
     GW2 --> VIEWER
 ```
 
-当前 `my-cesium-agent-vanilla` 深度复用 Agent Core；`my-cesium-agent` 仍以 LangGraph
-工作流为主，目前主要复用 Core 的 ACP 协议能力。两者共享前端交互契约，但分别运行自己的 Agent
-API 和 Cesium MCP Gateway，避免进程与端口冲突。
+当前 `my-cesium-agent-vanilla` 直接使用 Core 加载 Skill 并注册到手写工具执行器；
+`my-cesium-agent` 仍以 LangGraph 工作流为主，通过应用适配器把 Core Skill 转换成 LangChain
+`StructuredTool`。两者读取同一套共享 Skill 清单和指令，但分别注入自己的 Function 与 MCP 客户端，
+并分别运行 Agent API 和 Cesium MCP Gateway，避免进程与端口冲突。
 
 ## 5. 架构图维护待办
 
@@ -293,3 +300,4 @@ API 和 Cesium MCP Gateway，避免进程与端口冲突。
 | --- | --- | --- |
 | 2026-09-26 | `08a5fa1` | 建立 Core 内部架构、应用调用关系、工具调用时序和双 Agent 接入拓扑。 |
 | 2026-09-26 | 本次提交 | 新增 SkillLoader、SkillRegistry、SkillSpec 和 SkillActivation，并同步应用绑定关系。 |
+| 2026-09-26 | 双 Agent Skill 接入 | 两个 Agent 共享 Skill 包，分别接入手写工具执行器和 LangChain StructuredTool。 |
