@@ -12,9 +12,10 @@ import copy
 import json
 import sqlite3
 from abc import ABC, abstractmethod
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Generator
+from typing import Any
 
 from agent_core.protocol.runtime import (
     ApprovalRecord,
@@ -22,98 +23,91 @@ from agent_core.protocol.runtime import (
     RunEvent,
 )
 
-#————————————————————————————————————#
+
+# ————————————————————————————————————#
 # 运行时并发错误
-#————————————————————————————————————#
+# ————————————————————————————————————#
 class RuntimeConcurrencyError(RuntimeError):
     """运行状态版本冲突，调用方应重新加载后再决定是否重试。"""
 
-#————————————————————————————————————#
+
+# ————————————————————————————————————#
 # 运行时存储接口
-#————————————————————————————————————#
+# ————————————————————————————————————#
 class RuntimeStore(ABC):
     """运行状态、事件和审批记录的持久化抽象。"""
 
-
-    #————————————————————————————————————#
+    # ————————————————————————————————————#
     # 运行状态存储
-    #————————————————————————————————————#
+    # ————————————————————————————————————#
     @abstractmethod
-    async def save_run(self, context: RunContext) -> None:
-        ...
+    async def save_run(self, context: RunContext) -> None: ...
 
-    #————————————————————————————————————#
+    # ————————————————————————————————————#
     # 运行事件查询
-    #————————————————————————————————————#
+    # ————————————————————————————————————#
     @abstractmethod
     async def find_run_by_idempotency(
         self, tenant_id: str | None, user_id: str | None, idempotency_key: str
-    ) -> RunContext | None:
-        ...
+    ) -> RunContext | None: ...
 
-    #————————————————————————————————————#
+    # ————————————————————————————————————#
     # 运行状态查询
-    #————————————————————————————————————#
+    # ————————————————————————————————————#
     @abstractmethod
-    async def mark_stale_runs(self) -> list[RunContext]:
-        ...
+    async def mark_stale_runs(self) -> list[RunContext]: ...
 
-    #————————————————————————————————————#
+    # ————————————————————————————————————#
     # 运行状态查询
-    #————————————————————————————————————#
+    # ————————————————————————————————————#
     @abstractmethod
-    async def save_thread_owner(self, thread_id: str, user_id: str, tenant_id: str) -> None:
-        ...
+    async def save_thread_owner(self, thread_id: str, user_id: str, tenant_id: str) -> None: ...
 
-    #————————————————————————————————————#
+    # ————————————————————————————————————#
     # 运行状态查询
-    #————————————————————————————————————#
+    # ————————————————————————————————————#
     @abstractmethod
-    async def get_thread_owner(self, thread_id: str) -> tuple[str, str] | None:
-        ...
+    async def get_thread_owner(self, thread_id: str) -> tuple[str, str] | None: ...
 
-    #————————————————————————————————————#
+    # ————————————————————————————————————#
     # 运行状态加载
-    #————————————————————————————————————#
+    # ————————————————————————————————————#
     @abstractmethod
-    async def load_run(self, thread_id: str, run_id: str) -> RunContext | None:
-        ...
+    async def load_run(self, thread_id: str, run_id: str) -> RunContext | None: ...
 
     @abstractmethod
-    async def list_runs(self, thread_id: str) -> list[RunContext]:
-        ...
+    async def list_runs(self, thread_id: str) -> list[RunContext]: ...
 
     @abstractmethod
-    async def save_approval(self, approval: ApprovalRecord) -> None:
-        ...
+    async def save_approval(self, approval: ApprovalRecord) -> None: ...
 
     @abstractmethod
-    async def load_approval(self, approval_id: str) -> ApprovalRecord | None:
-        ...
+    async def load_approval(self, approval_id: str) -> ApprovalRecord | None: ...
 
-    #————————————————————————————————————#
+    # ————————————————————————————————————#
     # 运行审批记录加载
-    #————————————————————————————————————#
+    # ————————————————————————————————————#
+
+
 def _approval_from_dict(value: dict[str, Any] | None) -> ApprovalRecord | None:
     if not value:
         return None
     arguments = value.get("arguments") or {}
-    if isinstance(arguments, str): # asyncpg 默认把 JSONB 返回为字符串，统一转换后再重建领域对象。
-        arguments = json.loads(arguments) if arguments else {} # 确保 arguments 是字典类型
+    if isinstance(arguments, str):  # asyncpg 默认把 JSONB 返回为字符串，统一转换后再重建领域对象。
+        arguments = json.loads(arguments) if arguments else {}  # 确保 arguments 是字典类型
     return ApprovalRecord(
-        approval_id=str(value.get("approval_id", "")),# 审批记录 ID
-        thread_id=str(value.get("thread_id", "")),# 线程 ID
-        run_id=str(value.get("run_id", "")),# 运行 ID
-        action=str(value.get("action", "")),# 审批操作
-        arguments=dict(arguments),# 审批参数
-        user_id=value.get("user_id"),# 用户 ID
-        tenant_id=value.get("tenant_id"),# 租户 ID
-        status=value.get("status", "pending"),# 审批状态
-        reason=value.get("reason"),# 审批原因
-        created_at=str(value.get("created_at", "")),# 创建时间
-        expires_at=value.get("expires_at"),# 过期时间
+        approval_id=str(value.get("approval_id", "")),  # 审批记录 ID
+        thread_id=str(value.get("thread_id", "")),  # 线程 ID
+        run_id=str(value.get("run_id", "")),  # 运行 ID
+        action=str(value.get("action", "")),  # 审批操作
+        arguments=dict(arguments),  # 审批参数
+        user_id=value.get("user_id"),  # 用户 ID
+        tenant_id=value.get("tenant_id"),  # 租户 ID
+        status=value.get("status", "pending"),  # 审批状态
+        reason=value.get("reason"),  # 审批原因
+        created_at=str(value.get("created_at", "")),  # 创建时间
+        expires_at=value.get("expires_at"),  # 过期时间
     )
-
 
 
 # ──────────────────────────────────────────────
@@ -201,7 +195,7 @@ class MemoryRuntimeStore(RuntimeStore):
 
     async def mark_stale_runs(self) -> list[RunContext]:
         stale: list[RunContext] = []
-        for key, value in list(self._runs.items()):
+        for value in list(self._runs.values()):
             if value.get("status") not in {"queued", "running"}:
                 continue
             context = _context_from_dict(value)
@@ -226,6 +220,7 @@ class MemoryRuntimeStore(RuntimeStore):
 
     async def load_approval(self, approval_id: str) -> ApprovalRecord | None:
         return _approval_from_dict(copy.deepcopy(self._approvals.get(approval_id)))
+
 
 # ──────────────────────────────────────────────
 # 3. SQLite 后端（开发环境）
@@ -303,7 +298,7 @@ class SqliteRuntimeStore(RuntimeStore):
         )
 
     @contextmanager
-    def _connect(self) -> Generator[sqlite3.Connection, None, None]:
+    def _connect(self) -> Generator[sqlite3.Connection]:
         conn = sqlite3.connect(self._db_path)
         try:
             yield conn
@@ -376,9 +371,21 @@ class SqliteRuntimeStore(RuntimeStore):
             return None
         # 使用固定列名，避免依赖 sqlite Row 配置。
         keys = [
-            "thread_id", "run_id", "user_id", "tenant_id", "status", "version",
-            "idempotency_key", "iteration", "tool_calls_used", "pending_approval",
-            "pending_clarification", "state", "metadata", "checkpoint", "events",
+            "thread_id",
+            "run_id",
+            "user_id",
+            "tenant_id",
+            "status",
+            "version",
+            "idempotency_key",
+            "iteration",
+            "tool_calls_used",
+            "pending_approval",
+            "pending_clarification",
+            "state",
+            "metadata",
+            "checkpoint",
+            "events",
         ]
         value = dict(zip(keys, row, strict=True))
         for key in ("pending_approval", "pending_clarification", "state", "metadata", "checkpoint", "events"):
@@ -448,7 +455,8 @@ class SqliteRuntimeStore(RuntimeStore):
         with self._connect() as conn:
             conn.execute(
                 """INSERT INTO agent_approvals
-                (approval_id, thread_id, run_id, user_id, tenant_id, action, arguments, status, reason, created_at, expires_at)
+                (approval_id, thread_id, run_id, user_id, tenant_id, action,
+                 arguments, status, reason, created_at, expires_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(approval_id) DO UPDATE SET status=excluded.status, reason=excluded.reason""",
                 (
@@ -469,18 +477,35 @@ class SqliteRuntimeStore(RuntimeStore):
     async def load_approval(self, approval_id: str) -> ApprovalRecord | None:
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT approval_id, thread_id, run_id, user_id, tenant_id, action, arguments, status, reason, created_at, expires_at FROM agent_approvals WHERE approval_id = ?",
+                """SELECT approval_id, thread_id, run_id, user_id, tenant_id,
+                action, arguments, status, reason, created_at, expires_at
+                FROM agent_approvals WHERE approval_id = ?""",
                 (approval_id,),
             ).fetchone()
         if row is None:
             return None
         return _approval_from_dict(
-            dict(zip(
-                ["approval_id", "thread_id", "run_id", "user_id", "tenant_id", "action", "arguments", "status", "reason", "created_at", "expires_at"],
-                row,
-                strict=True,
-            ))
+            dict(
+                zip(
+                    [
+                        "approval_id",
+                        "thread_id",
+                        "run_id",
+                        "user_id",
+                        "tenant_id",
+                        "action",
+                        "arguments",
+                        "status",
+                        "reason",
+                        "created_at",
+                        "expires_at",
+                    ],
+                    row,
+                    strict=True,
+                )
+            )
         )
+
 
 # ──────────────────────────────────────────────
 # 4. PostgreSQL 后端（生产环境）
@@ -571,12 +596,9 @@ class PostgresRuntimeStore(RuntimeStore):
                         context.idempotency_key,
                     )
                     if duplicate and (
-                        duplicate["thread_id"] != context.thread_id
-                        or duplicate["run_id"] != context.run_id
+                        duplicate["thread_id"] != context.thread_id or duplicate["run_id"] != context.run_id
                     ):
-                        raise RuntimeConcurrencyError(
-                            f"幂等键已被 run {duplicate['run_id']} 使用"
-                        )
+                        raise RuntimeConcurrencyError(f"幂等键已被 run {duplicate['run_id']} 使用")
 
                 context.version = (stored_version or 0) + 1
                 value = context.to_dict()
@@ -585,7 +607,10 @@ class PostgresRuntimeStore(RuntimeStore):
                     (thread_id, run_id, user_id, tenant_id, status, version, idempotency_key,
                      iteration, tool_calls_used, state, metadata, checkpoint,
                      pending_approval, pending_clarification, events)
-                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,$12::jsonb,$13::jsonb,$14::jsonb,$15::jsonb)
+                    VALUES (
+                      $1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,
+                      $12::jsonb,$13::jsonb,$14::jsonb,$15::jsonb
+                    )
                     ON CONFLICT (thread_id, run_id) DO UPDATE SET
                       user_id=$3, tenant_id=$4, status=$5, version=$6,
                       idempotency_key=$7, iteration=$8, tool_calls_used=$9,
@@ -593,8 +618,15 @@ class PostgresRuntimeStore(RuntimeStore):
                       pending_approval=$13::jsonb, pending_clarification=$14::jsonb,
                       events=$15::jsonb, updated_at=NOW()
                     WHERE agent_runs.version=$16""",
-                    context.thread_id, context.run_id, context.user_id, context.tenant_id, context.status,
-                    context.version, context.idempotency_key, context.iteration, context.tool_calls_used,
+                    context.thread_id,
+                    context.run_id,
+                    context.user_id,
+                    context.tenant_id,
+                    context.status,
+                    context.version,
+                    context.idempotency_key,
+                    context.iteration,
+                    context.tool_calls_used,
                     json.dumps(value["state"], ensure_ascii=False),
                     json.dumps(value["metadata"], ensure_ascii=False),
                     json.dumps(value["checkpoint"], ensure_ascii=False),
@@ -612,7 +644,9 @@ class PostgresRuntimeStore(RuntimeStore):
     async def load_run(self, thread_id: str, run_id: str) -> RunContext | None:
         self._check()
         async with self._pool.acquire() as conn:
-            row = await conn.fetchrow("SELECT * FROM agent_runs WHERE thread_id=$1 AND run_id=$2", thread_id, run_id)
+            row = await conn.fetchrow(
+                "SELECT * FROM agent_runs WHERE thread_id=$1 AND run_id=$2", thread_id, run_id
+            )
         if row is None:
             return None
         return _context_from_dict(dict(row))
@@ -620,7 +654,9 @@ class PostgresRuntimeStore(RuntimeStore):
     async def list_runs(self, thread_id: str) -> list[RunContext]:
         self._check()
         async with self._pool.acquire() as conn:
-            rows = await conn.fetch("SELECT * FROM agent_runs WHERE thread_id=$1 ORDER BY updated_at DESC", thread_id)
+            rows = await conn.fetch(
+                "SELECT * FROM agent_runs WHERE thread_id=$1 ORDER BY updated_at DESC", thread_id
+            )
         return [_context_from_dict(dict(row)) for row in rows]
 
     async def find_run_by_idempotency(
@@ -632,7 +668,9 @@ class PostgresRuntimeStore(RuntimeStore):
                 "SELECT thread_id, run_id FROM agent_runs "
                 "WHERE tenant_id IS NOT DISTINCT FROM $1 AND user_id IS NOT DISTINCT FROM $2 "
                 "AND idempotency_key=$3 LIMIT 1",
-                tenant_id, user_id, idempotency_key,
+                tenant_id,
+                user_id,
+                idempotency_key,
             )
         return await self.load_run(row["thread_id"], row["run_id"]) if row else None
 
@@ -660,7 +698,9 @@ class PostgresRuntimeStore(RuntimeStore):
                 """INSERT INTO agent_threads(thread_id,user_id,tenant_id) VALUES ($1,$2,$3)
                 ON CONFLICT(thread_id) DO UPDATE SET user_id=agent_threads.user_id,
                 tenant_id=agent_threads.tenant_id""",
-                thread_id, user_id, tenant_id,
+                thread_id,
+                user_id,
+                tenant_id,
             )
             owner = await conn.fetchrow(
                 "SELECT user_id, tenant_id FROM agent_threads WHERE thread_id=$1", thread_id
@@ -680,12 +720,23 @@ class PostgresRuntimeStore(RuntimeStore):
         self._check()
         async with self._pool.acquire() as conn:
             await conn.execute(
-                """INSERT INTO agent_approvals (approval_id,thread_id,run_id,user_id,tenant_id,action,arguments,status,reason,created_at,expires_at)
+                """INSERT INTO agent_approvals (
+                    approval_id,thread_id,run_id,user_id,tenant_id,action,
+                    arguments,status,reason,created_at,expires_at
+                )
                 VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,$11)
                 ON CONFLICT (approval_id) DO UPDATE SET status=$8, reason=$9""",
-                approval.approval_id, approval.thread_id, approval.run_id, approval.user_id,
-                approval.tenant_id, approval.action, json.dumps(approval.arguments, ensure_ascii=False),
-                approval.status, approval.reason, approval.created_at, approval.expires_at,
+                approval.approval_id,
+                approval.thread_id,
+                approval.run_id,
+                approval.user_id,
+                approval.tenant_id,
+                approval.action,
+                json.dumps(approval.arguments, ensure_ascii=False),
+                approval.status,
+                approval.reason,
+                approval.created_at,
+                approval.expires_at,
             )
 
     async def load_approval(self, approval_id: str) -> ApprovalRecord | None:

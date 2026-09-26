@@ -30,12 +30,12 @@ class AcpUpdate:
     payload: JsonObject = field(default_factory=dict)
 
     @classmethod
-    def text(cls, text: str) -> "AcpUpdate":
+    def text(cls, text: str) -> AcpUpdate:
         """构造可显示给用户的 Agent 文本片段。"""
         return cls("text", {"text": text})
 
     @classmethod
-    def thought(cls, text: str) -> "AcpUpdate":
+    def thought(cls, text: str) -> AcpUpdate:
         """构造可选展示的运行过程说明。"""
         return cls("thought", {"text": text})
 

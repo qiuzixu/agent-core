@@ -61,9 +61,7 @@ class ContextStore:
             return
         self._path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self._path.with_suffix(self._path.suffix + ".tmp")
-        tmp.write_text(
-            json.dumps(self._data, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        tmp.write_text(json.dumps(self._data, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(self._path)
 
     # 检查上下文数据访问权限
@@ -77,8 +75,10 @@ class ContextStore:
         owner = data.get("_access")
         if self._strict_access and data and not isinstance(owner, dict):
             raise PermissionError("该 thread 的上下文尚未绑定所有者")
-        if access and isinstance(owner, dict) and not access.can_access(
-            owner.get("user_id"), owner.get("tenant_id")
+        if (
+            access
+            and isinstance(owner, dict)
+            and not access.can_access(owner.get("user_id"), owner.get("tenant_id"))
         ):
             raise PermissionError("无权访问该 thread 的上下文")
 
@@ -127,9 +127,7 @@ class ContextStore:
             await self._flush()
 
     # 统一端口名称，同时保留业务层已有的 get/update/clear 调用。
-    async def get_context(
-        self, thread_id: str, *, access: AccessContext | None = None
-    ) -> dict[str, Any]:
+    async def get_context(self, thread_id: str, *, access: AccessContext | None = None) -> dict[str, Any]:
         return await self.get(thread_id, access=access)
 
     async def update_context(
@@ -141,9 +139,7 @@ class ContextStore:
     ) -> dict[str, Any]:
         return await self.update(thread_id, values, access=access)
 
-    async def clear_context(
-        self, thread_id: str, *, access: AccessContext | None = None
-    ) -> None:
+    async def clear_context(self, thread_id: str, *, access: AccessContext | None = None) -> None:
         await self.clear(thread_id, access=access)
 
 
@@ -182,7 +178,7 @@ class SqliteContextStore(ContextStore):
 
     # 连接 SQLite 数据库
     @contextmanager
-    def _connect(self) -> Generator[sqlite3.Connection, None, None]:
+    def _connect(self) -> Generator[sqlite3.Connection]:
         """打开一个自动提交或回滚的 SQLite 连接。"""
         conn = sqlite3.connect(self._db_path)
         try:
@@ -202,9 +198,7 @@ class SqliteContextStore(ContextStore):
         access: AccessContext | None = None,
     ) -> dict[str, Any]:
         with self._connect() as conn:
-            row = conn.execute(
-                "SELECT data FROM agent_context WHERE thread_id = ?", (thread_id,)
-            ).fetchone()
+            row = conn.execute("SELECT data FROM agent_context WHERE thread_id = ?", (thread_id,)).fetchone()
         value = json.loads(row[0]) if row else {}
         self._check_scope(value, access)
         return value
@@ -296,11 +290,7 @@ class PostgresContextStore(ContextStore):
         if row is None:
             self._check_scope({}, access)
             return {}
-        value = (
-            json.loads(row["data"])
-            if isinstance(row["data"], str)
-            else dict(row["data"])
-        )
+        value = json.loads(row["data"]) if isinstance(row["data"], str) else dict(row["data"])
         self._check_scope(value, access)
         return value
 
@@ -325,11 +315,7 @@ class PostgresContextStore(ContextStore):
                 thread_id,
                 json.dumps(values, ensure_ascii=False),
             )
-        return (
-            json.loads(row["data"])
-            if isinstance(row["data"], str)
-            else dict(row["data"])
-        )
+        return json.loads(row["data"]) if isinstance(row["data"], str) else dict(row["data"])
 
     async def clear(
         self,

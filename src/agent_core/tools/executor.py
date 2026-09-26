@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from collections.abc import Awaitable
-from typing import Any, Callable
+from typing import Any
 
-from agent_core.errors import ToolExecutionError
 from agent_core.protocol.runtime import ToolResult
 
 logger = logging.getLogger(__name__)
@@ -65,9 +64,7 @@ class ToolRegistry:
         self._specs[name] = ToolSpec(
             name=name,
             description=description,
-            parameters=parameters or {
-                "type": "object", "properties": {}, "required": []
-            },
+            parameters=parameters or {"type": "object", "properties": {}, "required": []},
             risk_level=risk_level,
             requires_approval=requires_approval,
             timeout_seconds=timeout_seconds,
@@ -101,14 +98,16 @@ class ToolRegistry:
         """
         definitions = []
         for name, spec in self._specs.items():
-            definitions.append({
-                "type": "function",
-                "function": {
-                    "name": name,
-                    "description": spec.description,
-                    "parameters": spec.parameters,
-                },
-            })
+            definitions.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "description": spec.description,
+                        "parameters": spec.parameters,
+                    },
+                }
+            )
         return definitions
 
 
@@ -212,7 +211,7 @@ class ToolExecutor:
 
             return ToolResult(tool_name=tool_name, success=True, value=result)
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning("Tool %r timed out", tool_name)
             return ToolResult(
                 tool_name=tool_name,
@@ -245,13 +244,9 @@ class ToolExecutor:
             expected = definition.get("type")
             if expected == "string" and not isinstance(value, str):
                 return f"参数 {name} 必须是字符串"
-            if expected == "number" and (
-                not isinstance(value, (int, float)) or isinstance(value, bool)
-            ):
+            if expected == "number" and (not isinstance(value, (int, float)) or isinstance(value, bool)):
                 return f"参数 {name} 必须是数字"
-            if expected == "integer" and (
-                not isinstance(value, int) or isinstance(value, bool)
-            ):
+            if expected == "integer" and (not isinstance(value, int) or isinstance(value, bool)):
                 return f"参数 {name} 必须是整数"
         return None
 
@@ -267,8 +262,5 @@ class ToolExecutor:
         Returns:
             工具执行结果列表（与 tool_calls 顺序对应）。
         """
-        tasks = [
-            self.execute(tc["name"], tc.get("args", {}))
-            for tc in tool_calls
-        ]
+        tasks = [self.execute(tc["name"], tc.get("args", {})) for tc in tool_calls]
         return await asyncio.gather(*tasks)

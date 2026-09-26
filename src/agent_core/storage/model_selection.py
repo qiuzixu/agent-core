@@ -9,66 +9,21 @@ from __future__ import annotations
 import asyncio
 import copy
 import sqlite3
+from collections.abc import Generator
 from contextlib import contextmanager
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal, Protocol, Generator
+from typing import Any
 
-
-ModelSelectionScope = Literal["user", "tenant"]
+from agent_core.ports.model_selection import (
+    ModelSelection,
+    ModelSelectionScope,
+    ModelSelectionStore,
+)
 
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
-
-
-@dataclass(frozen=True)
-class ModelSelection:
-    """一个已保存的模型选择。"""
-
-    provider: str
-    model: str
-    scope: ModelSelectionScope
-    user_id: str | None = None
-    tenant_id: str | None = None
-    version: int = 1
-    updated_at: str = ""
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "provider": self.provider,
-            "model": self.model,
-            "scope": self.scope,
-            "user_id": self.user_id,
-            "tenant_id": self.tenant_id,
-            "version": self.version,
-            "updated_at": self.updated_at,
-        }
-
-
-class ModelSelectionStore(Protocol):
-    """模型选择持久化端口。"""
-
-    async def resolve(self, *, user_id: str | None, tenant_id: str | None) -> ModelSelection | None:
-        """按用户优先、租户其次的顺序解析选择。"""
-        ...
-
-    async def save(
-        self,
-        provider: str,
-        model: str,
-        *,
-        scope: ModelSelectionScope,
-        user_id: str | None,
-        tenant_id: str | None,
-    ) -> ModelSelection:
-        ...
-
-    async def clear(
-        self, *, scope: ModelSelectionScope, user_id: str | None, tenant_id: str | None
-    ) -> None:
-        ...
 
 
 def _validate_scope(scope: ModelSelectionScope, user_id: str | None, tenant_id: str | None) -> None:
@@ -98,17 +53,26 @@ class MemoryModelSelectionStore:
             return None
 
     async def save(
-        self, provider: str, model: str, *, scope: ModelSelectionScope,
-        user_id: str | None, tenant_id: str | None,
+        self,
+        provider: str,
+        model: str,
+        *,
+        scope: ModelSelectionScope,
+        user_id: str | None,
+        tenant_id: str | None,
     ) -> ModelSelection:
         _validate_scope(scope, user_id, tenant_id)
         async with self._lock:
             key = (scope, user_id if scope == "user" else "", tenant_id or "")
             previous = self._data.get(key)
             value = ModelSelection(
-                provider=provider.strip().lower(), model=model.strip(), scope=scope,
-                user_id=user_id if scope == "user" else None, tenant_id=tenant_id,
-                version=(previous.version + 1) if previous else 1, updated_at=_now(),
+                provider=provider.strip().lower(),
+                model=model.strip(),
+                scope=scope,
+                user_id=user_id if scope == "user" else None,
+                tenant_id=tenant_id,
+                version=(previous.version + 1) if previous else 1,
+                updated_at=_now(),
             )
             self._data[key] = value
             return copy.deepcopy(value)
@@ -116,7 +80,7 @@ class MemoryModelSelectionStore:
     async def clear(self, *, scope: ModelSelectionScope, user_id: str | None, tenant_id: str | None) -> None:
         _validate_scope(scope, user_id, tenant_id)
         async with self._lock:
-            self._data.pop((scope, user_id if scope == "user" else None, tenant_id or ""), None)
+            self._data.pop((scope, user_id if scope == "user" else "", tenant_id or ""), None)
 
 
 class SqliteModelSelectionStore:
@@ -143,7 +107,7 @@ class SqliteModelSelectionStore:
             )
 
     @contextmanager
-    def _connect(self) -> Generator[sqlite3.Connection, None, None]:
+    def _connect(self) -> Generator[sqlite3.Connection]:
         conn = sqlite3.connect(self._db_path)
         try:
             yield conn
@@ -160,8 +124,13 @@ class SqliteModelSelectionStore:
             return None
         values = tuple(row)
         return ModelSelection(
-            provider=str(values[3]), model=str(values[4]), scope=str(values[0]),
-            user_id=values[1] or None, tenant_id=values[2], version=int(values[5]), updated_at=str(values[6]),
+            provider=str(values[3]),
+            model=str(values[4]),
+            scope=str(values[0]),
+            user_id=values[1] or None,
+            tenant_id=values[2],
+            version=int(values[5]),
+            updated_at=str(values[6]),
         )
 
     async def resolve(self, *, user_id: str | None, tenant_id: str | None) -> ModelSelection | None:
@@ -185,8 +154,13 @@ class SqliteModelSelectionStore:
         return None
 
     async def save(
-        self, provider: str, model: str, *, scope: ModelSelectionScope,
-        user_id: str | None, tenant_id: str | None,
+        self,
+        provider: str,
+        model: str,
+        *,
+        scope: ModelSelectionScope,
+        user_id: str | None,
+        tenant_id: str | None,
     ) -> ModelSelection:
         _validate_scope(scope, user_id, tenant_id)
         key_user = user_id if scope == "user" else ""
@@ -196,9 +170,13 @@ class SqliteModelSelectionStore:
                 (scope, key_user, tenant_id),
             ).fetchone()
             version = int(row[0]) + 1 if row else 1
-            value = ModelSelection(provider.strip().lower(), model.strip(), scope, key_user, tenant_id, version, _now())
+            value = ModelSelection(
+                provider.strip().lower(), model.strip(), scope, key_user, tenant_id, version, _now()
+            )
             conn.execute(
-                """INSERT INTO agent_model_selections(scope,user_id,tenant_id,provider,model,version,updated_at)
+                """INSERT INTO agent_model_selections(
+                    scope,user_id,tenant_id,provider,model,version,updated_at
+                )
                 VALUES (?,?,?,?,?,?,?)
                 ON CONFLICT(scope,user_id,tenant_id) DO UPDATE SET
                 provider=excluded.provider, model=excluded.model, version=excluded.version,
@@ -248,8 +226,12 @@ class PostgresModelSelectionStore:
     @staticmethod
     def _value(row: Any) -> ModelSelection:
         return ModelSelection(
-            provider=str(row["provider"]), model=str(row["model"]), scope=str(row["scope"]),
-            user_id=row["user_id"] or None, tenant_id=row["tenant_id"], version=int(row["version"]),
+            provider=str(row["provider"]),
+            model=str(row["model"]),
+            scope=str(row["scope"]),
+            user_id=row["user_id"] or None,
+            tenant_id=row["tenant_id"],
+            version=int(row["version"]),
             updated_at=str(row["updated_at"]),
         )
 
@@ -259,7 +241,8 @@ class PostgresModelSelectionStore:
             if user_id and tenant_id:
                 row = await conn.fetchrow(
                     "SELECT * FROM agent_model_selections WHERE scope='user' AND user_id=$1 AND tenant_id=$2",
-                    user_id, tenant_id,
+                    user_id,
+                    tenant_id,
                 )
                 if row:
                     return self._value(row)
@@ -272,39 +255,55 @@ class PostgresModelSelectionStore:
         return None
 
     async def save(
-        self, provider: str, model: str, *, scope: ModelSelectionScope,
-        user_id: str | None, tenant_id: str | None,
+        self,
+        provider: str,
+        model: str,
+        *,
+        scope: ModelSelectionScope,
+        user_id: str | None,
+        tenant_id: str | None,
     ) -> ModelSelection:
         _validate_scope(scope, user_id, tenant_id)
         self._check()
         key_user = user_id if scope == "user" else ""
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT version FROM agent_model_selections WHERE scope=$1 AND user_id IS NOT DISTINCT FROM $2 AND tenant_id=$3 FOR UPDATE",
-                scope, key_user, tenant_id,
+                """INSERT INTO agent_model_selections(
+                    scope,user_id,tenant_id,provider,model,version,updated_at
+                )
+                VALUES($1,$2,$3,$4,$5,1,NOW())
+                ON CONFLICT(scope,user_id,tenant_id) DO UPDATE SET
+                    provider=EXCLUDED.provider,
+                    model=EXCLUDED.model,
+                    version=agent_model_selections.version + 1,
+                    updated_at=NOW()
+                RETURNING scope,user_id,tenant_id,provider,model,version,updated_at""",
+                scope,
+                key_user,
+                tenant_id,
+                provider.strip().lower(),
+                model.strip(),
             )
-            version = int(row["version"]) + 1 if row else 1
-            value = ModelSelection(provider.strip().lower(), model.strip(), scope, key_user, tenant_id, version, _now())
-            await conn.execute(
-                """INSERT INTO agent_model_selections(scope,user_id,tenant_id,provider,model,version,updated_at)
-                VALUES($1,$2,$3,$4,$5,$6,NOW())
-                ON CONFLICT(scope,user_id,tenant_id) DO UPDATE SET provider=$4,model=$5,version=$6,updated_at=NOW()""",
-                scope, key_user, tenant_id, value.provider, value.model, value.version,
-            )
-            return value
+            return self._value(row)
 
     async def clear(self, *, scope: ModelSelectionScope, user_id: str | None, tenant_id: str | None) -> None:
         _validate_scope(scope, user_id, tenant_id)
         self._check()
         async with self._pool.acquire() as conn:
             await conn.execute(
-                "DELETE FROM agent_model_selections WHERE scope=$1 AND user_id IS NOT DISTINCT FROM $2 AND tenant_id=$3",
-                scope, user_id if scope == "user" else "", tenant_id,
+                """DELETE FROM agent_model_selections
+                WHERE scope=$1 AND user_id IS NOT DISTINCT FROM $2 AND tenant_id=$3""",
+                scope,
+                user_id if scope == "user" else "",
+                tenant_id,
             )
 
 
 def create_model_selection_store(
-    env: str = "development", *, sqlite_path: str = "./sessions.db", postgres_url: str | None = None,
+    env: str = "development",
+    *,
+    sqlite_path: str = "./sessions.db",
+    postgres_url: str | None = None,
 ) -> ModelSelectionStore:
     """按环境创建模型选择存储。"""
     normalized = env.lower()
@@ -318,6 +317,11 @@ def create_model_selection_store(
 
 
 __all__ = [
-    "MemoryModelSelectionStore", "ModelSelection", "ModelSelectionScope", "ModelSelectionStore",
-    "PostgresModelSelectionStore", "SqliteModelSelectionStore", "create_model_selection_store",
+    "MemoryModelSelectionStore",
+    "ModelSelection",
+    "ModelSelectionScope",
+    "ModelSelectionStore",
+    "PostgresModelSelectionStore",
+    "SqliteModelSelectionStore",
+    "create_model_selection_store",
 ]

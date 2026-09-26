@@ -50,6 +50,7 @@ logger = logging.getLogger(__name__)
 # 消息序列化 / 反序列化
 # ──────────────────────────────────────────────
 
+
 def _msg_to_row(msg: Message) -> tuple[str, str, str | None, str | None, str]:
     """Message → (role, content, name, tool_call_id, tool_calls_json)。"""
     return (
@@ -71,8 +72,11 @@ def _row_to_msg(row: tuple | dict) -> Message:
     """
     if isinstance(row, dict):
         role, content, name, tool_call_id, tool_calls_json = (
-            row["role"], row["content"], row.get("name"),
-            row.get("tool_call_id"), row.get("tool_calls", "[]"),
+            row["role"],
+            row["content"],
+            row.get("name"),
+            row.get("tool_call_id"),
+            row.get("tool_calls", "[]"),
         )
     else:
         # tuple: (role, content, name, tool_call_id, tool_calls)
@@ -98,13 +102,12 @@ def _row_to_msg(row: tuple | dict) -> Message:
 # 抽象接口
 # ──────────────────────────────────────────────
 
+
 class BaseSessionStore(ABC):
     """会话存储抽象基类。"""
 
     @abstractmethod
-    async def load(
-        self, thread_id: str, *, access: AccessContext | None = None
-    ) -> list[Message]:
+    async def load(self, thread_id: str, *, access: AccessContext | None = None) -> list[Message]:
         """加载指定 thread 的消息历史。"""
 
     @abstractmethod
@@ -128,9 +131,7 @@ class BaseSessionStore(ABC):
         """追加消息到指定 thread（比 save 更高效，不需要先 load）。"""
 
     @abstractmethod
-    async def delete(
-        self, thread_id: str, *, access: AccessContext | None = None
-    ) -> None:
+    async def delete(self, thread_id: str, *, access: AccessContext | None = None) -> None:
         """删除指定 thread 的所有消息。"""
 
     @abstractmethod
@@ -138,15 +139,11 @@ class BaseSessionStore(ABC):
         """列出所有 thread_id。"""
 
     @abstractmethod
-    async def count(
-        self, thread_id: str, *, access: AccessContext | None = None
-    ) -> int:
+    async def count(self, thread_id: str, *, access: AccessContext | None = None) -> int:
         """返回指定 thread 的消息数量。"""
 
     # 统一端口名称，同时保留早期实现中的短方法名。
-    async def load_messages(
-        self, thread_id: str, *, access: AccessContext | None = None
-    ) -> list[Message]:
+    async def load_messages(self, thread_id: str, *, access: AccessContext | None = None) -> list[Message]:
         return await self.load(thread_id, access=access)
 
     async def append_messages(
@@ -167,15 +164,14 @@ class BaseSessionStore(ABC):
     ) -> None:
         await self.save(thread_id, messages, access=access)
 
-    async def delete_thread(
-        self, thread_id: str, *, access: AccessContext | None = None
-    ) -> None:
+    async def delete_thread(self, thread_id: str, *, access: AccessContext | None = None) -> None:
         await self.delete(thread_id, access=access)
 
 
 # ──────────────────────────────────────────────
 # 1. 内存后端（测试用）
 # ──────────────────────────────────────────────
+
 
 class MemorySessionStore(BaseSessionStore):
     """进程内存，重启丢失。仅用于单元测试。"""
@@ -198,9 +194,7 @@ class MemorySessionStore(BaseSessionStore):
         if owner is not None and access is not None and not access.can_access(*owner):
             raise PermissionError("无权访问该 thread 的会话历史")
 
-    async def load(
-        self, thread_id: str, *, access: AccessContext | None = None
-    ) -> list[Message]:
+    async def load(self, thread_id: str, *, access: AccessContext | None = None) -> list[Message]:
         self._check(thread_id, access, claim=False)
         return list(self._data.get(thread_id, []))
 
@@ -224,9 +218,7 @@ class MemorySessionStore(BaseSessionStore):
         self._check(thread_id, access, claim=True)
         self._data.setdefault(thread_id, []).extend(messages)
 
-    async def delete(
-        self, thread_id: str, *, access: AccessContext | None = None
-    ) -> None:
+    async def delete(self, thread_id: str, *, access: AccessContext | None = None) -> None:
         self._check(thread_id, access, claim=False)
         self._data.pop(thread_id, None)
         self._owners.pop(thread_id, None)
@@ -239,13 +231,10 @@ class MemorySessionStore(BaseSessionStore):
         return [
             thread_id
             for thread_id in self._data
-            if (owner := self._owners.get(thread_id)) is not None
-            and access.can_access(*owner)
+            if (owner := self._owners.get(thread_id)) is not None and access.can_access(*owner)
         ]
 
-    async def count(
-        self, thread_id: str, *, access: AccessContext | None = None
-    ) -> int:
+    async def count(self, thread_id: str, *, access: AccessContext | None = None) -> int:
         self._check(thread_id, access, claim=False)
         return len(self._data.get(thread_id, []))
 
@@ -274,6 +263,7 @@ CREATE TABLE IF NOT EXISTS session_threads (
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 """
+
 
 # ──────────────────────────────────────────────
 # 3. SQLite 后端（开发环境）
@@ -308,12 +298,12 @@ class SqliteSessionStore(BaseSessionStore):
             conn.executescript(self.DDL)
 
     @contextmanager
-    def _connect(self) -> Generator[sqlite3.Connection, None, None]:
+    def _connect(self) -> Generator[sqlite3.Connection]:
         """获取 SQLite 连接（同步，自动提交/回滚）。"""
         conn = sqlite3.connect(self._db_path)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")   # WAL 模式，提升并发读性能
-        conn.execute("PRAGMA synchronous=NORMAL") # 平衡安全和性能
+        conn.execute("PRAGMA journal_mode=WAL")  # WAL 模式，提升并发读性能
+        conn.execute("PRAGMA synchronous=NORMAL")  # 平衡安全和性能
         try:
             yield conn
             conn.commit()
@@ -353,9 +343,7 @@ class SqliteSessionStore(BaseSessionStore):
         if row is not None and access is not None and not access.can_access(row[0], row[1]):
             raise PermissionError("无权访问该 thread 的会话历史")
 
-    async def load(
-        self, thread_id: str, *, access: AccessContext | None = None
-    ) -> list[Message]:
+    async def load(self, thread_id: str, *, access: AccessContext | None = None) -> list[Message]:
         with self._connect() as conn:
             self._check_access(conn, thread_id, access, claim=False)
             rows = conn.execute(
@@ -402,9 +390,7 @@ class SqliteSessionStore(BaseSessionStore):
             )
         logger.debug("SQLite append: thread=%r, +%d messages", thread_id, len(messages))
 
-    async def delete(
-        self, thread_id: str, *, access: AccessContext | None = None
-    ) -> None:
+    async def delete(self, thread_id: str, *, access: AccessContext | None = None) -> None:
         with self._connect() as conn:
             self._check_access(conn, thread_id, access, claim=False)
             conn.execute("DELETE FROM sessions WHERE thread_id = ?", (thread_id,))
@@ -416,9 +402,7 @@ class SqliteSessionStore(BaseSessionStore):
             raise PermissionError("该 SessionStore 要求提供 AccessContext")
         with self._connect() as conn:
             if access is None:
-                rows = conn.execute(
-                    "SELECT DISTINCT thread_id FROM sessions ORDER BY thread_id"
-                ).fetchall()
+                rows = conn.execute("SELECT DISTINCT thread_id FROM sessions ORDER BY thread_id").fetchall()
             elif access.is_admin:
                 rows = conn.execute(
                     "SELECT thread_id FROM session_threads WHERE tenant_id=? ORDER BY thread_id",
@@ -432,9 +416,7 @@ class SqliteSessionStore(BaseSessionStore):
                 ).fetchall()
         return [row["thread_id"] for row in rows]
 
-    async def count(
-        self, thread_id: str, *, access: AccessContext | None = None
-    ) -> int:
+    async def count(self, thread_id: str, *, access: AccessContext | None = None) -> int:
         with self._connect() as conn:
             self._check_access(conn, thread_id, access, claim=False)
             row = conn.execute(
@@ -451,6 +433,7 @@ class SqliteSessionStore(BaseSessionStore):
 # ──────────────────────────────────────────────
 # 3. PostgreSQL 后端（生产环境）
 # ──────────────────────────────────────────────
+
 
 class PostgresSessionStore(BaseSessionStore):
     """PostgreSQL 异步存储。
@@ -500,9 +483,7 @@ class PostgresSessionStore(BaseSessionStore):
         try:
             import asyncpg  # type: ignore[import-untyped]
         except ImportError as exc:
-            raise ImportError(
-                "PostgresSessionStore 需要 asyncpg，请执行：uv add asyncpg"
-            ) from exc
+            raise ImportError("PostgresSessionStore 需要 asyncpg，请执行：uv add asyncpg") from exc
 
         self._pool = await asyncpg.create_pool(self._dsn, min_size=2, max_size=10)
         async with self._pool.acquire() as conn:
@@ -516,9 +497,7 @@ class PostgresSessionStore(BaseSessionStore):
 
     def _check_pool(self) -> None:
         if self._pool is None:
-            raise RuntimeError(
-                "PostgresSessionStore 未初始化，请先调用 await store.initialize()"
-            )
+            raise RuntimeError("PostgresSessionStore 未初始化，请先调用 await store.initialize()")
 
     async def _check_access(
         self,
@@ -553,14 +532,10 @@ class PostgresSessionStore(BaseSessionStore):
             )
             if has_messages:
                 raise PermissionError("该 thread 的历史数据尚未绑定所有者")
-        if row is not None and access is not None and not access.can_access(
-            row["user_id"], row["tenant_id"]
-        ):
+        if row is not None and access is not None and not access.can_access(row["user_id"], row["tenant_id"]):
             raise PermissionError("无权访问该 thread 的会话历史")
 
-    async def load(
-        self, thread_id: str, *, access: AccessContext | None = None
-    ) -> list[Message]:
+    async def load(self, thread_id: str, *, access: AccessContext | None = None) -> list[Message]:
         self._check_pool()
         async with self._pool.acquire() as conn:
             await self._check_access(conn, thread_id, access, claim=False)
@@ -584,9 +559,7 @@ class PostgresSessionStore(BaseSessionStore):
         async with self._pool.acquire() as conn:
             async with conn.transaction():
                 await self._check_access(conn, thread_id, access, claim=True)
-                await conn.execute(
-                    "DELETE FROM sessions WHERE thread_id = $1", thread_id
-                )
+                await conn.execute("DELETE FROM sessions WHERE thread_id = $1", thread_id)
                 if messages:
                     await conn.executemany(
                         "INSERT INTO sessions "
@@ -614,9 +587,7 @@ class PostgresSessionStore(BaseSessionStore):
             )
         logger.debug("Postgres append: thread=%r, +%d messages", thread_id, len(messages))
 
-    async def delete(
-        self, thread_id: str, *, access: AccessContext | None = None
-    ) -> None:
+    async def delete(self, thread_id: str, *, access: AccessContext | None = None) -> None:
         self._check_pool()
         async with self._pool.acquire() as conn:
             async with conn.transaction():
@@ -630,9 +601,7 @@ class PostgresSessionStore(BaseSessionStore):
         self._check_pool()
         async with self._pool.acquire() as conn:
             if access is None:
-                rows = await conn.fetch(
-                    "SELECT DISTINCT thread_id FROM sessions ORDER BY thread_id"
-                )
+                rows = await conn.fetch("SELECT DISTINCT thread_id FROM sessions ORDER BY thread_id")
             elif access.is_admin:
                 rows = await conn.fetch(
                     "SELECT thread_id FROM session_threads WHERE tenant_id=$1 ORDER BY thread_id",
@@ -647,9 +616,7 @@ class PostgresSessionStore(BaseSessionStore):
                 )
         return [row["thread_id"] for row in rows]
 
-    async def count(
-        self, thread_id: str, *, access: AccessContext | None = None
-    ) -> int:
+    async def count(self, thread_id: str, *, access: AccessContext | None = None) -> int:
         self._check_pool()
         async with self._pool.acquire() as conn:
             await self._check_access(conn, thread_id, access, claim=False)
@@ -663,6 +630,7 @@ class PostgresSessionStore(BaseSessionStore):
 # ──────────────────────────────────────────────
 # 4. 工厂函数（环境感知自动切换）
 # ──────────────────────────────────────────────
+
 
 def create_session_store(
     env: str = "development",
@@ -713,6 +681,7 @@ def create_session_store(
 # 5. 会话管理器（组合 Agent + Store）
 # ──────────────────────────────────────────────
 
+
 class SessionManager:
     """带多轮记忆的对话管理器。
 
@@ -750,7 +719,7 @@ class SessionManager:
         postgres_url: str | None = None,
         max_history_messages: int = 50,
         require_access: bool = False,
-    ) -> "SessionManager":
+    ) -> SessionManager:
         """从配置创建 SessionManager（自动选择存储后端）。"""
         store = create_session_store(
             env,
@@ -828,7 +797,7 @@ class SessionManager:
 
         # 2. 裁剪过长历史（仅在内存中裁剪，下一步 append 写入的是新消息）
         if len(history) > self._max_history:
-            history = history[-self._max_history:]
+            history = history[-self._max_history :]
             await self._store.save(thread_id, history, access=access)
 
         # 3. 调用 Agent

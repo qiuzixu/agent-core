@@ -29,9 +29,9 @@ class SpillStore:
 
     def __init__(self, *, max_entries: int = 256, max_chars_per_entry: int = 512 * 1024) -> None:
         """Args:
-            max_entries: 最多保存多少条 spill；超出 LRU 淘汰最旧的。
-            max_chars_per_entry: 单条 spill 上限（字符），防止一条巨型
-                输出吃掉所有内存；超限的条目不存、只截断标记里不出现 ID。
+        max_entries: 最多保存多少条 spill；超出 LRU 淘汰最旧的。
+        max_chars_per_entry: 单条 spill 上限（字符），防止一条巨型
+            输出吃掉所有内存；超限的条目不存、只截断标记里不出现 ID。
         """
         if max_entries <= 0:
             raise ValueError("max_entries 必须为正整数")

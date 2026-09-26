@@ -6,9 +6,9 @@ Agent Core 只依赖该协议，不依赖 OpenAI、Anthropic、Gemini 或其他�
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable, Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from agent_core.protocol.messages import Message
 
@@ -118,9 +118,7 @@ class ModelProviderRegistry:
         factory = self._factories.get(normalized)
         if factory is None:
             available = ", ".join(self.names()) or "无"
-            raise ValueError(
-                f"不支持的模型提供商：{normalized or '<empty>'}；已注册：{available}"
-            )
+            raise ValueError(f"不支持的模型提供商：{normalized or '<empty>'}；已注册：{available}")
         return factory(config, model=model, **kwargs)
 
 

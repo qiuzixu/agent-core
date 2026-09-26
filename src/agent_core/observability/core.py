@@ -7,7 +7,12 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from agent_core.middleware import Middleware, MiddlewareAction, MiddlewareContext, MiddlewareResult
+from agent_core.middleware.base import (
+    Middleware,
+    MiddlewareAction,
+    MiddlewareContext,
+    MiddlewareResult,
+)
 
 logger = logging.getLogger(__name__)
 

@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import copy
 
-from agent_core.protocol.runtime import RunContext
 from agent_core.ports import RunStore
+from agent_core.protocol.runtime import RunContext
 
 
 class MemoryRunStore(RunStore):

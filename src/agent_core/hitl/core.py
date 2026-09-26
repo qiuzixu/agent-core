@@ -13,7 +13,12 @@ from enum import Enum
 from typing import Any
 
 from agent_core.access import AccessContext
-from agent_core.middleware import Middleware, MiddlewareAction, MiddlewareContext, MiddlewareResult
+from agent_core.middleware.base import (
+    Middleware,
+    MiddlewareAction,
+    MiddlewareContext,
+    MiddlewareResult,
+)
 from agent_core.ports import ApprovalStore
 from agent_core.protocol.runtime import ApprovalRecord
 
@@ -78,7 +83,7 @@ class ApprovalRequest:
         }
 
     @classmethod
-    def from_record(cls, record: ApprovalRecord) -> "ApprovalRequest":
+    def from_record(cls, record: ApprovalRecord) -> ApprovalRequest:
         """从持久化记录恢复审批请求。"""
         request = cls(
             request_id=record.approval_id,
@@ -132,7 +137,14 @@ class ApprovalQueue:
         user_id: str | None = None,
         tenant_id: str | None = None,
     ) -> ApprovalRequest:
+        """创建仅驻留当前进程的审批请求。
+
+        配置持久化存储后必须使用 ``create_request_async``，确保方法返回时初始审批
+        已写入存储，避免进程退出或后台任务失败造成记录丢失。
+        """
         self._require_owner(user_id, tenant_id)
+        if self._approval_store is not None:
+            raise RuntimeError("配置审批存储后必须使用 await create_request_async()")
         request = ApprovalRequest(
             request_id=str(uuid.uuid4()),
             thread_id=thread_id,
@@ -143,8 +155,6 @@ class ApprovalQueue:
             tenant_id=tenant_id,
         )
         self._requests[request.request_id] = request
-        if self._approval_store:
-            asyncio.create_task(self._approval_store.save_approval(request.to_record()))
         return request
 
     async def create_request_async(
@@ -298,9 +308,7 @@ class ApprovalQueue:
     ) -> None:
         if self._require_access and access is None:
             raise PermissionError("该 ApprovalQueue 要求提供 AccessContext")
-        if self._require_access and (
-            request.user_id is None or request.tenant_id is None
-        ):
+        if self._require_access and (request.user_id is None or request.tenant_id is None):
             raise PermissionError("该审批请求尚未绑定用户和租户")
         if access is not None and not access.can_access(request.user_id, request.tenant_id):
             raise PermissionError("无权处理该审批请求")
@@ -342,7 +350,7 @@ class HumanInTheLoopMiddleware(Middleware):
                     self._callback(ctx.tool_name, ctx.tool_args),
                     timeout=self._timeout,
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 return MiddlewareResult(
                     action=MiddlewareAction.STOP,
                     data={"reason": "approval_timeout", "tool": ctx.tool_name},

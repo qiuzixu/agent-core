@@ -66,9 +66,7 @@ class DurableWorkflowRunner:
             execution.status = "completed"
             await self._store.save(execution)
             return execution
-        execution.events.append(
-            {"event_type": "workflow_resumed", "step": execution.current_step or START}
-        )
+        execution.events.append({"event_type": "workflow_resumed", "step": execution.current_step or START})
         return await self._run(execution)
 
     async def _run(self, execution: WorkflowExecution) -> WorkflowExecution:
@@ -138,9 +136,7 @@ class DurableWorkflowRunner:
     ) -> None:
         if self._strict_access and access is None:
             raise PermissionError("该 DurableWorkflowRunner 要求提供 AccessContext")
-        if self._strict_access and (
-            execution.user_id is None or execution.tenant_id is None
-        ):
+        if self._strict_access and (execution.user_id is None or execution.tenant_id is None):
             raise PermissionError("该工作流执行实例尚未绑定用户和租户")
         if access is not None and not access.can_access(
             execution.user_id,

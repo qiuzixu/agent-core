@@ -23,18 +23,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-from agent_core.protocol.messages import Message
 from agent_core.errors import (
     ModelRateLimitError,
     ModelTimeoutError,
     ModelUnavailableError,
 )
+from agent_core.protocol.messages import Message
 
 logger = logging.getLogger(__name__)
 
@@ -43,40 +42,42 @@ logger = logging.getLogger(__name__)
 # 基础数据类型
 # ──────────────────────────────────────────────
 
+
 class MiddlewareAction(Enum):
-    CONTINUE = "continue"   # 继续执行
-    STOP     = "stop"       # 停止执行（中止整个循环）
-    MODIFY   = "modify"     # 修改数据（如裁剪消息历史）
-    RETRY    = "retry"      # 重试当前 LLM 调用
-    ERROR    = "error"      # 返回错误
+    CONTINUE = "continue"  # 继续执行
+    STOP = "stop"  # 停止执行（中止整个循环）
+    MODIFY = "modify"  # 修改数据（如裁剪消息历史）
+    RETRY = "retry"  # 重试当前 LLM 调用
+    ERROR = "error"  # 返回错误
 
 
 @dataclass
 class MiddlewareResult:
     action: MiddlewareAction
-    data:   dict[str, Any] = field(default_factory=dict)
-    error:  str | None = None
+    data: dict[str, Any] = field(default_factory=dict)
+    error: str | None = None
 
 
 @dataclass
 class MiddlewareContext:
-    messages:     list[Message]      = field(default_factory=list)
-    iteration:    int                = 0
-    tool_name:    str | None         = None
-    tool_args:    dict[str, Any]     = field(default_factory=dict)
-    tool_result:  str | None         = None
-    llm_response: Message | None     = None
-    metadata:     dict[str, Any]     = field(default_factory=dict)
+    messages: list[Message] = field(default_factory=list)
+    iteration: int = 0
+    tool_name: str | None = None
+    tool_args: dict[str, Any] = field(default_factory=dict)
+    tool_result: str | None = None
+    llm_response: Message | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
     # 运行时事件上报入口。它让通用中间件可以记录压缩、重试等事件，
     # 同时保持对独立单元测试和旧 Vanilla 调用方的兼容。
-    emit:         Callable[..., Any] | None = None
+    emit: Callable[..., Any] | None = None
 
 
 # ──────────────────────────────────────────────
 # 基类
 # ──────────────────────────────────────────────
 
-class Middleware(ABC):
+
+class Middleware:
     """中间件基类，子类按需重写钩子方法。"""
 
     @property
@@ -99,6 +100,7 @@ class Middleware(ABC):
 # ──────────────────────────────────────────────
 # 中间件管理器
 # ──────────────────────────────────────────────
+
 
 class MiddlewareManager:
     def __init__(self, middlewares: list[Middleware] | None = None) -> None:
@@ -143,6 +145,7 @@ class MiddlewareManager:
 # 内置中间件 1：日志
 # ──────────────────────────────────────────────
 
+
 class LoggingMiddleware(Middleware):
     """记录所有 LLM / 工具调用的日志。"""
 
@@ -176,6 +179,7 @@ class LoggingMiddleware(Middleware):
 # 内置中间件 2：重试（生产级，支持指数退避）
 # ──────────────────────────────────────────────
 
+
 class RetryMiddleware(Middleware):
     """自动重试失败的 LLM 调用。
 
@@ -188,15 +192,15 @@ class RetryMiddleware(Middleware):
 
     def __init__(
         self,
-        max_retries:    int   = 3,
-        base_delay:     float = 1.0,
+        max_retries: int = 3,
+        base_delay: float = 1.0,
         backoff_factor: float = 2.0,
-        max_delay:      float = 60.0,
+        max_delay: float = 60.0,
     ) -> None:
-        self._max_retries    = max_retries
-        self._base_delay     = base_delay
+        self._max_retries = max_retries
+        self._base_delay = base_delay
         self._backoff_factor = backoff_factor
-        self._max_delay      = max_delay
+        self._max_delay = max_delay
 
     def _should_retry(self, exc: Exception) -> bool:
         """判断异常是否值得重试。"""
@@ -215,12 +219,14 @@ class RetryMiddleware(Middleware):
         # 空响应触发重试
         if r is not None and not r.content and not r.tool_calls:
             wait = min(
-                self._base_delay * (self._backoff_factor ** retry_count),
+                self._base_delay * (self._backoff_factor**retry_count),
                 self._max_delay,
             )
             logger.warning(
                 "[Retry] 空响应，第 %d/%d 次重试，等待 %.1fs",
-                retry_count + 1, self._max_retries, wait,
+                retry_count + 1,
+                self._max_retries,
+                wait,
             )
             await asyncio.sleep(wait)
             ctx.metadata["retry_count"] = retry_count + 1
@@ -249,12 +255,15 @@ class RetryMiddleware(Middleware):
             return False
 
         wait = min(
-            self._base_delay * (self._backoff_factor ** retry_count),
+            self._base_delay * (self._backoff_factor**retry_count),
             self._max_delay,
         )
         logger.warning(
             "[Retry] %s，第 %d/%d 次重试，等待 %.1fs",
-            type(exc).__name__, retry_count + 1, self._max_retries, wait,
+            type(exc).__name__,
+            retry_count + 1,
+            self._max_retries,
+            wait,
         )
         await asyncio.sleep(wait)
         ctx.metadata["retry_count"] = retry_count + 1

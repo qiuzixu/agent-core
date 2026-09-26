@@ -9,8 +9,8 @@ from agent_core.checkpoint.store import (
 )
 
 __all__ = [
-    "Checkpointer",
     "CheckpointVersion",
+    "Checkpointer",
     "FileCheckpointer",
     "MemoryCheckpointer",
     "TimeTravelCheckpointer",

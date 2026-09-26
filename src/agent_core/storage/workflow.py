@@ -6,11 +6,12 @@ import json
 import sqlite3
 import uuid
 from abc import ABC, abstractmethod
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Generator
+from typing import Any
 
 
 def _now() -> str:
@@ -57,16 +58,13 @@ class WorkflowExecution:
 
 class WorkflowExecutionStore(ABC):
     @abstractmethod
-    async def save(self, execution: WorkflowExecution) -> None:
-        ...
+    async def save(self, execution: WorkflowExecution) -> None: ...
 
     @abstractmethod
-    async def load(self, execution_id: str) -> WorkflowExecution | None:
-        ...
+    async def load(self, execution_id: str) -> WorkflowExecution | None: ...
 
     @abstractmethod
-    async def list(self, definition_id: str, tenant_id: str | None = None) -> list[WorkflowExecution]:
-        ...
+    async def list(self, definition_id: str, tenant_id: str | None = None) -> list[WorkflowExecution]: ...
 
     # 统一端口名称，同时保留工作流模块已有的 save/load/list 调用。
     async def save_execution(self, execution: WorkflowExecution) -> None:
@@ -148,7 +146,7 @@ class SqliteWorkflowExecutionStore(WorkflowExecutionStore):
             conn.executescript(self.DDL)
 
     @contextmanager
-    def _connect(self) -> Generator[sqlite3.Connection, None, None]:
+    def _connect(self) -> Generator[sqlite3.Connection]:
         conn = sqlite3.connect(self._db_path)
         try:
             yield conn
@@ -162,9 +160,21 @@ class SqliteWorkflowExecutionStore(WorkflowExecutionStore):
     @staticmethod
     def _row(row: tuple[Any, ...]) -> WorkflowExecution:
         keys = [
-            "execution_id", "definition_id", "execution_type", "user_id", "tenant_id",
-            "status", "current_step", "steps_completed", "total_steps", "input_data",
-            "result_data", "events", "version", "created_at", "updated_at",
+            "execution_id",
+            "definition_id",
+            "execution_type",
+            "user_id",
+            "tenant_id",
+            "status",
+            "current_step",
+            "steps_completed",
+            "total_steps",
+            "input_data",
+            "result_data",
+            "events",
+            "version",
+            "created_at",
+            "updated_at",
         ]
         value = dict(zip(keys, row, strict=True))
         for key in ("input_data", "result_data", "events"):
@@ -190,13 +200,21 @@ class SqliteWorkflowExecutionStore(WorkflowExecutionStore):
                 total_steps=excluded.total_steps, result_data=excluded.result_data,
                 events=excluded.events, version=excluded.version, updated_at=excluded.updated_at""",
                 (
-                    execution.execution_id, execution.definition_id, execution.execution_type,
-                    execution.user_id, execution.tenant_id, execution.status, execution.current_step,
-                    execution.steps_completed, execution.total_steps,
+                    execution.execution_id,
+                    execution.definition_id,
+                    execution.execution_type,
+                    execution.user_id,
+                    execution.tenant_id,
+                    execution.status,
+                    execution.current_step,
+                    execution.steps_completed,
+                    execution.total_steps,
                     json.dumps(value["input_data"], ensure_ascii=False),
                     json.dumps(value["result_data"], ensure_ascii=False),
-                    json.dumps(value["events"], ensure_ascii=False), execution.version,
-                    execution.created_at, execution.updated_at,
+                    json.dumps(value["events"], ensure_ascii=False),
+                    execution.version,
+                    execution.created_at,
+                    execution.updated_at,
                 ),
             )
 
@@ -205,12 +223,18 @@ class SqliteWorkflowExecutionStore(WorkflowExecutionStore):
             row = conn.execute(
                 "SELECT execution_id,definition_id,execution_type,user_id,tenant_id,status,current_step,"
                 "steps_completed,total_steps,input_data,result_data,events,version,created_at,updated_at "
-                "FROM workflow_executions WHERE execution_id=?", (execution_id,)
+                "FROM workflow_executions WHERE execution_id=?",
+                (execution_id,),
             ).fetchone()
         return self._row(row) if row else None
 
     async def list(self, definition_id: str, tenant_id: str | None = None) -> list[WorkflowExecution]:
-        query = "SELECT execution_id,definition_id,execution_type,user_id,tenant_id,status,current_step,steps_completed,total_steps,input_data,result_data,events,version,created_at,updated_at FROM workflow_executions WHERE definition_id=?"
+        query = (
+            "SELECT execution_id,definition_id,execution_type,user_id,tenant_id,"
+            "status,current_step,steps_completed,total_steps,input_data,result_data,"
+            "events,version,created_at,updated_at FROM workflow_executions "
+            "WHERE definition_id=?"
+        )
         args: list[Any] = [definition_id]
         if tenant_id is not None:
             query += " AND tenant_id=?"
@@ -266,14 +290,28 @@ class PostgresWorkflowExecutionStore(WorkflowExecutionStore):
             value = execution.to_dict()
             await conn.execute(
                 """INSERT INTO workflow_executions
-                (execution_id,definition_id,execution_type,user_id,tenant_id,status,current_step,steps_completed,total_steps,input_data,result_data,events,version,created_at,updated_at)
+                (execution_id,definition_id,execution_type,user_id,tenant_id,status,
+                 current_step,steps_completed,total_steps,input_data,result_data,
+                 events,version,created_at,updated_at)
                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,$12::jsonb,$13,$14,$15)
-                ON CONFLICT(execution_id) DO UPDATE SET status=$6,current_step=$7,steps_completed=$8,total_steps=$9,result_data=$11::jsonb,events=$12::jsonb,version=$13,updated_at=$15""",
-                execution.execution_id, execution.definition_id, execution.execution_type,
-                execution.user_id, execution.tenant_id, execution.status, execution.current_step,
-                execution.steps_completed, execution.total_steps, json.dumps(value["input_data"]),
-                json.dumps(value["result_data"]), json.dumps(value["events"]), execution.version,
-                execution.created_at, execution.updated_at,
+                ON CONFLICT(execution_id) DO UPDATE SET
+                    status=$6,current_step=$7,steps_completed=$8,total_steps=$9,
+                    result_data=$11::jsonb,events=$12::jsonb,version=$13,updated_at=$15""",
+                execution.execution_id,
+                execution.definition_id,
+                execution.execution_type,
+                execution.user_id,
+                execution.tenant_id,
+                execution.status,
+                execution.current_step,
+                execution.steps_completed,
+                execution.total_steps,
+                json.dumps(value["input_data"]),
+                json.dumps(value["result_data"]),
+                json.dumps(value["events"]),
+                execution.version,
+                execution.created_at,
+                execution.updated_at,
             )
 
     async def load(self, execution_id: str) -> WorkflowExecution | None:
@@ -286,8 +324,11 @@ class PostgresWorkflowExecutionStore(WorkflowExecutionStore):
         self._check()
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT * FROM workflow_executions WHERE definition_id=$1 AND ($2::text IS NULL OR tenant_id=$2) ORDER BY updated_at DESC",
-                definition_id, tenant_id,
+                """SELECT * FROM workflow_executions
+                WHERE definition_id=$1 AND ($2::text IS NULL OR tenant_id=$2)
+                ORDER BY updated_at DESC""",
+                definition_id,
+                tenant_id,
             )
         return [_from_dict(dict(row)) for row in rows]
 

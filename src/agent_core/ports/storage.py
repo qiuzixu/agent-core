@@ -12,35 +12,14 @@ from typing import Any, Protocol
 from agent_core.access import AccessContext
 from agent_core.protocol.messages import Message
 from agent_core.protocol.runtime import ApprovalRecord, RunContext, RunEvent
-from agent_core.storage.model_selection import ModelSelection, ModelSelectionScope
-
-
-class ModelSelectionStore(Protocol):
-    """按用户/租户保存和解析有效模型的存储端口。"""
-
-    async def resolve(self, *, user_id: str | None, tenant_id: str | None) -> ModelSelection | None:
-        ...
-
-    async def save(
-        self,
-        provider: str,
-        model: str,
-        *,
-        scope: ModelSelectionScope,
-        user_id: str | None,
-        tenant_id: str | None,
-    ) -> ModelSelection:
-        ...
 
 
 class ApprovalStore(Protocol):
     """审批记录持久化协议。"""
 
-    async def save_approval(self, approval: ApprovalRecord) -> None:
-        ...
+    async def save_approval(self, approval: ApprovalRecord) -> None: ...
 
-    async def load_approval(self, approval_id: str) -> ApprovalRecord | None:
-        ...
+    async def load_approval(self, approval_id: str) -> ApprovalRecord | None: ...
 
 
 class RunStore(Protocol):
@@ -73,8 +52,7 @@ class SessionStore(Protocol):
 
     async def load_messages(
         self, thread_id: str, *, access: AccessContext | None = None
-    ) -> list[Message]:
-        ...
+    ) -> list[Message]: ...
 
     async def append_messages(
         self,
@@ -82,8 +60,7 @@ class SessionStore(Protocol):
         messages: Sequence[Message],
         *,
         access: AccessContext | None = None,
-    ) -> None:
-        ...
+    ) -> None: ...
 
     async def replace_messages(
         self,
@@ -91,25 +68,17 @@ class SessionStore(Protocol):
         messages: Sequence[Message],
         *,
         access: AccessContext | None = None,
-    ) -> None:
-        ...
+    ) -> None: ...
 
-    async def delete_thread(
-        self, thread_id: str, *, access: AccessContext | None = None
-    ) -> None:
-        ...
+    async def delete_thread(self, thread_id: str, *, access: AccessContext | None = None) -> None: ...
 
-    async def list_threads(self, *, access: AccessContext | None = None) -> list[str]:
-        ...
+    async def list_threads(self, *, access: AccessContext | None = None) -> list[str]: ...
 
 
 class ContextStore(Protocol):
     """结构化长期上下文存储协议。"""
 
-    async def get_context(
-        self, thread_id: str, *, access: AccessContext | None = None
-    ) -> dict[str, Any]:
-        ...
+    async def get_context(self, thread_id: str, *, access: AccessContext | None = None) -> dict[str, Any]: ...
 
     async def update_context(
         self,
@@ -117,27 +86,20 @@ class ContextStore(Protocol):
         values: dict[str, Any],
         *,
         access: AccessContext | None = None,
-    ) -> dict[str, Any]:
-        ...
+    ) -> dict[str, Any]: ...
 
-    async def clear_context(
-        self, thread_id: str, *, access: AccessContext | None = None
-    ) -> None:
-        ...
+    async def clear_context(self, thread_id: str, *, access: AccessContext | None = None) -> None: ...
 
 
 class WorkflowStore(Protocol):
     """工作流执行实例存储协议。"""
 
-    async def save_execution(self, execution: Any) -> None:
-        ...
+    async def save_execution(self, execution: Any) -> None: ...
 
-    async def load_execution(self, execution_id: str) -> Any | None:
-        ...
+    async def load_execution(self, execution_id: str) -> Any | None: ...
 
 
 class EventSink(Protocol):
     """运行事件发布协议，可接 SSE、WebSocket、日志或消息队列。"""
 
-    async def publish(self, event: RunEvent) -> None:
-        ...
+    async def publish(self, event: RunEvent) -> None: ...

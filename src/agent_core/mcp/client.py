@@ -23,9 +23,7 @@ class McpToolCaller(Protocol):
 
     async def list_tools(self) -> list[str]: ...
 
-    async def call_tool(
-        self, name: str, arguments: Mapping[str, object] | None = None
-    ) -> JsonObject: ...
+    async def call_tool(self, name: str, arguments: Mapping[str, object] | None = None) -> JsonObject: ...
 
 
 class McpToolClient:
@@ -87,9 +85,7 @@ class McpToolClient:
             raise McpToolError(f"MCP tools/list 调用失败：{exc}") from exc
         return [str(tool.name) for tool in result.tools]
 
-    async def call_tool(
-        self, name: str, arguments: Mapping[str, object] | None = None
-    ) -> JsonObject:
+    async def call_tool(self, name: str, arguments: Mapping[str, object] | None = None) -> JsonObject:
         """调用 MCP 工具并要求其返回结构化对象。"""
         session = await self._require_session()
         try:
@@ -121,7 +117,7 @@ class McpToolClient:
             close_requested.set()
         await asyncio.shield(task)
 
-    async def __aenter__(self) -> "McpToolClient":
+    async def __aenter__(self) -> McpToolClient:
         await self.start()
         return self
 
@@ -136,9 +132,7 @@ class McpToolClient:
             raise self._terminal_error
         raise McpConnectionError("MCP 会话初始化失败")
 
-    async def _run_session(
-        self, ready: asyncio.Future[None], close_requested: asyncio.Event
-    ) -> None:
+    async def _run_session(self, ready: asyncio.Future[None], close_requested: asyncio.Event) -> None:
         """在同一协程内持有 MCP 的异步上下文，保证会话生命周期完整。"""
         stack = AsyncExitStack()
         try:
@@ -165,8 +159,10 @@ class McpToolClient:
             if not ready.done():
                 ready.set_exception(error)
         except BaseException as exc:
-            error = exc if isinstance(exc, McpConnectionError) else McpConnectionError(
-                f"无法启动或维持 MCP 服务：{self._entrypoint}（{exc}）"
+            error = (
+                exc
+                if isinstance(exc, McpConnectionError)
+                else McpConnectionError(f"无法启动或维持 MCP 服务：{self._entrypoint}（{exc}）")
             )
             self._terminal_error = error
             if not ready.done():
@@ -176,9 +172,7 @@ class McpToolClient:
             try:
                 await stack.aclose()
             except BaseException as exc:
-                self._terminal_error = McpConnectionError(
-                    f"关闭 MCP 服务失败：{self._entrypoint}（{exc}）"
-                )
+                self._terminal_error = McpConnectionError(f"关闭 MCP 服务失败：{self._entrypoint}（{exc}）")
 
     @staticmethod
     def _text_content(content: object) -> str | None:

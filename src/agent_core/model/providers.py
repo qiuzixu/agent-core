@@ -46,6 +46,7 @@ MODEL_PROVIDER_REGISTRY = default_model_provider_registry
 # 适配器实现与工厂
 # ──────────────────────────────────────────────
 
+
 # ── token / 上下文窗口辅助函数 ────────────────────────────────
 def _read_token_count(value: Any) -> int | None:
     candidates = [value]
@@ -76,6 +77,7 @@ def _count_qwen_tokens(
     try:
         # 导入 DashScope tokenizer
         from dashscope.tokenizers import get_tokenizer
+
         # 获取 Qwen tokenizer
         tokenizer = get_tokenizer("qwen-plus")
         parts: list[str] = []
@@ -92,11 +94,13 @@ def _count_qwen_tokens(
             parts.append("<|im_end|>\n")
         if tools:
             # 构建工具定义
-            parts.extend([
-                "<|im_start|>system\n# Tools\n",
-                json.dumps(tools, ensure_ascii=False, separators=(",", ":")),
-                "<|im_end|>\n",
-            ])
+            parts.extend(
+                [
+                    "<|im_start|>system\n# Tools\n",
+                    json.dumps(tools, ensure_ascii=False, separators=(",", ":")),
+                    "<|im_end|>\n",
+                ]
+            )
         # 构建助手消息
         parts.append("<|im_start|>assistant\n")
         # 编码消息
@@ -107,13 +111,14 @@ def _count_qwen_tokens(
         logger.debug("本地 Qwen tokenizer 不可用：%s", exc)
         return None
 
+
 # ── token / 上下文窗口辅助函数 ────────────────────────────────
 def _read_context_window(value: Any) -> int | None:
     if not isinstance(value, dict):
         return None
-    candidates = [value, value.get("data"), value.get("model")] # 从多个字段中读取上下文窗口大小
-    for candidate in candidates: # 遍历候选字段
-        if not isinstance(candidate, dict): # 跳过非字典字段
+    candidates = [value, value.get("data"), value.get("model")]  # 从多个字段中读取上下文窗口大小
+    for candidate in candidates:  # 遍历候选字段
+        if not isinstance(candidate, dict):  # 跳过非字典字段
             continue
         for key in (
             "context_window_tokens",
@@ -126,6 +131,7 @@ def _read_context_window(value: Any) -> int | None:
             if isinstance(context_window, int) and context_window > 0:
                 return context_window
     return None
+
 
 # ── token / 已公开模型规格辅助函数 ────────────────────────────────
 def known_context_window(model: str) -> int | None:
@@ -141,7 +147,6 @@ def known_context_window(model: str) -> int | None:
         "qwen3-max": 262_144,
     }
     return known_windows.get(normalized)
-
 
 
 # ──────────────────────────────────────────────
@@ -166,25 +171,23 @@ class OpenAIProvider:
         model: str = "gpt-4o-mini",
         temperature: float = 0.0,
         max_tokens: int = 4096,
-        context_window_tokens: int | None = None, # 上下文窗口 token 数
+        context_window_tokens: int | None = None,  # 上下文窗口 token 数
     ) -> None:
         # 只在真正选择 OpenAI 提供商时加载 SDK，导入 Core 其他能力不应依赖它。
         try:
             from openai import AsyncOpenAI
         except ImportError as exc:
-            raise ModelInvocationError(
-                "OpenAI 提供商需要 openai 依赖，请先安装项目运行依赖。"
-            ) from exc
-        self._client = AsyncOpenAI(api_key=api_key, base_url=base_url) # 初始化 OpenAI 客户端
-        self._api_key = api_key # API 密钥
-        self._base_url = base_url.rstrip("/") # 去掉末尾的斜杠
-        self._model = model # 模型名称
+            raise ModelInvocationError("OpenAI 提供商需要 openai 依赖，请先安装项目运行依赖。") from exc
+        self._client = AsyncOpenAI(api_key=api_key, base_url=base_url)  # 初始化 OpenAI 客户端
+        self._api_key = api_key  # API 密钥
+        self._base_url = base_url.rstrip("/")  # 去掉末尾的斜杠
+        self._model = model  # 模型名称
         # 暴露只读语义的公开元数据，便于日志、路由和运行审计使用。
-        self.model = model # 模型名称
-        self._temperature = temperature # 温度参数
-        self._max_tokens = max_tokens # 最大 token 数
-        self._configured_context_window_tokens = context_window_tokens # 上下文窗口 token 数
-        self._context_window_cache: int | None = None # 上下文窗口 token 数缓存，用于优化调用
+        self.model = model  # 模型名称
+        self._temperature = temperature  # 温度参数
+        self._max_tokens = max_tokens  # 最大 token 数
+        self._configured_context_window_tokens = context_window_tokens  # 上下文窗口 token 数
+        self._context_window_cache: int | None = None  # 上下文窗口 token 数缓存，用于优化调用
 
     # ──────────────────────────────────────────────
     # 普通对话
@@ -212,7 +215,7 @@ class OpenAIProvider:
         Raises:
             ModelInvocationError: LLM 调用失败。
         """
-        openai_messages = [msg.to_openai_dict() for msg in messages] # 转换为 OpenAI 格式的消息
+        openai_messages = [msg.to_openai_dict() for msg in messages]  # 转换为 OpenAI 格式的消息
 
         # 构建请求参数
         kwargs: dict[str, Any] = {
@@ -230,36 +233,42 @@ class OpenAIProvider:
         try:
             logger.debug(
                 "LLM call: model=%s, messages=%d, tools=%d",
-                self._model, len(messages), len(tools) if tools else 0,
+                self._model,
+                len(messages),
+                len(tools) if tools else 0,
             )
-        # 调用 OpenAI API
+            # 调用 OpenAI API
             response = await self._client.chat.completions.create(**kwargs)
         except Exception as exc:
             raise ModelInvocationError(f"OpenAI API call failed: {exc}") from exc
 
-        if not response.choices: # 检查是否有有效回复
+        if not response.choices:  # 检查是否有有效回复
             raise ModelInvocationError("OpenAI API returned no choices.")
         # 解析响应
-        choice = response.choices[0] # 取第一个回复
-        message = choice.message # 取回复消息
-        content = message.content or "" # 取回复内容
-        tool_calls: list[dict[str, Any]] = [] # 初始化工具调用列表
+        choice = response.choices[0]  # 取第一个回复
+        message = choice.message  # 取回复消息
+        content = message.content or ""  # 取回复内容
+        tool_calls: list[dict[str, Any]] = []  # 初始化工具调用列表
         # 解析工具调用
         if message.tool_calls:
-            for tc in message.tool_calls: # 遍历工具调用
-                tool_calls.append({
-                    "id": tc.id, # 工具调用 ID
-                    "type": "function", # 工具调用类型
-                    # 工具名称
-                    "name": tc.function.name,
-                    # 工具参数
-                    "args": json.loads(tc.function.arguments),
-                })
+            for tc in message.tool_calls:  # 遍历工具调用
+                tool_calls.append(
+                    {
+                        "id": tc.id,  # 工具调用 ID
+                        "type": "function",  # 工具调用类型
+                        # 工具名称
+                        "name": tc.function.name,
+                        # 工具参数
+                        "args": json.loads(tc.function.arguments),
+                    }
+                )
 
         # 记录日志
         logger.debug(
             "LLM response: content_len=%d, tool_calls=%d, finish=%s",
-            len(content), len(tool_calls), choice.finish_reason,
+            len(content),
+            len(tool_calls),
+            choice.finish_reason,
         )
         # 返回回复消息
         return assistant_message(content, tool_calls=tool_calls)
@@ -282,10 +291,10 @@ class OpenAIProvider:
             payload["tools"] = tools
 
         input_tokens: int | None = None
-        source = "unavailable" # 初始化来源为不可用
-        if self._model.lower().startswith("qwen"): # 如果是 Qwen 模型
-            input_tokens = _count_qwen_tokens(messages, tools) # 计算 Qwen 模型的 token 数
-            if input_tokens is not None: # 如果计算成功
+        source = "unavailable"  # 初始化来源为不可用
+        if self._model.lower().startswith("qwen"):  # 如果是 Qwen 模型
+            input_tokens = _count_qwen_tokens(messages, tools)  # 计算 Qwen 模型的 token 数
+            if input_tokens is not None:  # 如果计算成功
                 source = "official_qwen_tokenizer"
 
         try:
@@ -414,7 +423,9 @@ class OpenAIProvider:
         try:
             logger.debug(
                 "LLM stream call: model=%s, messages=%d, tools=%d",
-                self._model, len(messages), len(tools) if tools else 0,
+                self._model,
+                len(messages),
+                len(tools) if tools else 0,
             )
             # 调用 OpenAI API
             stream = await self._client.chat.completions.create(**kwargs)
@@ -467,14 +478,21 @@ class OpenAIProvider:
                 except json.JSONDecodeError:
                     args = {}
                 # 构建工具调用记录
-                tool_calls.append({
-                    "id": acc["id"],
-                    "type": "function",
-                    "name": acc["name"],
-                    "args": args,
-                })
+                tool_calls.append(
+                    {
+                        "id": acc["id"],
+                        "type": "function",
+                        "name": acc["name"],
+                        "args": args,
+                    }
+                )
             # 最后一个 chunk，包含完整 tool_calls
-            logger.debug("LLM stream end: model=%s, messages=%d, tools=%d", self._model, len(messages), len(tools) if tools else 0)
+            logger.debug(
+                "LLM stream end: model=%s, messages=%d, tools=%d",
+                self._model,
+                len(messages),
+                len(tools) if tools else 0,
+            )
             yield StreamChunk(
                 tool_calls=tool_calls,
                 is_tool_call=True,
@@ -508,9 +526,7 @@ class OpenAIProvider:
         """
         enhanced_messages = messages.copy()
         if enhanced_messages and enhanced_messages[0].role == "system":
-            enhanced_messages[0].content += (
-                "\n\n**重要**：你必须返回有效的 JSON 格式，不要包含任何其他文本。"
-            )
+            enhanced_messages[0].content += "\n\n**重要**：你必须返回有效的 JSON 格式，不要包含任何其他文本。"
 
         response = await self.chat(enhanced_messages)
         content = response.content.strip()
@@ -528,14 +544,11 @@ class OpenAIProvider:
             result = json.loads(content)
         except json.JSONDecodeError as exc:
             raise ModelInvocationError(
-                f"Failed to parse JSON from LLM output: {exc}\n"
-                f"Output: {content[:200]}"
+                f"Failed to parse JSON from LLM output: {exc}\nOutput: {content[:200]}"
             ) from exc
 
         if schema and not isinstance(result, dict):
-            raise ModelInvocationError(
-                f"LLM output is not a JSON object: {type(result)}"
-            )
+            raise ModelInvocationError(f"LLM output is not a JSON object: {type(result)}")
 
         return result
 
@@ -543,6 +556,7 @@ class OpenAIProvider:
 # ──────────────────────────────────────────────
 # 适配器 2：Anthropic Claude
 # ──────────────────────────────────────────────
+
 
 class AnthropicProvider:
     """Anthropic Claude 提供商。
@@ -553,19 +567,18 @@ class AnthropicProvider:
     def __init__(
         self,
         *,
-        api_key:     str,
-        model:       str   = "claude-3-5-sonnet-20241022",
+        api_key: str,
+        model: str = "claude-3-5-sonnet-20241022",
         temperature: float = 0.0,
-        max_tokens:  int   = 4096,
+        max_tokens: int = 4096,
         context_window_tokens: int | None = None,
     ) -> None:
         try:
             import anthropic  # type: ignore[import-untyped]
+
             self._client = anthropic.AsyncAnthropic(api_key=api_key)
         except ImportError as exc:
-            raise ImportError(
-                "AnthropicProvider 需要 anthropic 包，请执行：uv add anthropic"
-            ) from exc
+            raise ImportError("AnthropicProvider 需要 anthropic 包，请执行：uv add anthropic") from exc
 
         self.model = model
         self._temperature = temperature
@@ -584,7 +597,7 @@ class AnthropicProvider:
     ) -> ContextUsage:
         system_prompt, anthropic_msgs = self._to_anthropic_messages(messages)
         try:
-            count_tokens = getattr(self._client.messages, "count_tokens")
+            count_tokens = self._client.messages.count_tokens
             kwargs: dict[str, Any] = {
                 "model": self.model,
                 "messages": anthropic_msgs,
@@ -598,9 +611,7 @@ class AnthropicProvider:
             if isinstance(input_tokens, int):
                 return ContextUsage(
                     input_tokens=input_tokens,
-                    context_window_tokens=(
-                        self._context_window_tokens or known_context_window(self.model)
-                    ),
+                    context_window_tokens=(self._context_window_tokens or known_context_window(self.model)),
                     exact=True,
                     source="provider_tokenizer",
                 )
@@ -616,9 +627,7 @@ class AnthropicProvider:
     # ──────────────────────────────────────────────
     # 转换为 Anthropic API 格式
     # ──────────────────────────────────────────────
-    def _to_anthropic_messages(
-        self, messages: list[Message]
-    ) -> tuple[str | None, list[dict[str, Any]]]:
+    def _to_anthropic_messages(self, messages: list[Message]) -> tuple[str | None, list[dict[str, Any]]]:
         """将 Message 列表转为 Anthropic API 格式。
 
         Returns:
@@ -652,38 +661,44 @@ class AnthropicProvider:
                     content.append({"type": "text", "text": msg.content})
                 if msg.tool_calls:
                     for tc in msg.tool_calls:
-                        content.append({
-                            "type": "tool_use",
-                            "id": tc["id"],
-                            "name": tc["name"],
-                            "input": tc.get("args", {}),
-                        })
+                        content.append(
+                            {
+                                "type": "tool_use",
+                                "id": tc["id"],
+                                "name": tc["name"],
+                                "input": tc.get("args", {}),
+                            }
+                        )
                 if content:
                     anthropic_msgs.append({"role": "assistant", "content": content})
             elif msg.role == "tool":
-                append_user_content([{
-                        "type": "tool_result",
-                        "tool_use_id": msg.tool_call_id,
-                        "content": msg.content,
-                    }])
+                append_user_content(
+                    [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": msg.tool_call_id,
+                            "content": msg.content,
+                        }
+                    ]
+                )
 
         return system_prompt, anthropic_msgs
 
     # ──────────────────────────────────────────────
     # 转换为 Anthropic API 格式工具定义
     # ──────────────────────────────────────────────
-    def _to_anthropic_tools(
-        self, tools: list[dict[str, Any]]
-    ) -> list[dict[str, Any]]:
+    def _to_anthropic_tools(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """将 OpenAI 格式工具定义转为 Anthropic 格式。"""
         result = []
         for t in tools:
             fn = t.get("function", t)
-            result.append({
-                "name":         fn["name"],
-                "description":  fn.get("description", ""),
-                "input_schema": fn.get("parameters", {"type": "object", "properties": {}}),
-            })
+            result.append(
+                {
+                    "name": fn["name"],
+                    "description": fn.get("description", ""),
+                    "input_schema": fn.get("parameters", {"type": "object", "properties": {}}),
+                }
+            )
         return result
 
     # ──────────────────────────────────────────────
@@ -700,10 +715,10 @@ class AnthropicProvider:
         system_prompt, anthropic_msgs = self._to_anthropic_messages(messages)
 
         kwargs: dict[str, Any] = {
-            "model":       self.model,
-            "max_tokens":  max_tokens or self._max_tokens,
+            "model": self.model,
+            "max_tokens": max_tokens or self._max_tokens,
             "temperature": temperature if temperature is not None else self._temperature,
-            "messages":    anthropic_msgs,
+            "messages": anthropic_msgs,
         }
         if system_prompt:
             kwargs["system"] = system_prompt
@@ -723,19 +738,23 @@ class AnthropicProvider:
             if block.type == "text":
                 content_text += block.text
             elif block.type == "tool_use":
-                tool_calls.append({
-                    "id":   block.id,
-                    "type": "function",
-                    "name": block.name,
-                    "args": block.input,
-                })
+                tool_calls.append(
+                    {
+                        "id": block.id,
+                        "type": "function",
+                        "name": block.name,
+                        "args": block.input,
+                    }
+                )
 
         logger.debug(
             "Anthropic response: content_len=%d, tool_calls=%d, stop=%s",
-            len(content_text), len(tool_calls), response.stop_reason,
+            len(content_text),
+            len(tool_calls),
+            response.stop_reason,
         )
         return assistant_message(content_text, tool_calls=tool_calls)
- 
+
     # ──────────────────────────────────────────────
     # 调用 Anthropic API 进行流式 chat completion
     # ──────────────────────────────────────────────
@@ -750,10 +769,10 @@ class AnthropicProvider:
         system_prompt, anthropic_msgs = self._to_anthropic_messages(messages)
 
         kwargs: dict[str, Any] = {
-            "model":       self.model,
-            "max_tokens":  max_tokens or self._max_tokens,
+            "model": self.model,
+            "max_tokens": max_tokens or self._max_tokens,
             "temperature": temperature if temperature is not None else self._temperature,
-            "messages":    anthropic_msgs,
+            "messages": anthropic_msgs,
         }
         if system_prompt:
             kwargs["system"] = system_prompt
@@ -798,12 +817,14 @@ class AnthropicProvider:
                     args = json.loads(acc.get("args_json", "{}") or "{}")
                 except json.JSONDecodeError:
                     args = {}
-                tool_calls.append({
-                    "id":   acc.get("id", ""),
-                    "type": "function",
-                    "name": acc.get("name", ""),
-                    "args": args,
-                })
+                tool_calls.append(
+                    {
+                        "id": acc.get("id", ""),
+                        "type": "function",
+                        "name": acc.get("name", ""),
+                        "args": args,
+                    }
+                )
             yield StreamChunk(tool_calls=tool_calls, is_tool_call=True)
         else:
             yield StreamChunk()
@@ -812,6 +833,7 @@ class AnthropicProvider:
 # ──────────────────────────────────────────────
 # 适配器 3：Gemini
 # ──────────────────────────────────────────────
+
 
 class GeminiProvider:
     """Google Gemini 模型适配器。
@@ -833,9 +855,7 @@ class GeminiProvider:
             from google import genai  # type: ignore[import-untyped]
             from google.genai import types  # type: ignore[import-untyped]
         except ImportError as exc:
-            raise ImportError(
-                "GeminiProvider 需要 google-genai 包，请执行：uv add google-genai"
-            ) from exc
+            raise ImportError("GeminiProvider 需要 google-genai 包，请执行：uv add google-genai") from exc
 
         self._genai_types = types
         self._client = genai.Client(api_key=api_key)
@@ -844,7 +864,7 @@ class GeminiProvider:
         self._max_tokens = max_tokens
         self._context_window_tokens = context_window_tokens
         self.provider_name = "gemini"
-    
+
     # ──────────────────────────────────────────────
     # 调用 Gemini API 进行上下文使用
     # ──────────────────────────────────────────────
@@ -867,8 +887,7 @@ class GeminiProvider:
                 return ContextUsage(
                     input_tokens=input_tokens,
                     context_window_tokens=(
-                        self._context_window_tokens
-                        or (model_limit if isinstance(model_limit, int) else None)
+                        self._context_window_tokens or (model_limit if isinstance(model_limit, int) else None)
                     ),
                     exact=True,
                     source="provider_tokenizer",
@@ -881,13 +900,11 @@ class GeminiProvider:
             exact=False,
             source="unavailable",
         )
-    
+
     # ──────────────────────────────────────────────
     # 转换为 Gemini API 格式消息
     # ──────────────────────────────────────────────
-    def _to_gemini_contents(
-        self, messages: list[Message]
-    ) -> tuple[str | None, list[Any]]:
+    def _to_gemini_contents(self, messages: list[Message]) -> tuple[str | None, list[Any]]:
         """把内部消息转换为 Gemini Content/Part。"""
         types = self._genai_types
         system_instruction: str | None = None
@@ -896,9 +913,7 @@ class GeminiProvider:
         for message in messages:
             if message.role == "system":
                 system_instruction = (
-                    f"{system_instruction}\n\n{message.content}"
-                    if system_instruction
-                    else message.content
+                    f"{system_instruction}\n\n{message.content}" if system_instruction else message.content
                 )
                 continue
 
@@ -941,7 +956,7 @@ class GeminiProvider:
                 )
 
         return system_instruction, contents
-    
+
     # ──────────────────────────────────────────────
     # 转换为 Gemini API 格式工具
     # ──────────────────────────────────────────────
@@ -955,13 +970,11 @@ class GeminiProvider:
                 types.FunctionDeclaration(
                     name=function["name"],
                     description=function.get("description", ""),
-                    parameters=function.get(
-                        "parameters", {"type": "object", "properties": {}}
-                    ),
+                    parameters=function.get("parameters", {"type": "object", "properties": {}}),
                 )
             )
         return [types.Tool(function_declarations=declarations)] if declarations else []
-    
+
     # ──────────────────────────────────────────────
     # 构造 Gemini 请求配置
     # ──────────────────────────────────────────────
@@ -1006,7 +1019,7 @@ class GeminiProvider:
                     }
                 )
         return assistant_message(content, tool_calls=tool_calls)
-    
+
     # ──────────────────────────────────────────────
     # 调用 Gemini API 进行聊天
     # ──────────────────────────────────────────────
@@ -1032,7 +1045,7 @@ class GeminiProvider:
         except Exception as exc:
             raise ModelInvocationError(f"Gemini API call failed: {exc}") from exc
         return self._response_message(response)
-    
+
     # ──────────────────────────────────────────────
     # 调用 Gemini API 进行流式聊天
     # ──────────────────────────────────────────────
@@ -1088,6 +1101,7 @@ class GeminiProvider:
 # 适配器 4：Ollama（本地模型）
 # ──────────────────────────────────────────────
 
+
 class OllamaProvider:
     """Ollama 本地模型提供商（复用 OpenAI 兼容接口）。
 
@@ -1100,10 +1114,10 @@ class OllamaProvider:
     def __init__(
         self,
         *,
-        model:       str   = "qwen2.5:7b",
-        base_url:    str   = "http://localhost:11434/v1",
+        model: str = "qwen2.5:7b",
+        base_url: str = "http://localhost:11434/v1",
         temperature: float = 0.0,
-        max_tokens:  int   = 4096,
+        max_tokens: int = 4096,
         context_window_tokens: int | None = None,
     ) -> None:
         self._inner = OpenAIProvider(
@@ -1116,7 +1130,7 @@ class OllamaProvider:
         )
         self.model = model
         self.provider_name = "ollama"
-    
+
     # ──────────────────────────────────────────────
     # 获取上下文使用统计
     # ──────────────────────────────────────────────
@@ -1127,7 +1141,7 @@ class OllamaProvider:
         tools: list[dict[str, Any]] | None = None,
     ) -> ContextUsage:
         return await self._inner.context_usage(messages, tools=tools)
-    
+
     # ──────────────────────────────────────────────
     # 调用 Ollama API 进行聊天
     # ──────────────────────────────────────────────
@@ -1139,10 +1153,8 @@ class OllamaProvider:
         temperature: float | None = None,
         max_tokens: int | None = None,
     ) -> Message:
-        return await self._inner.chat(
-            messages, tools=tools, temperature=temperature, max_tokens=max_tokens
-        )
-    
+        return await self._inner.chat(messages, tools=tools, temperature=temperature, max_tokens=max_tokens)
+
     # ──────────────────────────────────────────────
     # 调用 Ollama API 进行流式聊天
     # ──────────────────────────────────────────────
@@ -1163,6 +1175,7 @@ class OllamaProvider:
 # ──────────────────────────────────────────────
 # 提供商构造器与注册
 # ──────────────────────────────────────────────
+
 
 def _model_name(config: Any, model: str | None) -> str:
     """读取统一模型名称，并保留旧配置对象的访问方式。"""

@@ -42,9 +42,7 @@ class Message:
                     "type": "function",
                     "function": {
                         "name": call.get("name", ""),
-                        "arguments": json.dumps(
-                            call.get("args", {}), ensure_ascii=False
-                        ),
+                        "arguments": json.dumps(call.get("args", {}), ensure_ascii=False),
                     },
                 }
                 for call in self.tool_calls

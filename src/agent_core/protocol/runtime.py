@@ -12,10 +12,15 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-
 RunStatus = Literal[
-    "queued", "running", "waiting_approval", "waiting_clarification",
-    "interrupted", "completed", "failed", "cancelled",
+    "queued",
+    "running",
+    "waiting_approval",
+    "waiting_clarification",
+    "interrupted",
+    "completed",
+    "failed",
+    "cancelled",
 ]
 
 
@@ -85,9 +90,7 @@ class ToolResult:
     success: bool
     value: Any = None
     error: str | None = None
-    error_kind: Literal[
-        "", "not_found", "invalid_arguments", "timeout", "approval", "execution"
-    ] = ""
+    error_kind: Literal["", "not_found", "invalid_arguments", "timeout", "approval", "execution"] = ""
     retryable: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -159,9 +162,7 @@ class RunContext:
             "idempotency_key": self.idempotency_key,
             "iteration": self.iteration,
             "tool_calls_used": self.tool_calls_used,
-            "pending_approval": (
-                self.pending_approval.to_dict() if self.pending_approval else None
-            ),
+            "pending_approval": (self.pending_approval.to_dict() if self.pending_approval else None),
             "pending_clarification": self.pending_clarification,
             "state": self.state,
             "metadata": self.metadata,

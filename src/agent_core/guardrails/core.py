@@ -5,8 +5,14 @@ from __future__ import annotations
 import logging
 import re
 from abc import ABC, abstractmethod
+from typing import ClassVar
 
-from agent_core.middleware import Middleware, MiddlewareAction, MiddlewareContext, MiddlewareResult
+from agent_core.middleware.base import (
+    Middleware,
+    MiddlewareAction,
+    MiddlewareContext,
+    MiddlewareResult,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +38,7 @@ class BlockedKeywordsGuard(Guard):
         self._patterns = [re.compile(re.escape(keyword), flags) for keyword in self._keywords]
 
     def check(self, text: str) -> tuple[bool, str]:
-        for pattern, keyword in zip(self._patterns, self._keywords):
+        for pattern, keyword in zip(self._patterns, self._keywords, strict=True):
             if pattern.search(text):
                 return False, f"输入包含违禁词：{keyword}"
         return True, ""
@@ -69,7 +75,7 @@ class LengthGuard(Guard):
 class PIIRedactionGuard(Guard):
     """检测并脱敏常见手机号、身份证、邮箱和银行卡号。"""
 
-    _PATTERNS: list[tuple[str, re.Pattern[str], str]] = [
+    _PATTERNS: ClassVar[list[tuple[str, re.Pattern[str], str]]] = [
         ("手机号", re.compile(r"\b1[3-9]\d{9}\b"), "***手机号***"),
         ("身份证", re.compile(r"\b\d{17}[\dXx]\b"), "***身份证***"),
         ("邮箱", re.compile(r"\b[\w.+-]+@[\w-]+\.[a-z]{2,}\b", re.I), "***邮箱***"),
@@ -97,7 +103,7 @@ class PIIRedactionGuard(Guard):
 class OutputFormatGuard(Guard):
     """拦截常见脚本、SQL 注入和 JavaScript 协议内容。"""
 
-    _INJECTION_PATTERNS = [
+    _INJECTION_PATTERNS: ClassVar[list[re.Pattern[str]]] = [
         re.compile(r"(DROP\s+TABLE|DELETE\s+FROM|INSERT\s+INTO)", re.I),
         re.compile(r"(<script[\s>])", re.I),
         re.compile(r"(javascript\s*:)", re.I),

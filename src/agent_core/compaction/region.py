@@ -36,9 +36,7 @@ def estimate_message_tokens(message: Message, *, chars_per_token: int = 4) -> in
 
 def estimate_tokens(messages: list[Message], *, chars_per_token: int = 4) -> int:
     """按字符粗估一组消息的 token 数（用于尾部预算与"是否变小"判断）。"""
-    return sum(
-        estimate_message_tokens(m, chars_per_token=chars_per_token) for m in messages
-    )
+    return sum(estimate_message_tokens(m, chars_per_token=chars_per_token) for m in messages)
 
 
 def balanced_cut(messages: list[Message], proposed_cut: int) -> int:
@@ -93,9 +91,7 @@ def select_cut(
     """
     retained = 0
     for index in range(len(messages) - 1, -1, -1):
-        retained += estimate_message_tokens(
-            messages[index], chars_per_token=chars_per_token
-        )
+        retained += estimate_message_tokens(messages[index], chars_per_token=chars_per_token)
         if retained >= retain_tokens:
             return index
     return 0

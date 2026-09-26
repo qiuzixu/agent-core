@@ -1,8 +1,12 @@
 """通用上下文压缩能力。"""
 
-from agent_core.compaction.middleware import OVERFLOW_RETRY_KEY, CompactionMiddleware, is_context_overflow_error
-from agent_core.compaction.pruner import PRUNE_MARKER, PruneConfig, prune_text, prune_tool_results
+from agent_core.compaction.middleware import (
+    OVERFLOW_RETRY_KEY,
+    CompactionMiddleware,
+    is_context_overflow_error,
+)
 from agent_core.compaction.prompts import DEFAULT_COMPACTION_INSTRUCTION, DEFAULT_SUMMARY_SECTIONS
+from agent_core.compaction.pruner import PRUNE_MARKER, PruneConfig, prune_text, prune_tool_results
 from agent_core.compaction.region import (
     balanced_cut,
     build_checkpoint,
@@ -14,6 +18,7 @@ from agent_core.compaction.region import (
 )
 from agent_core.compaction.spill import SpillStore
 from agent_core.compaction.spill_tool import build_spill_tool
+from agent_core.compaction.token_limit import TokenLimitMiddleware
 from agent_core.compaction.types import (
     SUMMARY_CLOSE,
     SUMMARY_OPEN,
@@ -22,7 +27,6 @@ from agent_core.compaction.types import (
     CompactionError,
     CompactionResult,
 )
-from agent_core.compaction.token_limit import TokenLimitMiddleware
 
 __all__ = [
     "DEFAULT_COMPACTION_INSTRUCTION",
@@ -36,12 +40,12 @@ __all__ = [
     "CompactionError",
     "CompactionMiddleware",
     "CompactionResult",
-    "TokenLimitMiddleware",
     "PruneConfig",
     "SpillStore",
+    "TokenLimitMiddleware",
     "balanced_cut",
-    "build_spill_tool",
     "build_checkpoint",
+    "build_spill_tool",
     "estimate_message_tokens",
     "estimate_tokens",
     "extract_previous_summary",

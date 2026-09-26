@@ -52,9 +52,11 @@ class RunLeaseStore(ABC):
 
     async def initialize(self) -> None:
         """初始化后端。内存和 SQLite 实现无需额外操作。"""
+        return None
 
     async def close(self) -> None:
         """关闭后端。内存和 SQLite 实现无需额外操作。"""
+        return None
 
     @abstractmethod
     async def claim(
@@ -178,7 +180,7 @@ class SqliteRunLeaseStore(RunLeaseStore):
             connection.executescript(self.DDL)
 
     @contextmanager
-    def _connect(self) -> Generator[sqlite3.Connection, None, None]:
+    def _connect(self) -> Generator[sqlite3.Connection]:
         connection = sqlite3.connect(self._db_path, timeout=30.0)
         try:
             yield connection
@@ -203,8 +205,7 @@ class SqliteRunLeaseStore(RunLeaseStore):
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                "SELECT worker_id, lease_expires_at FROM agent_run_leases "
-                "WHERE thread_id=? AND run_id=?",
+                "SELECT worker_id, lease_expires_at FROM agent_run_leases WHERE thread_id=? AND run_id=?",
                 (thread_id, run_id),
             ).fetchone()
             if row and row[0] != worker_id and _parse(row[1]) > now:

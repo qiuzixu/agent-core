@@ -8,8 +8,8 @@
 
 from __future__ import annotations
 
-import json
 import copy
+import json
 import logging
 from pathlib import Path
 from typing import Any, Protocol
@@ -137,9 +137,7 @@ class FileCheckpointer:
                 json.dump(state, f, ensure_ascii=False, indent=2)
             logger.debug("Saved checkpoint for thread %r to %s", thread_id, file_path)
         except Exception as exc:
-            raise CheckpointError(
-                f"Failed to save checkpoint for thread {thread_id!r}: {exc}"
-            ) from exc
+            raise CheckpointError(f"Failed to save checkpoint for thread {thread_id!r}: {exc}") from exc
 
     async def load(self, thread_id: str) -> dict[str, Any] | None:
         """从文件加载会话状态。
@@ -160,9 +158,7 @@ class FileCheckpointer:
             logger.debug("Loaded checkpoint for thread %r from %s", thread_id, file_path)
             return state
         except Exception as exc:
-            raise CheckpointError(
-                f"Failed to load checkpoint for thread {thread_id!r}: {exc}"
-            ) from exc
+            raise CheckpointError(f"Failed to load checkpoint for thread {thread_id!r}: {exc}") from exc
 
     async def delete(self, thread_id: str) -> None:
         """删除会话状态文件。
@@ -223,7 +219,7 @@ class CheckpointVersion:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "CheckpointVersion":
+    def from_dict(cls, data: dict[str, Any]) -> CheckpointVersion:
         """从字典创建。"""
         return cls(
             version_id=data["version_id"],
@@ -527,9 +523,7 @@ class TimeTravelCheckpointer:
             with file_path.open("r", encoding="utf-8") as f:
                 data = json.load(f)
 
-            self._versions[thread_id] = [
-                CheckpointVersion.from_dict(v) for v in data.get("versions", [])
-            ]
+            self._versions[thread_id] = [CheckpointVersion.from_dict(v) for v in data.get("versions", [])]
             self._current_version[thread_id] = data.get("current_version", 0)
         except Exception as exc:
             logger.error("Failed to load versions from file: %s", exc)

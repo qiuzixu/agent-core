@@ -10,8 +10,8 @@ from pathlib import Path
 
 from agent_core import (
     SkillBindingError,
-    SkillLoadError,
     SkillLoader,
+    SkillLoadError,
     SkillRegistrationError,
     SkillRegistry,
     ToolExecutor,
@@ -91,12 +91,12 @@ class TestSkillSystem(unittest.IsolatedAsyncioTestCase):
                 functions={"weather_lookup": lambda city: f"{city}:sunny"},
             )
 
-            result = await ToolExecutor(tools).execute_result(
-                "lookup_weather", {"city": "北京"}
-            )
+            result = await ToolExecutor(tools).execute_result("lookup_weather", {"city": "北京"})
 
             self.assertEqual(skill.instructions, "按 Skill 指令执行。")
-            self.assertEqual(activation.compose_system_prompt("基础提示词"), "基础提示词\n\n按 Skill 指令执行。")
+            self.assertEqual(
+                activation.compose_system_prompt("基础提示词"), "基础提示词\n\n按 Skill 指令执行。"
+            )
             self.assertEqual(activation.tool_names, ("lookup_weather",))
             self.assertEqual(
                 activation.tool_definitions[0]["function"]["name"],
@@ -134,9 +134,7 @@ class TestSkillSystem(unittest.IsolatedAsyncioTestCase):
                 mcp_clients={"cesium": client},
             )
 
-            result = await ToolExecutor(tools).execute_result(
-                "list_entities", {"layer": "route"}
-            )
+            result = await ToolExecutor(tools).execute_result("list_entities", {"layer": "route"})
 
             self.assertTrue(result.success)
             self.assertEqual(client.calls, [("entity_list", {"layer": "route"})])
@@ -204,9 +202,7 @@ class TestSkillSystem(unittest.IsolatedAsyncioTestCase):
             (root / "outside.md").write_text("不应读取", encoding="utf-8")
             for data in invalid_manifests:
                 with self.subTest(data=data):
-                    manifest.write_text(
-                        json.dumps(data, ensure_ascii=False), encoding="utf-8"
-                    )
+                    manifest.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
                     with self.assertRaises(SkillLoadError):
                         SkillLoader().load(skill_dir)
 

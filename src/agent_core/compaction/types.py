@@ -48,9 +48,7 @@ class CompactionConfig:
 
     def __post_init__(self) -> None:
         if not 0 < self.threshold_ratio <= 1:
-            raise ValueError(
-                f"compaction threshold_ratio 必须在 (0, 1] 区间，当前 {self.threshold_ratio}"
-            )
+            raise ValueError(f"compaction threshold_ratio 必须在 (0, 1] 区间，当前 {self.threshold_ratio}")
         if not 0 < self.retain_ratio < self.threshold_ratio:
             raise ValueError(
                 "compaction retain_ratio 必须大于 0 且小于 threshold_ratio，"

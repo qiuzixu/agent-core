@@ -30,9 +30,7 @@ class PromptVersion:
         try:
             return self.content.format(**kwargs)
         except KeyError as exc:
-            raise ValueError(
-                f"提示词变量缺失：{exc}，可用变量：{list(kwargs.keys())}"
-            ) from exc
+            raise ValueError(f"提示词变量缺失：{exc}，可用变量：{list(kwargs.keys())}") from exc
 
 
 @dataclass
@@ -116,9 +114,7 @@ class PromptRegistry:
                 "description": item.description,
                 "created_at": item.created_at,
                 "is_current": item.version == entry.current_version,
-                "content_preview": item.content[:100] + "..."
-                if len(item.content) > 100
-                else item.content,
+                "content_preview": item.content[:100] + "..." if len(item.content) > 100 else item.content,
             }
             for item in entry.versions
         ]

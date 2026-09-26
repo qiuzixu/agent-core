@@ -89,9 +89,7 @@ class AgentRuntime:
         self._require_owner(user_id, tenant_id)
         async with self._lock:
             if idempotency_key:
-                existing = await self._run_store.find_run_by_idempotency(
-                    tenant_id, user_id, idempotency_key
-                )
+                existing = await self._run_store.find_run_by_idempotency(tenant_id, user_id, idempotency_key)
                 if existing is not None:
                     task = self._tasks.get(existing.run_id)
                     return RuntimeRun(context=existing, task=task)
@@ -280,9 +278,7 @@ class AgentRuntime:
                 reason="worker_lease_lost",
                 error=str(lease_errors[0]),
             )
-            raise RuntimeConcurrencyError(
-                f"run {context.run_id} 的 Worker 租约已丢失"
-            ) from lease_errors[0]
+            raise RuntimeConcurrencyError(f"run {context.run_id} 的 Worker 租约已丢失") from lease_errors[0]
         finally:
             if heartbeat is not None:
                 heartbeat.cancel()
@@ -410,9 +406,7 @@ class AgentRuntime:
     ) -> None:
         if self._require_access and access is None:
             raise PermissionError("该 AgentRuntime 要求提供 AccessContext")
-        if self._require_access and (
-            context.user_id is None or context.tenant_id is None
-        ):
+        if self._require_access and (context.user_id is None or context.tenant_id is None):
             raise PermissionError("该 run 尚未绑定用户和租户")
         if access is not None and not access.can_access(context.user_id, context.tenant_id):
             raise PermissionError("无权访问该 run")

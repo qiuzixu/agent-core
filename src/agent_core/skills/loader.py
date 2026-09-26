@@ -57,9 +57,7 @@ class SkillLoader:
 
         name = self._required_string(data, "name", f"Skill {manifest}")
         if not _NAME_PATTERN.fullmatch(name):
-            raise SkillLoadError(
-                f"Skill 名称格式无效：{name!r}；只允许字母、数字、点、下划线和连字符"
-            )
+            raise SkillLoadError(f"Skill 名称格式无效：{name!r}；只允许字母、数字、点、下划线和连字符")
         description = self._required_string(data, "description", f"Skill {name}")
         version = self._required_string(data, "version", f"Skill {name}")
         instructions = self._load_instructions(data, manifest, name)
@@ -68,14 +66,11 @@ class SkillLoader:
         if not isinstance(raw_tools, list):
             raise SkillLoadError(f"Skill {name} 的 tools 必须是数组")
         tools = tuple(
-            self._parse_tool(item, skill_name=name, index=index)
-            for index, item in enumerate(raw_tools)
+            self._parse_tool(item, skill_name=name, index=index) for index, item in enumerate(raw_tools)
         )
         duplicate_tools = self._duplicates(tool.name for tool in tools)
         if duplicate_tools:
-            raise SkillLoadError(
-                f"Skill {name} 包含重复工具名称：{', '.join(duplicate_tools)}"
-            )
+            raise SkillLoadError(f"Skill {name} 包含重复工具名称：{', '.join(duplicate_tools)}")
 
         metadata = data.get("metadata", {})
         if not isinstance(metadata, dict):
@@ -108,9 +103,7 @@ class SkillLoader:
         except OSError as exc:
             raise SkillLoadError(f"无法读取 Skill 清单：{manifest}（{exc}）") from exc
         except json.JSONDecodeError as exc:
-            raise SkillLoadError(
-                f"Skill 清单不是有效 JSON：{manifest}:{exc.lineno}:{exc.colno}"
-            ) from exc
+            raise SkillLoadError(f"Skill 清单不是有效 JSON：{manifest}:{exc.lineno}:{exc.colno}") from exc
         if not isinstance(raw, dict):
             raise SkillLoadError(f"Skill 清单根节点必须是对象：{manifest}")
         return cast(dict[str, Any], raw)
@@ -124,9 +117,7 @@ class SkillLoader:
         inline = data.get("instructions")
         filename = data.get("instructions_file")
         if inline is not None and filename is not None:
-            raise SkillLoadError(
-                f"Skill {skill_name} 不能同时设置 instructions 和 instructions_file"
-            )
+            raise SkillLoadError(f"Skill {skill_name} 不能同时设置 instructions 和 instructions_file")
         if inline is not None:
             if not isinstance(inline, str):
                 raise SkillLoadError(f"Skill {skill_name} 的 instructions 必须是字符串")
@@ -141,13 +132,9 @@ class SkillLoader:
         try:
             instruction_path.relative_to(skill_root)
         except ValueError as exc:
-            raise SkillLoadError(
-                f"Skill {skill_name} 的 instructions_file 不能越过 Skill 目录"
-            ) from exc
+            raise SkillLoadError(f"Skill {skill_name} 的 instructions_file 不能越过 Skill 目录") from exc
         if not instruction_path.is_file():
-            raise SkillLoadError(
-                f"Skill {skill_name} 的指令文件不存在：{instruction_path}"
-            )
+            raise SkillLoadError(f"Skill {skill_name} 的指令文件不存在：{instruction_path}")
         try:
             return instruction_path.read_text(encoding="utf-8").strip()
         except OSError as exc:
@@ -245,18 +232,14 @@ class SkillLoader:
         return value.strip()
 
     @staticmethod
-    def _boolean(
-        data: dict[str, Any], field: str, default: bool, context: str
-    ) -> bool:
+    def _boolean(data: dict[str, Any], field: str, default: bool, context: str) -> bool:
         value = data.get(field, default)
         if not isinstance(value, bool):
             raise SkillLoadError(f"{context} 的 {field} 必须是布尔值")
         return value
 
     @staticmethod
-    def _reject_unknown_fields(
-        data: dict[str, Any], allowed: set[str], context: str
-    ) -> None:
+    def _reject_unknown_fields(data: dict[str, Any], allowed: set[str], context: str) -> None:
         unknown = sorted(set(data) - allowed)
         if unknown:
             raise SkillLoadError(f"{context} 包含未知字段：{', '.join(unknown)}")

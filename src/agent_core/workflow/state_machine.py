@@ -24,14 +24,12 @@ START = "__start__"
 END = "__end__"
 
 # 节点函数签名
-NodeFunc = Callable[
-    [dict[str, Any]], dict[str, Any] | Awaitable[dict[str, Any]]
-]
+NodeFunc = Callable[[dict[str, Any]], dict[str, Any] | Awaitable[dict[str, Any]]]
 # 条件路由函数签名：返回下一个节点名称
 ConditionalRouteFunc = Callable[[dict[str, Any]], str | Awaitable[str]]
 StepCallback = Callable[
     [str, str, dict[str, Any], int],
-    None | Awaitable[None],
+    Awaitable[None] | None,
 ]
 
 
@@ -88,9 +86,7 @@ class StateMachine:
             to_node: 目标节点名称。
         """
         if from_node in self._conditional_edges:
-            raise StateMachineError(
-                f"Node {from_node!r} already has a conditional edge."
-            )
+            raise StateMachineError(f"Node {from_node!r} already has a conditional edge.")
         self._edges[from_node] = to_node
 
     def add_conditional_edges(
@@ -143,8 +139,7 @@ class StateMachine:
             steps += 1
             if steps > self._max_steps:
                 raise StateMachineError(
-                    f"StateMachine exceeded max steps ({self._max_steps}). "
-                    f"Last node: {current_node!r}."
+                    f"StateMachine exceeded max steps ({self._max_steps}). Last node: {current_node!r}."
                 )
 
             # 执行当前节点（START 和 END 是虚拟节点，不执行）
@@ -164,9 +159,7 @@ class StateMachine:
                 except WorkflowPause:
                     raise
                 except Exception as exc:
-                    raise StateMachineError(
-                        f"Node {current_node!r} raised exception: {exc}"
-                    ) from exc
+                    raise StateMachineError(f"Node {current_node!r} raised exception: {exc}") from exc
 
             # 决定下一个节点
             next_node = await self._get_next_node(current_node, state)

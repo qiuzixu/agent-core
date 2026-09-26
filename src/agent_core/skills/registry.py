@@ -64,12 +64,8 @@ class SkillRegistry:
         skills = (loader or SkillLoader()).load_directory(directory)
         batch_duplicates = self._duplicates(skill.name for skill in skills)
         if batch_duplicates:
-            raise SkillRegistrationError(
-                f"目录中包含重复 Skill：{', '.join(batch_duplicates)}"
-            )
-        conflicts = sorted(
-            skill.name for skill in skills if skill.name in self._skills and not replace
-        )
+            raise SkillRegistrationError(f"目录中包含重复 Skill：{', '.join(batch_duplicates)}")
+        conflicts = sorted(skill.name for skill in skills if skill.name in self._skills and not replace)
         if conflicts:
             raise SkillRegistrationError(f"Skill 已注册：{', '.join(conflicts)}")
         for skill in skills:
@@ -161,9 +157,7 @@ class SkillRegistry:
             selected_names = list(names)
         duplicates = self._duplicates(selected_names)
         if duplicates:
-            raise SkillRegistrationError(
-                f"重复激活 Skill：{', '.join(duplicates)}"
-            )
+            raise SkillRegistrationError(f"重复激活 Skill：{', '.join(duplicates)}")
         missing = [name for name in selected_names if name not in self._skills]
         if missing:
             raise SkillRegistrationError(f"Skill 未注册：{', '.join(missing)}")
@@ -180,13 +174,9 @@ class SkillRegistry:
         if tool.kind == "function":
             function = functions.get(tool.target)
             if function is None:
-                raise SkillBindingError(
-                    f"Skill {skill_name} 缺少 Function 绑定：{tool.target}"
-                )
+                raise SkillBindingError(f"Skill {skill_name} 缺少 Function 绑定：{tool.target}")
             if not callable(function):
-                raise SkillBindingError(
-                    f"Skill {skill_name} 的 Function 绑定不可调用：{tool.target}"
-                )
+                raise SkillBindingError(f"Skill {skill_name} 的 Function 绑定不可调用：{tool.target}")
             return function
 
         server = tool.server
@@ -194,9 +184,7 @@ class SkillRegistry:
             raise SkillBindingError(f"Skill {skill_name} 的 MCP 工具未声明 server")
         client = mcp_clients.get(server)
         if client is None:
-            raise SkillBindingError(
-                f"Skill {skill_name} 缺少 MCP 客户端：{server}"
-            )
+            raise SkillBindingError(f"Skill {skill_name} 缺少 MCP 客户端：{server}")
 
         async def call_mcp(**arguments: Any) -> dict[str, object]:
             return await client.call_tool(tool.target, arguments)

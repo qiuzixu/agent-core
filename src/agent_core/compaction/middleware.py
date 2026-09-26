@@ -20,6 +20,10 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from agent_core.compaction.prompts import (
+    DEFAULT_COMPACTION_INSTRUCTION,
+    DEFAULT_SUMMARY_SECTIONS,
+)
 from agent_core.compaction.pruner import (
     PruneConfig,
     prune_tool_results,
@@ -40,18 +44,14 @@ from agent_core.compaction.types import (
     CompactionError,
     CompactionResult,
 )
-from agent_core.protocol.messages import Message
-from agent_core.middleware import (
+from agent_core.middleware.base import (
     Middleware,
     MiddlewareAction,
     MiddlewareContext,
     MiddlewareResult,
 )
 from agent_core.model import ContextUsage, ModelAdapter
-from agent_core.compaction.prompts import (
-    DEFAULT_COMPACTION_INSTRUCTION,
-    DEFAULT_SUMMARY_SECTIONS,
-)
+from agent_core.protocol.messages import Message
 
 logger = logging.getLogger(__name__)
 
@@ -156,9 +156,7 @@ class CompactionMiddleware(Middleware):
         )
 
         try:
-            result = await self._compact(
-                ctx.messages, window=window, before_tokens=before_tokens
-            )
+            result = await self._compact(ctx.messages, window=window, before_tokens=before_tokens)
         except Exception as exc:
             logger.warning("[Compaction] 压缩失败，降级到硬截断：%s", exc)
             self._emit(ctx, "compaction_failed", reason=str(exc))
@@ -219,9 +217,7 @@ class CompactionMiddleware(Middleware):
 
         attempts = int(ctx.metadata.get(OVERFLOW_RETRY_KEY, 0))
         if attempts >= config.max_overflow_retries:
-            logger.warning(
-                "[Compaction] 上下文超长重试已达上限（%d），不再强制压缩", attempts
-            )
+            logger.warning("[Compaction] 上下文超长重试已达上限（%d），不再强制压缩", attempts)
             return False
         ctx.metadata[OVERFLOW_RETRY_KEY] = attempts + 1
 
@@ -236,9 +232,7 @@ class CompactionMiddleware(Middleware):
             logger.warning("[Compaction] 无窗口信息，无法处理上下文超长错误")
             return False
         if not before_tokens:
-            before_tokens = estimate_tokens(
-                ctx.messages, chars_per_token=config.chars_per_token
-            )
+            before_tokens = estimate_tokens(ctx.messages, chars_per_token=config.chars_per_token)
 
         self._emit(
             ctx,
@@ -249,9 +243,7 @@ class CompactionMiddleware(Middleware):
             forced=True,
         )
         try:
-            result = await self._compact(
-                ctx.messages, window=window, before_tokens=before_tokens
-            )
+            result = await self._compact(ctx.messages, window=window, before_tokens=before_tokens)
         except Exception as compact_exc:
             logger.warning("[Compaction] 溢出恢复压缩失败：%s", compact_exc)
             self._emit(ctx, "compaction_failed", reason=str(compact_exc))
@@ -328,9 +320,7 @@ class CompactionMiddleware(Middleware):
         async def fallback(reason: str) -> CompactionResult:
             """摘要不可用时收口：瘦身有效则单独采纳，否则判定未压缩。"""
             if pruned_saved <= 0:
-                return CompactionResult(
-                    False, messages, before_tokens=before_tokens, reason=reason
-                )
+                return CompactionResult(False, messages, before_tokens=before_tokens, reason=reason)
             measured = await self._remaining_tokens(pruned)
             return CompactionResult(
                 True,
@@ -360,19 +350,11 @@ class CompactionMiddleware(Middleware):
             # 旧摘要（上一轮写回的 checkpoint）是压缩产物，不算"待压原文"：
             # 它只作为滚动合并的基线，也不参与"新摘要是否更小"的比较。
             previous_summary = extract_previous_summary(current, cut)
-            origin_messages = [
-                m
-                for m in head_messages
-                if m.role != "system" and m.name != SUMMARY_SOURCE
-            ]
-            origin_tokens = estimate_tokens(
-                origin_messages, chars_per_token=config.chars_per_token
-            )
+            origin_messages = [m for m in head_messages if m.role != "system" and m.name != SUMMARY_SOURCE]
+            origin_tokens = estimate_tokens(origin_messages, chars_per_token=config.chars_per_token)
             if origin_tokens <= 0:
                 reason = (
-                    "头部只剩已有摘要，重压无收益"
-                    if previous_summary is not None
-                    else "头部没有可压原文"
+                    "头部只剩已有摘要，重压无收益" if previous_summary is not None else "头部没有可压原文"
                 )
                 return await fallback(reason)
             if previous_summary is not None:
@@ -395,16 +377,12 @@ class CompactionMiddleware(Middleware):
                 return await fallback(f"摘要失败:{exc}")
 
             checkpoint = build_checkpoint(summary)
-            checkpoint_tokens = estimate_tokens(
-                [checkpoint], chars_per_token=config.chars_per_token
-            )
+            checkpoint_tokens = estimate_tokens([checkpoint], chars_per_token=config.chars_per_token)
             if checkpoint_tokens >= origin_tokens:
                 return await fallback("摘要未比原文更小")
 
             current = rebuild(current, cut, checkpoint)
-            after_tokens = max(
-                before_tokens - pruned_saved - (head_tokens - checkpoint_tokens), 0
-            )
+            after_tokens = max(before_tokens - pruned_saved - (head_tokens - checkpoint_tokens), 0)
 
             remaining = await self._remaining_tokens(current)
             if remaining is not None:

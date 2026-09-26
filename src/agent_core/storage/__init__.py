@@ -4,6 +4,11 @@ SQLite 使用 Python 标准库，开箱即用；PostgreSQL 使用延迟导入的
 只有实际创建 PostgreSQL 存储时才要求安装对应驱动。
 """
 
+from agent_core.ports.model_selection import (
+    ModelSelection,
+    ModelSelectionScope,
+    ModelSelectionStore,
+)
 from agent_core.storage.context import (
     ContextStore,
     MemoryContextStore,
@@ -21,9 +26,6 @@ from agent_core.storage.lease import (
 )
 from agent_core.storage.model_selection import (
     MemoryModelSelectionStore,
-    ModelSelection,
-    ModelSelectionScope,
-    ModelSelectionStore,
     PostgresModelSelectionStore,
     SqliteModelSelectionStore,
     create_model_selection_store,
@@ -71,10 +73,10 @@ __all__ = [
     "PostgresRuntimeStore",
     "PostgresSessionStore",
     "PostgresWorkflowExecutionStore",
-    "RuntimeConcurrencyError",
-    "RuntimeStore",
     "RunLease",
     "RunLeaseStore",
+    "RuntimeConcurrencyError",
+    "RuntimeStore",
     "SessionManager",
     "SqliteContextStore",
     "SqliteModelSelectionStore",

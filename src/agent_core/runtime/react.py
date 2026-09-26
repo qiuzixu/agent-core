@@ -26,6 +26,16 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from agent_core.checkpoint import Checkpointer
+from agent_core.errors import (
+    ModelInvocationError,
+    ModelOutputValidationError,
+)
+from agent_core.middleware import (
+    Middleware,
+    MiddlewareAction,
+    MiddlewareContext,
+    MiddlewareManager,
+)
 from agent_core.model import ModelAdapter
 from agent_core.protocol.messages import (
     Message,
@@ -34,18 +44,8 @@ from agent_core.protocol.messages import (
     tool_message,
     user_message,
 )
-from agent_core.middleware import (
-    Middleware,
-    MiddlewareAction,
-    MiddlewareContext,
-    MiddlewareManager,
-)
 from agent_core.protocol.runtime import RunContext, RunStatus
 from agent_core.tools import ToolExecutor
-from agent_core.errors import (
-    ModelInvocationError,
-    ModelOutputValidationError,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -173,9 +173,7 @@ class ReActAgent:
                 emit=runtime_context.emit,
             )
             # 然后补执行之前未完成的工具：
-            messages = await self._execute_tools(
-                pending_tool_calls, messages, restore_ctx, runtime_context
-            )
+            messages = await self._execute_tools(pending_tool_calls, messages, restore_ctx, runtime_context)
             # 工具执行完成后，把阶段改回模型调用：
             start_iteration = int(checkpoint.get("iteration", 0)) + 1
             # 然后保存一次新的 checkpoint
@@ -219,9 +217,7 @@ class ReActAgent:
                     break
                 except Exception as exc:
                     if await self._middleware_manager.handle_exception(exc, ctx):
-                        runtime_context.emit(
-                            "model_retry", iteration=iteration, error=str(exc)
-                        )
+                        runtime_context.emit("model_retry", iteration=iteration, error=str(exc))
                         continue
                     raise ModelInvocationError(
                         f"ReAct agent 第 {iteration + 1} 轮 LLM 调用失败：{exc}"
@@ -280,9 +276,7 @@ class ReActAgent:
             runtime_context.tool_calls_used = tool_calls_used
 
             # 执行工具调用
-            messages = await self._execute_tools(
-                response.tool_calls, messages, ctx, runtime_context
-            )
+            messages = await self._execute_tools(response.tool_calls, messages, ctx, runtime_context)
             # 13. 工具执行后再次保存 checkpoint
             await self._save_checkpoint(
                 checkpoint_thread,
@@ -299,8 +293,7 @@ class ReActAgent:
         else:
             logger.warning("ReAct 达到最大迭代次数 %d", self._max_iterations)
             raise ModelOutputValidationError(
-                f"ReAct agent 达到最大迭代次数（{self._max_iterations}），"
-                "尚未生成不含工具调用的最终回答。"
+                f"ReAct agent 达到最大迭代次数（{self._max_iterations}），尚未生成不含工具调用的最终回答。"
             )
 
         if not last_answer:
@@ -393,13 +386,9 @@ class ReActAgent:
         # 流式执行与普通执行使用同一套会话隔离规则。
         checkpoint_thread = thread_id or runtime_context.thread_id
 
-        start_iteration = int(
-            checkpoint.get("next_iteration", checkpoint.get("iteration", 0))
-        )
+        start_iteration = int(checkpoint.get("next_iteration", checkpoint.get("iteration", 0)))
         pending_tool_calls = checkpoint.get("pending_tool_calls")
-        if checkpoint.get("phase") == "execute_tools" and isinstance(
-            pending_tool_calls, list
-        ):
+        if checkpoint.get("phase") == "execute_tools" and isinstance(pending_tool_calls, list):
             restore_ctx = MiddlewareContext(
                 messages=messages,
                 iteration=int(checkpoint.get("iteration", start_iteration)),
@@ -461,13 +450,9 @@ class ReActAgent:
 
             except Exception as exc:
                 if await self._middleware_manager.handle_exception(exc, ctx):
-                    runtime_context.emit(
-                        "model_retry", iteration=iteration, error=str(exc)
-                    )
+                    runtime_context.emit("model_retry", iteration=iteration, error=str(exc))
                     continue
-                raise ModelInvocationError(
-                    f"ReAct agent 第 {iteration + 1} 轮流式调用失败：{exc}"
-                ) from exc
+                raise ModelInvocationError(f"ReAct agent 第 {iteration + 1} 轮流式调用失败：{exc}") from exc
 
             # 组装 assistant message
             content = "".join(text_parts)
@@ -485,9 +470,7 @@ class ReActAgent:
             if mw_result.action == MiddlewareAction.RETRY:
                 messages.pop()
                 if text_parts:
-                    raise ModelOutputValidationError(
-                        "流式文本已经发送，after_model 不能安全重试当前响应。"
-                    )
+                    raise ModelOutputValidationError("流式文本已经发送，after_model 不能安全重试当前响应。")
                 continue
             if mw_result.action == MiddlewareAction.STOP:
                 raise ModelOutputValidationError(
@@ -533,9 +516,7 @@ class ReActAgent:
                 iteration + 1,
                 [tc["name"] for tc in final_tool_calls],
             )
-            messages = await self._execute_tools(
-                final_tool_calls, messages, ctx, runtime_context
-            )
+            messages = await self._execute_tools(final_tool_calls, messages, ctx, runtime_context)
             await self._save_checkpoint(
                 checkpoint_thread,
                 messages,
@@ -551,8 +532,7 @@ class ReActAgent:
         else:
             logger.warning("ReAct 流式达到最大迭代次数 %d", self._max_iterations)
             raise ModelOutputValidationError(
-                f"ReAct agent 达到最大迭代次数（{self._max_iterations}），"
-                "尚未生成不含工具调用的最终回答。"
+                f"ReAct agent 达到最大迭代次数（{self._max_iterations}），尚未生成不含工具调用的最终回答。"
             )
 
         if not last_answer:
@@ -585,9 +565,7 @@ class ReActAgent:
         """构造初始消息列表。"""
         msgs: list[Message] = [system_message(self._system_prompt)]
         user_content = (
-            f"会话相关记忆：\n{memory_context}\n\n用户问题：{user_input}"
-            if memory_context
-            else user_input
+            f"会话相关记忆：\n{memory_context}\n\n用户问题：{user_input}" if memory_context else user_input
         )
         msgs.append(user_message(user_content))
         return msgs
@@ -616,19 +594,23 @@ class ReActAgent:
                     # 新 checkpoint 使用 Core 内部扁平格式；兼容旧 OpenAI 快照。
                     args = call.get("args", {})
                     name = call.get("name", "")
-                tool_calls.append({
-                    "id": call.get("id", ""),
-                    "type": "function",
-                    "name": name,
-                    "args": args if isinstance(args, dict) else {},
-                })
-            messages.append(Message(
-                role=item.get("role", "user"),
-                content=str(item.get("content") or ""),
-                name=item.get("name"),
-                tool_call_id=item.get("tool_call_id"),
-                tool_calls=tool_calls,
-            ))
+                tool_calls.append(
+                    {
+                        "id": call.get("id", ""),
+                        "type": "function",
+                        "name": name,
+                        "args": args if isinstance(args, dict) else {},
+                    }
+                )
+            messages.append(
+                Message(
+                    role=item.get("role", "user"),
+                    content=str(item.get("content") or ""),
+                    name=item.get("name"),
+                    tool_call_id=item.get("tool_call_id"),
+                    tool_calls=tool_calls,
+                )
+            )
         return messages
 
     async def _save_checkpoint(
@@ -702,6 +684,7 @@ class ReActAgent:
         runtime_context: RunContext | None = None,
     ) -> list[Message]:
         """并发执行所有工具，把结果追加到 messages。"""
+
         async def execute_one(tc: dict[str, Any]) -> Message:
             # 每个并发任务使用独立上下文，避免工具名、参数和结果互相覆盖。
             tool_ctx = MiddlewareContext(
@@ -733,9 +716,7 @@ class ReActAgent:
                     )
             else:
                 # 审批通过后才真正执行副作用工具。
-                structured_result = await self._tool_executor.execute_result(
-                    tc["name"], tc.get("args", {})
-                )
+                structured_result = await self._tool_executor.execute_result(tc["name"], tc.get("args", {}))
                 result = structured_result.to_text()
                 if runtime_context is not None:
                     runtime_context.emit(

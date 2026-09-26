@@ -31,10 +31,7 @@ class AccessContext:
         """判断当前身份是否可以访问资源。"""
         if self.is_admin and owner_tenant_id in (None, self.tenant_id):
             return True
-        return (
-            owner_user_id in (None, self.user_id)
-            and owner_tenant_id in (None, self.tenant_id)
-        )
+        return owner_user_id in (None, self.user_id) and owner_tenant_id in (None, self.tenant_id)
 
     def to_dict(self) -> dict[str, Any]:
         """转换为可持久化或写入事件的字典。"""

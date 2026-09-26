@@ -10,8 +10,7 @@ import asyncio
 import json
 import sys
 import uuid
-from collections.abc import Awaitable
-from typing import Any, TextIO
+from typing import TextIO
 
 from agent_core.acp.types import AcpBackend, AcpSession, AcpUpdate, JsonObject
 
@@ -138,9 +137,7 @@ class AcpStdioServer:
         if not isinstance(client_version, int):
             raise AcpProtocolError("protocolVersion 必须是整数")
         if client_version != self.protocol_version:
-            raise AcpProtocolError(
-                f"不支持的 ACP 版本：{client_version}，当前仅支持 {self.protocol_version}"
-            )
+            raise AcpProtocolError(f"不支持的 ACP 版本：{client_version}，当前仅支持 {self.protocol_version}")
         return {
             "protocolVersion": self.protocol_version,
             "agentCapabilities": {
@@ -314,9 +311,7 @@ class AcpStdioServer:
         await self._write({"jsonrpc": "2.0", "id": request_id, "result": result})
 
     async def _send_error(self, request_id: object, code: int, message: str) -> None:
-        await self._write(
-            {"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}}
-        )
+        await self._write({"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}})
 
     async def _send_notification(self, method: str, params: JsonObject) -> None:
         await self._write({"jsonrpc": "2.0", "method": method, "params": params})

@@ -23,20 +23,21 @@ from agent_core import (
     DurableWorkflowRunner,
     MemoryCheckpointer,
     MemoryEventSink,
+    MemoryModelSelectionStore,
     MemoryRunLeaseStore,
     MemoryRunStore,
-    StateMachineBuilder,
+    ModelProviderRegistry,
     ReActAgent,
     RunContext,
     SkillLoader,
     SkillRegistry,
+    StateMachineBuilder,
     StreamChunk,
-    ModelProviderRegistry,
-    create_model_provider,
     ToolExecutor,
     ToolRegistry,
     WorkflowPause,
     assistant_message,
+    create_model_provider,
 )
 from agent_core.access import AccessContext
 from agent_core.acp import AcpSession, AcpStdioServer, AcpUpdate
@@ -46,11 +47,11 @@ from agent_core.storage import (
     MemoryRuntimeStore,
     MemorySessionStore,
     MemoryWorkflowExecutionStore,
+    RuntimeConcurrencyError,
     SqliteContextStore,
     SqliteRunLeaseStore,
     SqliteRuntimeStore,
     SqliteSessionStore,
-    RuntimeConcurrencyError,
     SqliteWorkflowExecutionStore,
     WorkflowExecution,
 )
@@ -198,9 +199,9 @@ class TestAgentCorePublicApi(unittest.IsolatedAsyncioTestCase):
     def test_builtin_model_providers_are_registered_in_core(self) -> None:
         """Core 内置 Provider 已注册，但导入时不要求安装对应 SDK。"""
         from agent_core.model import (
+            MODEL_PROVIDER_REGISTRY,
             AnthropicProvider,
             GeminiProvider,
-            MODEL_PROVIDER_REGISTRY,
             OllamaProvider,
             OpenAIProvider,
         )
@@ -209,12 +210,17 @@ class TestAgentCorePublicApi(unittest.IsolatedAsyncioTestCase):
             MODEL_PROVIDER_REGISTRY.names(),
             ("anthropic", "gemini", "ollama", "openai"),
         )
-        self.assertTrue(all(cls.__module__ == "agent_core.model.providers" for cls in (
-            OpenAIProvider,
-            AnthropicProvider,
-            GeminiProvider,
-            OllamaProvider,
-        )))
+        self.assertTrue(
+            all(
+                cls.__module__ == "agent_core.model.providers"
+                for cls in (
+                    OpenAIProvider,
+                    AnthropicProvider,
+                    GeminiProvider,
+                    OllamaProvider,
+                )
+            )
+        )
 
     async def test_runtime_owns_lifecycle_and_publishes_events(self) -> None:
         model = _FakeModel(responses=[assistant_message("运行完成")])
@@ -339,7 +345,8 @@ class TestAgentCorePublicApi(unittest.IsolatedAsyncioTestCase):
                 sys.executable,
                 "-S",
                 "-c",
-                "from agent_core import ReActAgent, RunContext; print(ReActAgent.__name__, RunContext.__name__)",
+                "from agent_core import ReActAgent, RunContext; "
+                "print(ReActAgent.__name__, RunContext.__name__)",
             ],
             env=env,
             capture_output=True,
@@ -427,16 +434,10 @@ class TestAgentCorePublicApi(unittest.IsolatedAsyncioTestCase):
     async def test_run_lease_prevents_concurrent_workers_and_allows_takeover(self) -> None:
         """未过期租约不可抢占，过期后另一个 Worker 可以接管。"""
         leases = MemoryRunLeaseStore()
-        self.assertTrue(
-            await leases.claim("thread", "run", "worker-a", ttl_seconds=0.02)
-        )
-        self.assertFalse(
-            await leases.claim("thread", "run", "worker-b", ttl_seconds=1.0)
-        )
+        self.assertTrue(await leases.claim("thread", "run", "worker-a", ttl_seconds=0.02))
+        self.assertFalse(await leases.claim("thread", "run", "worker-b", ttl_seconds=1.0))
         await asyncio.sleep(0.03)
-        self.assertTrue(
-            await leases.claim("thread", "run", "worker-b", ttl_seconds=1.0)
-        )
+        self.assertTrue(await leases.claim("thread", "run", "worker-b", ttl_seconds=1.0))
         self.assertFalse(await leases.release("thread", "run", "worker-a"))
         self.assertTrue(await leases.release("thread", "run", "worker-b"))
 
@@ -587,16 +588,10 @@ class TestAgentCorePublicApi(unittest.IsolatedAsyncioTestCase):
             database = Path(directory) / "lease.db"
             first = SqliteRunLeaseStore(database)
             second = SqliteRunLeaseStore(database)
-            self.assertTrue(
-                await first.claim("thread", "run", "worker-a", ttl_seconds=1.0)
-            )
-            self.assertFalse(
-                await second.claim("thread", "run", "worker-b", ttl_seconds=1.0)
-            )
+            self.assertTrue(await first.claim("thread", "run", "worker-a", ttl_seconds=1.0))
+            self.assertFalse(await second.claim("thread", "run", "worker-b", ttl_seconds=1.0))
             self.assertTrue(await first.release("thread", "run", "worker-a"))
-            self.assertTrue(
-                await second.claim("thread", "run", "worker-b", ttl_seconds=1.0)
-            )
+            self.assertTrue(await second.claim("thread", "run", "worker-b", ttl_seconds=1.0))
 
     async def test_approval_can_be_resolved_by_another_queue_instance(self) -> None:
         """审批结果通过 Store 跨队列实例传播，不依赖同一个 asyncio.Event。"""
@@ -610,9 +605,7 @@ class TestAgentCorePublicApi(unittest.IsolatedAsyncioTestCase):
             user_id="alice",
             tenant_id="tenant-a",
         )
-        waiter = asyncio.create_task(
-            waiting_queue.wait_for_decision(request, timeout_seconds=1.0)
-        )
+        waiter = asyncio.create_task(waiting_queue.wait_for_decision(request, timeout_seconds=1.0))
 
         self.assertTrue(
             await deciding_queue.approve(
@@ -621,6 +614,39 @@ class TestAgentCorePublicApi(unittest.IsolatedAsyncioTestCase):
             )
         )
         self.assertEqual((await waiter).value, "approved")
+
+    async def test_persistent_approval_requires_async_creation(self) -> None:
+        """配置 Store 后不允许使用无法确认落库结果的同步创建接口。"""
+        store = MemoryRuntimeStore()
+        queue = ApprovalQueue(store)
+
+        with self.assertRaisesRegex(RuntimeError, "create_request_async"):
+            queue.create_request("thread", "dangerous_tool", {})
+
+        request = await queue.create_request_async("thread", "dangerous_tool", {})
+        persisted = await store.load_approval(request.request_id)
+        self.assertIsNotNone(persisted)
+        assert persisted is not None
+        self.assertEqual(persisted.status, "pending")
+
+    async def test_memory_model_selection_can_clear_tenant_default(self) -> None:
+        """租户默认模型使用与保存一致的键删除。"""
+        store = MemoryModelSelectionStore()
+        await store.save(
+            "openai",
+            "gpt-test",
+            scope="tenant",
+            user_id=None,
+            tenant_id="tenant-a",
+        )
+
+        await store.clear(
+            scope="tenant",
+            user_id=None,
+            tenant_id="tenant-a",
+        )
+
+        self.assertIsNone(await store.resolve(user_id=None, tenant_id="tenant-a"))
 
     async def test_durable_workflow_resumes_from_interrupted_node(self) -> None:
         """工作流暂停后从已保存节点恢复，不重复之前完成的节点。"""
