@@ -63,17 +63,17 @@ store = create_runtime_store(
 | `enabled` | `True` | 总开关 |
 | `chars_per_token` | `4` | 无精确计数时的估算比例 |
 
-## VitePress 文档
+## MkDocs 文档
 
 文档默认部署在站点根路径。子路径部署时设置 `DOCS_BASE`：
 
 ```bash
-DOCS_BASE=/handwritten-agent-core/ pnpm docs:build
+DOCS_BASE=/handwritten-agent-core/ python -m mkdocs build
 ```
 
 Windows PowerShell：
 
 ```powershell
 $env:DOCS_BASE = "/handwritten-agent-core/"
-pnpm docs:build
+python -m mkdocs build
 ```

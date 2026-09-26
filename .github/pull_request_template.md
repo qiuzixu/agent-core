@@ -10,5 +10,5 @@
 
 - [ ] `ruff check src tests examples`
 - [ ] `pytest`
-- [ ] `pnpm docs:build`
+- [ ] `python -m mkdocs build`
 - [ ] 已按需更新 `docs/ARCHITECTURE.md` 和 `docs/CAPABILITIES.md`

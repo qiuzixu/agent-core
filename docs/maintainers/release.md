@@ -11,11 +11,10 @@
 ## 2. 运行验证
 
 ```bash
-python -m pip install build twine
+python -m pip install build twine mkdocs-material
 ruff check src tests examples
 pytest
-pnpm install --frozen-lockfile
-pnpm docs:build
+python -m mkdocs build
 python -m build
 twine check dist/*
 ```
