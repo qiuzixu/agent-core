@@ -5,11 +5,11 @@ LangGraph 或 Web 框架，应用可以按需接入模型、工具、MCP、持�
 
 当前版本为 `0.1.0`，要求 Python 3.13，处于公开发布前的 Alpha 阶段。
 
-<div class="doc-links">
-  <a href="./guide/getting-started.html">快速开始<br><small>安装并运行第一个 Agent</small></a>
-  <a href="./guide/core-concepts.html">核心概念<br><small>理解运行时、工具与存储边界</small></a>
-  <a href="./ARCHITECTURE.html">系统架构<br><small>Core 内部模块和应用调用关系</small></a>
-  <a href="./CAPABILITIES.html">能力清单<br><small>核对已经实现和不属于 Core 的功能</small></a>
+<div class="doc-links" markdown>
+  <a href="./guide/getting-started/">快速开始<br><small>安装并运行第一个 Agent</small></a>
+  <a href="./guide/core-concepts/">核心概念<br><small>理解运行时、工具与存储边界</small></a>
+  <a href="./ARCHITECTURE/">系统架构<br><small>Core 内部模块和应用调用关系</small></a>
+  <a href="./CAPABILITIES/">能力清单<br><small>核对已经实现和不属于 Core 的功能</small></a>
 </div>
 
 ## 适合什么场景

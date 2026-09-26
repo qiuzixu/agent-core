@@ -31,7 +31,7 @@
 ## 每次发布
 
 - [ ] 更新版本号和 `CHANGELOG.md`，清空或迁移 `Unreleased` 内容。
-- [ ] 运行 `ruff check src tests examples`、`pytest` 和 `pnpm docs:build`，并审阅 `mypy src` 结果。
+- [ ] 运行 `ruff check src tests examples`、`pytest` 和 `python -m mkdocs build`，并审阅 `mypy src` 结果。
 - [ ] 运行 `python -m build` 并用 `twine check dist/*` 校验元数据。
 - [ ] 在隔离环境安装 wheel，验证导入、`py.typed` 和 examples。
 - [ ] 创建签名或受保护的 Git tag，并从该 tag 构建发布产物。

@@ -285,3 +285,4 @@ flowchart LR
 | 2026-09-26 | 应用 Skill 接入 | 应用 Agent 共享 Skill 包，分别接入手写工具执行器和 LangChain StructuredTool。 |
 | 2026-09-26 | Web MCP 动态配置 | Web 端可持久化、测试并重连内置或自定义 MCP 服务；同步浏览器与 Gateway 的连接关系。 |
 | 2026-09-26 | Core 边界治理 | 模型选择值对象和唯一存储端口收口到 `ports`；`storage` 仅保留实现，并修复审批持久化与中间件导入环。 |
+| 2026-09-27 | 文档站迁移 | VitePress 迁移至 Material for MkDocs；清理 node/pnpm 残留；同步记录补录。 |

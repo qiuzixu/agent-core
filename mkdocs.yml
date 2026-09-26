@@ -1,0 +1,85 @@
+site_name: Agent Core
+site_description: 不依赖 LangChain/LangGraph 的可复用手写 Agent 框架核心
+docs_dir: docs
+repo_url: https://github.com/qiuzixu/agent-core
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  language: zh
+  logo: public/logo.svg
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: teal
+      toggle:
+        icon: material/brightness-7
+        name: 切换到深色模式
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: teal
+      toggle:
+        icon: material/brightness-4
+        name: 切换到浅色模式
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - content.action.edit
+    - search.highlight
+
+nav:
+  - 开始使用:
+      - 文档首页: index.md
+      - 快速开始: guide/getting-started.md
+      - 核心概念: guide/core-concepts.md
+      - 已实现能力: CAPABILITIES.md
+  - 核心能力:
+      - Agent Loop: guide/agent-loop.md
+      - 模型与适配器: guide/models.md
+      - 工具与 MCP: guide/tools-and-mcp.md
+      - Skill: guide/skills.md
+      - 中间件与 HITL: guide/middleware-and-hitl.md
+      - 上下文与记忆: guide/context-and-memory.md
+      - 工作流与 Checkpoint: guide/workflows-and-checkpoints.md
+      - 存储与生产部署: guide/storage-and-production.md
+      - ACP: guide/acp.md
+      - 可观测性与 Guardrails: guide/observability-and-guardrails.md
+  - 参考:
+      - 系统架构: ARCHITECTURE.md
+      - 公共 API: reference/public-api.md
+      - 配置参考: reference/configuration.md
+      - 异常体系: reference/exceptions.md
+  - 维护者:
+      - 发布流程: maintainers/release.md
+      - 贡献指南: https://github.com/qiuzixu/agent-core/blob/main/CONTRIBUTING.md
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+
+extra_css:
+  - stylesheets/extra.css
+
+plugins:
+  - search:
+      lang: zh
+
+copyright: Copyright 2026 Agent Core contributors，基于 Apache-2.0 许可证发布

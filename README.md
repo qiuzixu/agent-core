@@ -73,12 +73,12 @@ handwritten-agent-core = { path = "../agent-core" }
 
 ## 文档站
 
-文档源文件位于 `docs/`，使用 VitePress：
+文档源文件位于 `docs/`，使用 Material for MkDocs：
 
 ```bash
-pnpm install --frozen-lockfile
-pnpm docs:dev
-pnpm docs:build
+python -m pip install mkdocs-material
+python -m mkdocs serve       # 本地预览 http://127.0.0.1:8000
+python -m mkdocs build       # 构建到 site/
 ```
 
 子路径部署时设置 `DOCS_BASE`，例如 `/handwritten-agent-core/`。文档入口为
@@ -104,7 +104,7 @@ Core 只提供框架通用能力（Agent Loop、模型适配、工具执行、�
 python -m pip install build
 ruff check src tests examples
 pytest
-pnpm docs:build
+python -m mkdocs build
 python -m build
 ```
 

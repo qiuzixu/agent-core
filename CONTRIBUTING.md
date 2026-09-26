@@ -10,7 +10,7 @@
 ```bash
 uv sync --extra dev --extra models --extra mcp --extra production
 uv pip install build twine
-pnpm install --frozen-lockfile
+python -m pip install mkdocs-material
 ```
 
 也可以使用标准 `venv` 和 `pip`：
@@ -18,8 +18,7 @@ pnpm install --frozen-lockfile
 ```bash
 python -m venv .venv
 python -m pip install -e ".[dev,models,mcp,production]"
-python -m pip install build twine
-pnpm install --frozen-lockfile
+python -m pip install build twine mkdocs-material
 ```
 
 运行检查：
@@ -27,7 +26,7 @@ pnpm install --frozen-lockfile
 ```bash
 ruff check src tests examples
 pytest
-pnpm docs:build
+python -m mkdocs build
 python -m build
 ```
 
