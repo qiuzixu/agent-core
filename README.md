@@ -1,46 +1,67 @@
 # Handwritten Agent Core
 
-可复用的手写 Agent 框架核心，不依赖 LangChain、LangGraph 或 FastAPI；
-模型和数据库 SDK 通过可选 extras 按需启用。
+一个不依赖 LangChain、LangGraph 或 Web 框架的 Python Agent 核心。项目从头实现 Agent Loop、
+工具调用、MCP、Skill、上下文压缩、持久化恢复、工作流、HITL、多模型适配和 ACP 协议。
 
-完整文档：
+> 当前版本为 `0.1.0` Alpha，要求 Python 3.13。公开 API 在 `0.x` 阶段仍可能调整。
 
-- [Agent Core 架构与应用调用关系](docs/ARCHITECTURE.md)
-- [已实现能力、模块归属和框架边界](docs/CAPABILITIES.md)
+## 主要能力
 
-当前公共能力：
+- 普通和流式 ReAct Agent Loop，本轮多个工具并发执行；
+- Function Calling、MCP stdio 客户端和声明式 Skill；
+- OpenAI、Anthropic、Gemini、Ollama，以及自定义模型 Provider；
+- Middleware、Guardrails、HITL、调用统计和可选 OpenTelemetry；
+- 基于模型上下文用量的摘要压缩、工具结果瘦身和 spill；
+- Run、事件、幂等键、Worker 租约、心跳、重启恢复和取消；
+- Checkpoint 历史、回滚、异步状态机和节点级持久化工作流；
+- 会话、长期上下文、审批、模型选择的内存、SQLite、PostgreSQL 存储；
+- 用户、租户和管理员访问上下文；
+- ACP JSON-RPC/stdio 服务端适配。
 
-- ReAct Agent Loop，支持普通和流式执行
-- 工具注册、参数基础校验、超时、审批和并发执行
-- Skill JSON 清单加载、注册、按需激活及 Function/MCP 工具绑定
-- Middleware、重试和上下文长度限制
-- 提示词版本注册、输入输出 Guardrails 和可观测性统计
-- 统一访问上下文、HITL 审批队列和审批存储端口
-- Session 用户/租户归属校验、跨进程审批结果同步
-- 上下文压缩、工具结果瘦身、spill 和模型超长恢复
-- RunContext、RunEvent、ApprovalRecord 和 ToolResult
-- Checkpoint、历史版本和回滚
-- 通用异步状态机、节点级持久化和中断恢复
-- 模型调用 Protocol、模型提供商注册表和统一模型工厂
-- 脱敏模型目录和运行时模型选择协议
-- 用户/租户级模型选择存储：测试内存、开发 SQLite、生产 PostgreSQL
-- ACP JSON-RPC/stdio 服务端与业务 Runtime 适配端口
-- Run Worker 租约、心跳、互斥认领和过期恢复
-- 会话、长期上下文、运行状态、审批和工作流执行的存储实现
-  - 内存：测试和临时运行
-  - SQLite：开发环境，零额外依赖
-  - PostgreSQL：生产环境，按需安装 `asyncpg`
+完整边界见[已实现能力](docs/CAPABILITIES.md)，模块和应用调用关系见
+[系统架构](docs/ARCHITECTURE.md)。
 
-Core 提供模型工厂、Provider 注册机制以及 OpenAI、Anthropic、Gemini、Ollama
-的具体适配器；模型 SDK 使用可选 extras 安装。Web API 和业务能力仍由上层应用提供。
-Core 同时提供通用存储实现，具体业务表和业务字段由上层应用负责。
+## 快速开始
 
-模型依赖可以按需安装：`handwritten-agent-core[openai]`、
-`handwritten-agent-core[anthropic]`、`handwritten-agent-core[gemini]`、
-`handwritten-agent-core[qwen]`，或一次安装全部模型依赖的
-`handwritten-agent-core[models]`。Ollama 复用 OpenAI 兼容接口。
+```bash
+cd agent-core
+python -m venv .venv
+python -m pip install -e ".[dev]"
+python examples/basic_agent.py
+```
 
-在本地应用中通过路径依赖接入：
+`examples/basic_agent.py` 使用离线演示模型，不需要 API Key 或外部服务。
+
+真实模型按需安装：
+
+```bash
+pip install "handwritten-agent-core[openai]"
+pip install "handwritten-agent-core[anthropic]"
+pip install "handwritten-agent-core[gemini]"
+pip install "handwritten-agent-core[models,mcp,production]"
+```
+
+最小组装方式：
+
+```python
+from agent_core import ReActAgent, ToolExecutor, ToolRegistry, create_model_provider
+
+model = create_model_provider(settings)
+
+tools = ToolRegistry()
+tools.register("lookup", lookup, "查询数据")
+
+agent = ReActAgent(
+    llm=model,
+    tool_executor=ToolExecutor(tools),
+    system_prompt="你是一个助手。",
+    tool_definitions=tools.build_tool_definitions(),
+)
+
+answer = await agent.run("查询数据")
+```
+
+应用可以通过路径依赖使用尚未发布的 Core：
 
 ```toml
 [project]
@@ -50,101 +71,47 @@ dependencies = ["handwritten-agent-core"]
 handwritten-agent-core = { path = "../agent-core" }
 ```
 
-Vanilla 项目原有的 `low_altitude_agent_vanilla.core` 和
-`low_altitude_agent_vanilla.agent` 入口仍然保留，它们只是 Core 的兼容导出。
-新 Agent 可以直接依赖 `agent_core`，业务项目只需要提供工具和业务 API；
-如果有特殊模型或后端，也可以注册自定义适配器或替换 Core 的存储实现。
+## 文档站
 
-存储可以直接按环境创建：
+文档源文件位于 `docs/`，使用 VitePress：
 
-```python
-from agent_core.storage import create_context_store, create_runtime_store, create_session_store
-
-sessions = create_session_store(
-    "development",
-    sqlite_path="./agent.db",
-    require_access=True,
-)
-contexts = create_context_store(
-    "development",
-    sqlite_path="./agent.db",
-    require_access=True,
-)
-runs = create_runtime_store("development", sqlite_path="./agent.db")
+```bash
+pnpm install --frozen-lockfile
+pnpm docs:dev
+pnpm docs:build
 ```
 
-生产环境传入 `postgres_url` 并安装 `handwritten-agent-core[production]`；
-PostgreSQL 存储的 `initialize()` 负责连接池和幂等建表，服务关闭时调用 `close()`。
-新项目建议启用 `require_access=True`，并在每次调用时传入 `AccessContext`。默认值为 `False`，
-用于兼容尚未传递用户和租户身份的现有 Agent。
+子路径部署时设置 `DOCS_BASE`，例如 `/handwritten-agent-core/`。文档入口为
+[docs/index.md](docs/index.md)，包含快速开始、核心概念、模型、工具、MCP、Skill、存储、
+工作流、ACP 和公共 API 参考。
 
-```python
-from agent_core import (
-    ReActAgent,
-    ToolExecutor,
-    ToolRegistry,
-    create_model_provider,
-    register_model_provider,
-)
+## 项目边界
 
-# 应用可以直接使用 Core 内置 Provider，也可以注册自己的适配器。
-model = create_model_provider(config)
+Core 提供框架通用能力。应用 Agent 仍负责：
 
-registry = ToolRegistry()
-registry.register("lookup", lookup, "查询数据")
+- HTTP、WebSocket 或 SSE API；
+- 身份认证、业务授权和密钥读取；
+- 业务提示词、业务工具和业务数据模型；
+- 浏览器与 Cesium Gateway 等前端通信；
+- 部署编排、监控后端和数据库运维。
 
-agent = ReActAgent(
-    llm=model,
-    tool_executor=ToolExecutor(registry),
-    system_prompt="你是一个助手",
-    tool_definitions=registry.build_tool_definitions(),
-)
+新 Agent 直接依赖 `agent_core`。现有 Vanilla 应用中的兼容模块可以继续导出 Core API，
+但不要在 Core 中引入 Cesium 或低空业务依赖。
 
-answer = await agent.run("查询数据")
+## 开发
+
+```bash
+python -m pip install build
+ruff check src tests examples
+pytest
+pnpm docs:build
+python -m build
 ```
 
-Skill 以目录形式交付，使用 `skill.json` 声明元数据和工具，使用 `SKILL.md`
-保存可选的模型指令。Core 不从清单动态导入 Python；应用显式注入 Function 和 MCP 客户端：
+贡献前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md) 和 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)。
+安全问题按 [SECURITY.md](SECURITY.md) 私密报告。首次发布前的外部配置和决策记录在
+[OPEN_SOURCE_CHECKLIST.md](OPEN_SOURCE_CHECKLIST.md)。
 
-```python
-from agent_core import SkillRegistry, ToolExecutor, ToolRegistry
+## 许可证
 
-skills = SkillRegistry()
-skills.load_directory("./skills")
-
-tools = ToolRegistry()
-activation = skills.activate(
-    ["cesium-scene"],
-    tool_registry=tools,
-    functions={"lookup_flight": lookup_flight},
-    mcp_clients={"cesium": cesium_mcp_client},
-)
-
-agent = ReActAgent(
-    llm=model,
-    tool_executor=ToolExecutor(tools),
-    system_prompt=activation.compose_system_prompt("你是一个助手"),
-    tool_definitions=activation.tool_definitions,
-)
-```
-
-最小 `skill.json` 示例：
-
-```json
-{
-  "name": "cesium-scene",
-  "description": "Cesium 场景控制",
-  "version": "1.0.0",
-  "instructions_file": "SKILL.md",
-  "tools": [
-    {
-      "name": "list_entities",
-      "kind": "mcp",
-      "server": "cesium",
-      "target": "entity_list",
-      "description": "列出地图实体",
-      "parameters": {"type": "object", "properties": {}}
-    }
-  ]
-}
-```
+项目按 [Apache License 2.0](LICENSE) 发布。

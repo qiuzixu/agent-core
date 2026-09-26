@@ -8,7 +8,23 @@ version = "0.1.0"
 description = "不依赖 LangChain/LangGraph 的可复用手写 Agent Core"
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
+license = "Apache-2.0"
+keywords = ["agent", "llm", "react", "mcp", "acp", "function-calling"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.13",
+  "Typing :: Typed",
+]
 dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/qiuzixu/agent-core"
+Documentation = "https://github.com/qiuzixu/agent-core/tree/main/docs"
+Repository = "https://github.com/qiuzixu/agent-core"
+Issues = "https://github.com/qiuzixu/agent-core/issues"
 
 [project.optional-dependencies]
 dev = [

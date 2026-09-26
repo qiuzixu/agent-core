@@ -1,0 +1,44 @@
+# 异常体系
+
+所有框架级异常以 `AgentError` 为根。应用应按是否可重试、是否需要用户操作和是否属于配置错误
+分类处理，不要对所有异常做无上限重试。
+
+| 异常 | 含义 | 常见处理 |
+| --- | --- | --- |
+| `ConfigurationError` | 配置缺失或不合法 | 启动失败，修正配置 |
+| `ModelInvocationError` | 模型调用失败 | 查看 cause，有限重试或降级 |
+| `ModelTimeoutError` | 模型超时 | 有限重试、切换模型 |
+| `ModelRateLimitError` | 模型限流 | 指数退避、配额告警 |
+| `ModelUnavailableError` | 模型服务不可用 | 熔断或切换 Provider |
+| `ModelOutputValidationError` | 最终输出、轮数或工具调用不合规 | 记录 Run 失败，调整提示或上限 |
+| `ToolExecutionError` | 工具执行失败 | 根据工具幂等性决定重试 |
+| `CheckpointError` | 快照读写失败 | 阻止不可靠恢复并告警 |
+| `MiddlewareError` | 中间件链失败 | 检查自定义策略和返回动作 |
+| `StateMachineError` | 节点、路由或最大步数错误 | 修正工作流定义或节点实现 |
+
+## MCP 异常
+
+`McpError` 派生出：
+
+- `McpConnectionError`：Server 启动或连接失败；
+- `McpTimeoutError`：列表或工具调用超时；
+- `McpToolError`：远端工具返回错误。
+
+## Skill 异常
+
+- `SkillLoadError`：清单、指令路径或 schema 不合法；
+- `SkillRegistrationError`：重名或注册冲突；
+- `SkillBindingError`：激活时找不到 Function 或 MCP 客户端。
+
+这些异常通常是部署配置错误，应在启动或加载阶段暴露，不应等到用户请求时静默忽略。
+
+## 并发与权限
+
+`RuntimeConcurrencyError` 表示 Run 的版本或状态已被其他执行者修改。重新加载最新 Run 后决定
+是否继续，不要直接覆盖。缺少身份或跨租户访问会抛出 `PermissionError`，API 层应映射为适当的
+认证或授权响应，并避免泄露目标记录是否存在。
+
+## 保留根因
+
+Provider 和 Runtime 会使用异常链保留底层错误。记录日志时保留完整 traceback，但返回客户端时
+只暴露稳定错误码和经过脱敏的说明。

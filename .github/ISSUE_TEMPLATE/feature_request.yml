@@ -1,0 +1,22 @@
+name: 功能建议
+description: 建议一个可复用的框架能力
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 使用场景和问题
+      description: 请说明为什么这是多个 Agent 都需要的通用能力。
+    validations:
+      required: true
+  - type: textarea
+    id: api
+    attributes:
+      label: 期望行为或 API
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 已考虑的替代方案
