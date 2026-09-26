@@ -192,7 +192,7 @@ sequenceDiagram
     participant App as 应用 Agent API
     participant Session as SessionManager
     participant Runtime as AgentRuntime
-    participant Loop as ReActAgent
+    participant ReAct as ReActAgent
     participant Model as ModelAdapter
     participant Tools as ToolExecutor
     participant MCP as MCP Server
@@ -203,14 +203,14 @@ sequenceDiagram
     App->>Session: 加载会话与长期上下文
     App->>Runtime: start/run/stream
     Runtime->>Store: 保存 Run 并认领 Lease
-    Runtime->>Loop: 执行 Agent Loop
-    Loop->>Model: 消息 + Tool Schema
+    Runtime->>ReAct: 执行 Agent Loop
+    ReAct->>Model: 消息 + Tool Schema
 
     alt 模型直接回答
-        Model-->>Loop: 文本响应
+        Model-->>ReAct: 文本响应
     else 模型发起 Function Calling
-        Model-->>Loop: tool_calls
-        Loop->>Tools: 并发执行工具
+        Model-->>ReAct: tool_calls
+        ReAct->>Tools: 并发执行工具
         alt 本地 Function
             Tools->>App: 调用业务函数
             App-->>Tools: 结构化结果
@@ -218,13 +218,13 @@ sequenceDiagram
             Tools->>MCP: call_tool
             MCP-->>Tools: MCP 结果
         end
-        Tools-->>Loop: ToolResult
-        Loop->>Store: 保存完整 Checkpoint
-        Loop->>Model: 工具结果进入下一轮
-        Model-->>Loop: 最终文本
+        Tools-->>ReAct: ToolResult
+        ReAct->>Store: 保存完整 Checkpoint
+        ReAct->>Model: 工具结果进入下一轮
+        Model-->>ReAct: 最终文本
     end
 
-    Loop-->>Runtime: 完成 / 中断 / 失败
+    ReAct-->>Runtime: 完成 / 中断 / 失败
     Runtime->>Store: 保存终态并释放 Lease
     Runtime-->>App: RunEvent / 流式文本
     App-->>UI: SSE / WebSocket / HTTP 响应

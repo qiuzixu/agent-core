@@ -43,6 +43,20 @@ def default_model_catalog() -> tuple[ModelOption, ...]:
     )
 
 
+#: provider 内部标识（小写）到 UI 显示名的映射。
+PROVIDER_DISPLAY_NAMES: dict[str, str] = {
+    "openai": "OpenAI",
+    "anthropic": "Anthropic",
+    "gemini": "Gemini",
+    "ollama": "Ollama",
+}
+
+
+def provider_display_name(provider: str) -> str:
+    """把 provider 标识转成展示名；未知 provider 原样返回（不强行改写）。"""
+    return PROVIDER_DISPLAY_NAMES.get(provider.strip().lower(), provider)
+
+
 def catalog_payload(
     options: tuple[ModelOption, ...] | list[ModelOption] | None = None,
 ) -> list[dict[str, Any]]:
@@ -50,4 +64,10 @@ def catalog_payload(
     return [item.to_dict() for item in (options or default_model_catalog())]
 
 
-__all__ = ["ModelOption", "catalog_payload", "default_model_catalog"]
+__all__ = [
+    "PROVIDER_DISPLAY_NAMES",
+    "ModelOption",
+    "catalog_payload",
+    "default_model_catalog",
+    "provider_display_name",
+]

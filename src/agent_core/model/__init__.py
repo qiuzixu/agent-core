@@ -1,6 +1,11 @@
 """模型协议和模型工厂公共导出。"""
 
-from agent_core.model.catalog import ModelOption, catalog_payload, default_model_catalog
+from agent_core.model.catalog import (
+    ModelOption,
+    catalog_payload,
+    default_model_catalog,
+    provider_display_name,
+)
 from agent_core.model.core import (
     ContextUsage,
     ModelAdapter,
@@ -41,5 +46,6 @@ __all__ = [
     "default_model_catalog",
     "default_model_provider_registry",
     "known_context_window",
+    "provider_display_name",
     "register_model_provider",
 ]
