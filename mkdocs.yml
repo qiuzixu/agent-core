@@ -50,6 +50,7 @@ nav:
       - 公共 API: reference/public-api.md
       - 配置参考: reference/configuration.md
       - 异常体系: reference/exceptions.md
+      - 与 LangChain 对照: reference/langchain-comparison.md
   - 维护者:
       - 发布流程: maintainers/release.md
       - 贡献指南: https://github.com/qiuzixu/agent-core/blob/main/CONTRIBUTING.md
