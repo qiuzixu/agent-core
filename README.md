@@ -115,3 +115,6 @@ python -m build
 ## 许可证
 
 项目按 [Apache License 2.0](LICENSE) 发布。
+
+
+<!-- 嵌入式 Agent 内核 这个名字备选 -->
