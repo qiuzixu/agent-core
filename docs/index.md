@@ -1,7 +1,7 @@
 # Handwritten Agent Core
 
-Handwritten Agent Core 是一个使用 Python 从头实现的 Agent 框架核心。它不依赖 LangChain、
-LangGraph 或 Web 框架，应用可以按需接入模型、工具、MCP、持久化和自己的 API 层。
+Handwritten Agent Core 是一个使用 Python 从头实现的 Agent 运行时内核。零外部平台绑定，
+应用可以按需接入模型、工具、MCP、持久化和自己的 API 层。
 
 当前版本为 `0.1.0`，要求 Python 3.13，处于公开发布前的 Alpha 阶段。
 

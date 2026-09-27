@@ -1,6 +1,6 @@
 """面向 HTTP/前端适配器的通用运行时值对象和消息解析工具。
 
-这里不包含 FastAPI、LangGraph 或业务编排，只处理跨 Agent 都相同的 thread/run
+这里不包含 Web 框架或业务编排，只处理跨 Agent 都相同的 thread/run
 记录和输入消息解析。具体 API 协议仍由应用层决定。
 """
 

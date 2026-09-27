@@ -1,8 +1,7 @@
 # Agent Core 架构
 
 本文描述 `handwritten-agent-core` 自身的模块边界，以及应用 Agent 如何组装并调用 Core。
-图中“应用层”由具体 Agent 项目实现；“Agent Core”不依赖 LangChain、LangGraph、FastAPI
-或任何具体业务。
+图中“应用层”由具体 Agent 项目实现；“Agent Core”零外部平台绑定，不依赖任何具体业务。
 
 ## 1. Agent Core 内部架构
 

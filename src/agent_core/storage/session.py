@@ -9,7 +9,7 @@
     AGENT_ENV=development（默认）→ SqliteSessionStore  (./sessions.db)
     AGENT_ENV=production         → PostgresSessionStore (需配置 AGENT_SESSION_POSTGRES_URL)
 
-对应关系（和 LangGraph 类比）：
+对应关系：
     MemorySessionStore   ≈ MemorySaver      (测试)
     SqliteSessionStore   ≈ SqliteSaver      (开发)
     PostgresSessionStore ≈ PostgresSaver    (生产)
@@ -641,7 +641,7 @@ def create_session_store(
 ) -> BaseSessionStore:
     """根据运行环境创建合适的会话存储后端。
 
-    对应关系（和 LangGraph 类比）：
+    对应关系：
         development → SqliteSessionStore   ≈ SqliteSaver
         production  → PostgresSessionStore ≈ PostgresSaver
 

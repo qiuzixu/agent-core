@@ -1,5 +1,5 @@
 site_name: Agent Core
-site_description: 不依赖 LangChain/LangGraph 的可复用手写 Agent 框架核心
+site_description: 零外部平台绑定的 Python Agent 运行时内核
 docs_dir: docs
 repo_url: https://github.com/qiuzixu/agent-core
 edit_uri: edit/main/docs/

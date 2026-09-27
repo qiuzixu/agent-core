@@ -1,4 +1,4 @@
-"""手写 checkpoint 持久化（替代 LangGraph checkpointer）。
+"""手写 checkpoint 持久化。
 
 功能：
 - 保存和加载会话状态（state）

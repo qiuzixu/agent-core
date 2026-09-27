@@ -1,4 +1,4 @@
-"""不依赖 LangChain/LangGraph 的可复用手写 Agent Core。"""
+"""零外部平台绑定的 Python Agent 运行时内核。"""
 
 from agent_core.access import AccessContext
 from agent_core.acp import (

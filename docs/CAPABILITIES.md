@@ -6,7 +6,7 @@
 
 ## 1. 核心定位
 
-Agent Core 是一套不依赖 LangChain、LangGraph 或 FastAPI 的手写 Agent 框架核心。
+Agent Core 是一套零外部平台绑定的手写 Agent 运行时内核。
 它负责模型、Skill、工具、Agent Loop、运行生命周期、上下文、记忆、审批、工作流、持久化、
 可观测性和 ACP 协议。上层项目负责业务工具、业务规则、提示词和应用接口。
 
@@ -155,7 +155,7 @@ Session Store 在调用方传入 `AccessContext` 时，会在首次写入时绑�
 Checkpoint 支持内存和文件后端。`TimeTravelCheckpointer` 在基础 Checkpointer 上增加版本历史、
 指定版本读取和回滚能力。
 
-通用工作流不依赖 LangGraph，支持：
+通用工作流不依赖外部编排框架，支持：
 
 - 同步或异步节点；
 - 固定边和异步条件边；

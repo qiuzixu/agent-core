@@ -1,4 +1,4 @@
-"""手写消息类型定义（替代 langchain_core.messages）。"""
+"""手写消息类型定义。"""
 
 from __future__ import annotations
 

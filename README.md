@@ -1,6 +1,6 @@
 # Handwritten Agent Core
 
-一个不依赖 LangChain、LangGraph 或 Web 框架的 Python Agent 核心。项目从头实现 Agent Loop、
+一个零外部平台绑定的 Python Agent 运行时内核。项目从头实现 Agent Loop、
 工具调用、MCP、Skill、上下文压缩、持久化恢复、工作流、HITL、多模型适配和 ACP 协议。
 
 > 当前版本为 `0.1.0` Alpha，要求 Python 3.13。公开 API 在 `0.x` 阶段仍可能调整。
