@@ -24,6 +24,12 @@ from agent_core.storage.lease import (
     SqliteRunLeaseStore,
     create_run_lease_store,
 )
+from agent_core.storage.memory import (
+    InMemoryMemoryStore,
+    PostgresMemoryStore,
+    SqliteMemoryStore,
+    create_memory_store,
+)
 from agent_core.storage.model_selection import (
     MemoryModelSelectionStore,
     PostgresModelSelectionStore,
@@ -58,6 +64,7 @@ from agent_core.storage.workflow import (
 __all__ = [
     "BaseSessionStore",
     "ContextStore",
+    "InMemoryMemoryStore",
     "MemoryContextStore",
     "MemoryModelSelectionStore",
     "MemoryRunLeaseStore",
@@ -68,6 +75,7 @@ __all__ = [
     "ModelSelectionScope",
     "ModelSelectionStore",
     "PostgresContextStore",
+    "PostgresMemoryStore",
     "PostgresModelSelectionStore",
     "PostgresRunLeaseStore",
     "PostgresRuntimeStore",
@@ -79,6 +87,7 @@ __all__ = [
     "RuntimeStore",
     "SessionManager",
     "SqliteContextStore",
+    "SqliteMemoryStore",
     "SqliteModelSelectionStore",
     "SqliteRunLeaseStore",
     "SqliteRuntimeStore",
@@ -87,6 +96,7 @@ __all__ = [
     "WorkflowExecution",
     "WorkflowExecutionStore",
     "create_context_store",
+    "create_memory_store",
     "create_model_selection_store",
     "create_run_lease_store",
     "create_runtime_store",

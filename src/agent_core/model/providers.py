@@ -547,10 +547,10 @@ class OpenAIProvider:
                 f"Failed to parse JSON from LLM output: {exc}\nOutput: {content[:200]}"
             ) from exc
 
-        if schema and not isinstance(result, dict):
+        if not isinstance(result, dict):
             raise ModelInvocationError(f"LLM output is not a JSON object: {type(result)}")
 
-        return result
+        return {str(key): value for key, value in result.items()}
 
 
 # ──────────────────────────────────────────────
@@ -574,7 +574,7 @@ class AnthropicProvider:
         context_window_tokens: int | None = None,
     ) -> None:
         try:
-            import anthropic  # type: ignore[import-untyped]
+            import anthropic
 
             self._client = anthropic.AsyncAnthropic(api_key=api_key)
         except ImportError as exc:
@@ -852,8 +852,8 @@ class GeminiProvider:
         context_window_tokens: int | None = None,
     ) -> None:
         try:
-            from google import genai  # type: ignore[import-untyped]
-            from google.genai import types  # type: ignore[import-untyped]
+            from google import genai
+            from google.genai import types
         except ImportError as exc:
             raise ImportError("GeminiProvider 需要 google-genai 包，请执行：uv add google-genai") from exc
 

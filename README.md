@@ -10,11 +10,18 @@
 - 普通和流式 ReAct Agent Loop，本轮多个工具并发执行；
 - Function Calling、MCP stdio 客户端和声明式 Skill；
 - OpenAI、Anthropic、Gemini、Ollama，以及自定义模型 Provider；
+- JSON Schema 结构化输出，以及模型限流、并发、超时、熔断和 fallback；
 - Middleware、Guardrails、HITL、调用统计和可选 OpenTelemetry；
+- 生命周期 Callback、统一 RunEvent 和流式增量事件；
+- Document/Blob、文本加载与切分、Embedding/Retriever/VectorStore 协议；
+- 内存、Chroma、pgvector 向量存储，关键词检索以及用户/租户/namespace 隔离；
+- 带类型白名单、Schema 版本和迁移函数的安全 JSON 序列化；
+- 安全文本/聊天 Prompt 模板、消息占位符、partial 和版本管理；
 - 基于模型上下文用量的摘要压缩、工具结果瘦身和 spill；
 - Run、事件、幂等键、Worker 租约、心跳、重启恢复和取消；
-- Checkpoint 历史、回滚、异步状态机和节点级持久化工作流；
+- Checkpoint 历史、回滚、节点重试/幂等/pending write 和 Mermaid 状态机导出；
 - 会话、长期上下文、审批、模型选择的内存、SQLite、PostgreSQL 存储；
+- 跨会话长期记忆、TTL、版本冲突、关键词检索和访问隔离；
 - 用户、租户和管理员访问上下文；
 - ACP JSON-RPC/stdio 服务端适配。
 
@@ -39,6 +46,8 @@ pip install "handwritten-agent-core[openai]"
 pip install "handwritten-agent-core[anthropic]"
 pip install "handwritten-agent-core[gemini]"
 pip install "handwritten-agent-core[models,mcp,production]"
+pip install "handwritten-agent-core[chroma]"    # 本地持久化向量存储
+pip install "handwritten-agent-core[pgvector]"  # PostgreSQL 向量存储
 ```
 
 最小组装方式：

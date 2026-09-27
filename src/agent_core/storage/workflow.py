@@ -252,7 +252,7 @@ class PostgresWorkflowExecutionStore(WorkflowExecutionStore):
 
     async def initialize(self) -> None:
         try:
-            import asyncpg  # type: ignore[import-untyped]
+            import asyncpg
         except ImportError as exc:
             raise ImportError("PostgresWorkflowExecutionStore 需要 asyncpg") from exc
         self._pool = await asyncpg.create_pool(self._dsn, min_size=2, max_size=10)

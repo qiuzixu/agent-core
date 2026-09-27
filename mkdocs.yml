@@ -40,6 +40,7 @@ nav:
       - 工具与 MCP: guide/tools-and-mcp.md
       - Skill: guide/skills.md
       - 中间件与 HITL: guide/middleware-and-hitl.md
+      - 文档、检索与回调: guide/documents-retrieval-and-callbacks.md
       - 上下文与记忆: guide/context-and-memory.md
       - 工作流与 Checkpoint: guide/workflows-and-checkpoints.md
       - 存储与生产部署: guide/storage-and-production.md
@@ -51,6 +52,7 @@ nav:
       - 配置参考: reference/configuration.md
       - 异常体系: reference/exceptions.md
       - 与 LangChain 对照: reference/langchain-comparison.md
+      - Agent 生态对照: reference/ecosystem-comparison.md
   - 维护者:
       - 发布流程: maintainers/release.md
       - 贡献指南: https://github.com/qiuzixu/agent-core/blob/main/CONTRIBUTING.md

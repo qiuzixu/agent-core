@@ -45,3 +45,25 @@ class CheckpointError(AgentError):
 
 class MiddlewareError(AgentError):
     """中间件错误。"""
+
+
+class MemoryConflictError(AgentError):
+    """长期记忆发生乐观并发冲突。"""
+
+    def __init__(self, memory_id: str, expected_version: int, actual_version: int) -> None:
+        super().__init__(f"记忆 {memory_id} 版本冲突：期望 {expected_version}，实际 {actual_version}")
+        self.memory_id = memory_id
+        self.expected_version = expected_version
+        self.actual_version = actual_version
+
+
+class SerializationError(AgentError):
+    """序列化或反序列化失败。"""
+
+
+class UnknownSerializedTypeError(SerializationError):
+    """序列化注册表中不存在指定类型。"""
+
+
+class UnsupportedSchemaVersionError(SerializationError):
+    """对象版本高于当前版本，或缺少必要迁移函数。"""

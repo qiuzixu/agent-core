@@ -32,7 +32,16 @@ Checkpoint 保存消息、迭代次数、工具调用计数、最后响应和运
 machine = (
     StateMachineBuilder(max_steps=20)
     .add_node("prepare", prepare)
-    .add_node("execute", execute)
+    .add_node(
+        "execute",
+        execute,
+        policy=NodeExecutionPolicy(
+            timeout_seconds=30,
+            max_attempts=3,
+            backoff_initial_seconds=0.5,
+            idempotent=True,
+        ),
+    )
     .add_edge(START, "prepare")
     .add_edge("prepare", "execute")
     .add_edge("execute", END)
@@ -43,6 +52,10 @@ result = await machine.ainvoke({"request_id": "42"})
 
 节点接收状态字典，返回需要合并的更新。条件边函数根据更新后的状态返回下一个节点名。
 `max_steps` 防止错误路由导致无限循环。
+
+`NodeExecutionPolicy` 可控制节点超时、重试异常范围、最大尝试次数和指数退避。只要
+`max_attempts > 1`，就必须声明 `idempotent=True`。节点函数可通过 `current_node_execution()`
+读取稳定的 `idempotency_key`，并把它传给数据库或外部 API；同一节点的多次重试复用该键。
 
 ## 持久化执行
 
@@ -67,6 +80,20 @@ execution = await runner.start(
 
 节点抛出 `WorkflowPause(reason, data)` 时，执行状态变为 `interrupted`，并保留当前节点。
 外部条件满足后调用 `resume(execution_id, access=...)`，不会重复已经完成的节点。
+
+Runner 会在每次尝试前保存 `workflow_step_pending` 事件，其中包含节点、尝试次数和幂等键；节点
+成功后再保存新状态与下一节点。进程在外部副作用完成后、完成事件落库前崩溃时，恢复端可以用
+pending 记录和幂等键判断并安全重试，不能幂等的外部系统仍需业务补偿。
+
+## 图定义和 Mermaid
+
+```python
+definition = machine.describe()
+mermaid = machine.to_mermaid(direction="LR")
+```
+
+条件边在注册时传 `possible_targets=[...]`，导出的 Mermaid 才能展示全部候选目标。路由函数本身
+不能被静态分析，因此省略 `possible_targets` 时，运行不受影响，但图中只会显示条件节点。
 
 完整示例见 `examples/durable_workflow.py`。
 

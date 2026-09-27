@@ -12,27 +12,37 @@ flowchart TB
     subgraph CONTRACTS["协议与边界"]
         PROTOCOL["protocol<br/>Message / RunContext / RunEvent<br/>ApprovalRecord / ToolResult"]
         ACCESS["access<br/>AccessContext"]
-        PORTS["ports<br/>RunStore / SessionStore / ContextStore<br/>ApprovalStore / ModelSelectionStore / EventSink"]
+        PORTS["ports<br/>RunStore / SessionStore / ContextStore / MemoryStore<br/>ApprovalStore / ModelSelectionStore / EventSink"]
+        SERIALIZATION["serialization<br/>类型白名单 / Schema 版本 / 迁移"]
         ERRORS["errors<br/>统一异常体系"]
     end
 
     subgraph ENGINE["执行引擎"]
         RUNTIME["AgentRuntime<br/>Run 生命周期 / 恢复 / 取消"]
         REACT["ReActAgent<br/>Agent Loop / 流式输出"]
-        WORKFLOW["StateMachine<br/>DurableWorkflowRunner"]
+        WORKFLOW["StateMachine / NodeExecutionPolicy<br/>重试 / 幂等 / pending write / Mermaid"]
         LEASE["Run Lease<br/>认领 / Heartbeat / 过期接管"]
     end
 
     subgraph EXTENSION["执行扩展链"]
         MIDDLEWARE["MiddlewareManager"]
+        CALLBACKS["CallbackManager<br/>进程内生命周期订阅"]
         GUARDRAILS["Guardrails"]
         HITL["HITL<br/>持久化审批"]
         COMPACTION["Compaction<br/>摘要 / 裁剪 / Spill"]
         OBSERVABILITY["Observability<br/>统计 / Trace"]
     end
 
+    subgraph KNOWLEDGE["文档与检索"]
+        DOCUMENTS["Blob / Document / DocumentChunk<br/>Loader / Parser / TextSplitter"]
+        RETRIEVAL["Embeddings / Retriever / Reranker"]
+        VECTORSTORE["VectorStore<br/>Memory / Chroma / pgvector<br/>namespace / metadata / AccessContext"]
+    end
+
     subgraph IO["模型、工具与外部协议"]
         MODEL["ModelProviderRegistry<br/>ModelAdapter / Factory"]
+        MODELGOV["Model Governance<br/>限流 / 并发 / 超时 / 熔断 / fallback"]
+        STRUCTURED["Structured Output<br/>JSON Schema / decoder / retry"]
         PROVIDERS["OpenAI / Anthropic<br/>Gemini / Ollama"]
         SKILLS["Skills<br/>SkillLoader / SkillRegistry<br/>SkillSpec / SkillActivation"]
         TOOLS["ToolRegistry<br/>ToolExecutor"]
@@ -44,14 +54,16 @@ flowchart TB
     subgraph STATE["状态与持久化"]
         SESSION["SessionManager<br/>多轮消息历史"]
         CONTEXT["ContextStore<br/>结构化长期上下文"]
+        MEMORY["MemoryStore<br/>跨会话记忆 / TTL / 版本 / 检索"]
         CHECKPOINT["Checkpointer<br/>版本 / 回滚 / 恢复"]
-        PROMPTS["PromptRegistry<br/>Prompt 版本"]
+        PROMPTS["PromptTemplate / ChatPromptTemplate<br/>PromptRegistry / 版本"]
         STORES["Storage Adapters<br/>Memory / SQLite / PostgreSQL"]
     end
 
     PUBLIC --> CONTRACTS
     PUBLIC --> ENGINE
     PUBLIC --> EXTENSION
+    PUBLIC --> KNOWLEDGE
     PUBLIC --> IO
     PUBLIC --> STATE
 
@@ -59,11 +71,20 @@ flowchart TB
     RUNTIME --> LEASE
     RUNTIME --> PORTS
     RUNTIME --> PROTOCOL
+    RUNTIME --> CALLBACKS
     REACT --> MIDDLEWARE
     REACT --> MODEL
+    REACT -. 可选治理 .-> MODELGOV
     REACT --> TOOLS
     REACT --> CHECKPOINT
     WORKFLOW --> PORTS
+    MODELGOV --> MODEL
+    STRUCTURED --> MODEL
+    DOCUMENTS --> RETRIEVAL
+    RETRIEVAL --> VECTORSTORE
+    RETRIEVAL --> ACCESS
+    SERIALIZATION --> PROTOCOL
+    SERIALIZATION --> DOCUMENTS
 
     MIDDLEWARE --> GUARDRAILS
     MIDDLEWARE --> HITL
@@ -79,12 +100,14 @@ flowchart TB
 
     SESSION --> PORTS
     CONTEXT --> PORTS
+    MEMORY --> PORTS
     CHECKPOINT --> PORTS
     PORTS --> STORES
     LEASE --> STORES
     ACCESS --> RUNTIME
     ACCESS --> SESSION
     ACCESS --> CONTEXT
+    ACCESS --> MEMORY
     ACCESS --> HITL
     ERRORS --> ENGINE
     ERRORS --> IO
@@ -98,7 +121,13 @@ flowchart TB
 - `skills` 负责加载和激活 Skill，应用显式提供本地 Function 和 MCP 客户端绑定；
 - `tools` 统一调度本地函数和 MCP 工具，模型只看到统一的 Tool Schema；
 - `middleware` 承载可组合的横切能力，例如审批、压缩、安全和可观测性；
+- `callbacks` 只观察生命周期事件，与 `EventSink` 共用 `RunEvent`，不能修改执行流程；
+- `documents` 定义外部语料及来源定位，`retrieval` 定义检索端口及 Memory、Chroma、pgvector 适配器；
+- `serialization` 只恢复白名单类型，不使用 pickle 或输入中的 Python 类路径；
 - `workflow` 提供确定性状态机和节点级恢复，上层 Agent 定义具体业务节点；
+- `model` 在 Provider 协议外提供可组合的结构化输出与调用治理，不把厂商能力写进 Agent Loop；
+- `prompts` 提供安全模板、消息占位符和版本管理，拒绝属性或下标表达式；
+- `MemoryStore` 保存跨会话记忆，外部知识语料使用独立的 `Retriever` 和 `VectorStore`；
 - Memory 用于测试，SQLite 用于本地开发，PostgreSQL 用于生产多实例部署。
 
 ## 2. 应用 Agent 与 Agent Core 的调用关系
@@ -124,19 +153,23 @@ flowchart LR
         SESSIONS["Session / Context"]
         AGENTRUNTIME["AgentRuntime"]
         LOOP["ReActAgent"]
-        MODELFACTORY["Model Factory"]
+        MODELFACTORY["Model Factory<br/>Governance / Structured Output"]
         SKILLENGINE["SkillLoader / SkillRegistry<br/>加载 / 激活 / 绑定"]
         TOOLING["ToolRegistry / ToolExecutor"]
         MCPCLIENT["MCP Client"]
         APPROVAL["HITL / Workflow"]
         PERSIST["Run / Checkpoint / Lease / Stores"]
-        EVENTS["RunEvent / EventSink"]
+        MEMORY["MemoryStore<br/>跨会话长期记忆"]
+        KNOWLEDGE["Document / Splitter / Retriever<br/>Embedding / VectorStore"]
+        EVENTS["RunEvent<br/>CallbackManager / EventSink"]
     end
 
     subgraph EXTERNAL["外部系统"]
         LLM["模型服务"]
         MCPSERVER["MCP Servers"]
         DBS["SQLite / PostgreSQL"]
+        CORPUS["文件 / 知识库 / MinerU 适配器"]
+        VECTORDB["向量数据库适配器"]
         SERVICES["业务 API / 数据服务"]
     end
 
@@ -171,8 +204,13 @@ flowchart LR
     MCPCLIENT --> MCPSERVER
     LOCAL --> SERVICES
     AGENTRUNTIME --> PERSIST
+    BUSINESS --> MEMORY
+    CORPUS --> KNOWLEDGE
+    KNOWLEDGE --> VECTORDB
+    BUSINESS --> KNOWLEDGE
     APPROVAL --> PERSIST
     PERSIST --> DBS
+    MEMORY --> DBS
     AGENTRUNTIME --> EVENTS
     EVENTS --> API
     API --> WEB
@@ -230,7 +268,36 @@ sequenceDiagram
     UI-->>User: 展示结果
 ```
 
-## 4. 应用接入示例
+## 4. 文档摄取与检索时序
+
+```mermaid
+sequenceDiagram
+    participant Source as 文档源
+    participant Loader as DocumentLoader / BlobParser
+    participant Splitter as TextSplitter
+    participant Embed as Embeddings
+    participant Vector as VectorStore
+    participant Retriever as Retriever
+    participant Agent as 应用 Agent
+
+    Source->>Loader: 文件、Blob 或外部资源
+    Loader-->>Splitter: Document + locator + checksum
+    Splitter-->>Embed: DocumentChunk 列表
+    Embed-->>Vector: VectorRecord + namespace + access
+    Vector-->>Vector: 幂等写入和 metadata 索引
+
+    Agent->>Retriever: RetrievalQuery + AccessContext
+    Retriever->>Embed: embed_query
+    Embed-->>Retriever: query vector
+    Retriever->>Vector: VectorQuery + filter
+    Vector-->>Retriever: 有权限的相似结果
+    Retriever-->>Agent: RetrievalResult + score + locator
+```
+
+Core 内置纯文本 Loader、递归字符切分器、内存 VectorStore、Chroma/pgvector 可选适配器和关键词
+Retriever。MinerU、OCR、模型 Embedding SDK、Qdrant 和 FAISS 通过这些协议接入，不成为基础依赖。
+
+## 5. 应用接入示例
 
 ```mermaid
 flowchart LR
@@ -240,7 +307,7 @@ flowchart LR
     subgraph AGENT["应用 Agent"]
         API["应用 API"]
         BUSINESS["业务编排"]
-        CORE["agent-core<br/>Runtime / ReAct / Model / Skills / Tools<br/>Memory / Checkpoint / HITL / ACP"]
+        CORE["agent-core<br/>Runtime / ReAct / Model / Skills / Tools<br/>Retrieval / Callback / Checkpoint / HITL / ACP"]
         MCP["MCP Client"]
     end
 
@@ -268,7 +335,7 @@ flowchart LR
 两者读取同一套共享 Skill 清单和指令，但分别注入自己的 Function 与 MCP 客户端，
 并分别运行应用 API 和 MCP Server，避免进程与端口冲突。
 
-## 5. 架构图维护待办
+## 6. 架构图维护待办
 
 - [ ] **持续任务，不关闭：** 每次修改 `agent-core/src/agent_core/**` 后，在同一提交中检查并更新本文。
 - [ ] 模块、公共接口、调用方向、持久化对象、协议或应用接入关系变化时，更新对应 Mermaid 图。
@@ -285,3 +352,7 @@ flowchart LR
 | 2026-09-26 | Web MCP 动态配置 | Web 端可持久化、测试并重连内置或自定义 MCP 服务；同步浏览器与 Gateway 的连接关系。 |
 | 2026-09-26 | Core 边界治理 | 模型选择值对象和唯一存储端口收口到 `ports`；`storage` 仅保留实现，并修复审批持久化与中间件导入环。 |
 | 2026-09-27 | 文档站迁移 | VitePress 迁移至 Material for MkDocs；清理 node/pnpm 残留；同步记录补录。 |
+| 2026-09-27 | Core 通用能力扩展 | 新增结构化输出、模型治理、长期记忆、Prompt 模板、节点执行策略、pending write 与 Mermaid 导出，并同步内部和应用调用关系。 |
+| 2026-09-27 | Callback 与 Retrieval Core | 新增统一生命周期回调、文档加载和切分、检索协议、内存向量实现及安全序列化，并同步文档摄取和应用调用关系。 |
+| 2026-09-27 | 严格类型检查修复 | 修正可选依赖边界、持久化数据收窄及动态 checkpoint 调用类型；模块关系和调用方向未变化，无需修改架构图。 |
+| 2026-09-27 | 向量存储分层 | 新增 Chroma 开发适配器、pgvector 生产适配器和环境工厂，并同步检索与存储调用关系。 |

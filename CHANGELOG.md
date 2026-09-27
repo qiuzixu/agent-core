@@ -7,10 +7,19 @@
 
 ### Added
 
-- 基于 VitePress 的中文文档站、使用指南和公共 API 参考。
+- 基于 Material for MkDocs 的中文文档站、使用指南和公共 API 参考。
 - 开源许可证、贡献指南、社区准则、安全策略、支持说明和发布检查清单。
 - 最小 Agent、自定义模型和持久化工作流示例。
 - Core 检查与文档构建的 CI 配置。
+- JSON Schema 结构化输出、decoder 和校验失败重试。
+- 模型请求/输入 Token 限流、按 scope 并发、超时、熔断和 fallback。
+- 工作流节点级重试、超时、退避、幂等键、pending write 和 Mermaid 导出。
+- 跨会话长期记忆端口及内存、SQLite、PostgreSQL 实现。
+- 安全 Prompt 文本/聊天模板、消息占位符、partial 和默认变量。
+- 生命周期 CallbackManager、增强 RunEvent 和流式增量事件。
+- 文档加载/切分、Embedding/Retriever/VectorStore 协议及轻量内存实现。
+- Chroma 本地持久化、PostgreSQL pgvector 生产适配器及统一向量存储工厂。
+- 带类型白名单、Schema 版本和迁移函数的安全 JSON 序列化。
 
 ## [0.1.0] - 2026-09-26
 

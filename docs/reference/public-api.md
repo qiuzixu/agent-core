@@ -25,6 +25,10 @@
 | `register_model_provider` / `ModelProviderRegistry` | 自定义 Provider 注册 |
 | `OpenAIProvider` / `AnthropicProvider` / `GeminiProvider` / `OllamaProvider` | 内置 Provider |
 | `ModelOption` / `default_model_catalog` / `catalog_payload` | 可展示模型目录 |
+| `StructuredOutputSpec` / `StructuredOutputResult` | 声明 JSON Schema、decoder 和结构化结果 |
+| `chat_structured` / `parse_structured_output` / `validate_json_schema` | 结构化调用、解析和本地校验 |
+| `GovernedModelAdapter` / `ModelExecutionPolicy` | 限流、并发、超时、熔断和 fallback |
+| `model_execution_scope` | 设置本次异步调用链的租户或用户治理范围 |
 
 `create_llm_provider` 是旧调用方的兼容入口，新代码使用 `create_model_provider`。
 
@@ -50,6 +54,47 @@
 | `HumanInTheLoopMiddleware` | 工具级人工审批 |
 | `ObservabilityMiddleware` | 延迟、调用量和可选 OTel span |
 
+## Callback 与事件
+
+| API | 作用 |
+| --- | --- |
+| `CallbackHandler` / `BaseCallbackHandler` | 进程内生命周期订阅协议和扩展基类 |
+| `CallableCallbackHandler` | 把同步或异步函数包装成 Handler |
+| `CallbackManager` / `CallbackFailure` | 有序分发、订阅管理和故障隔离 |
+| `RunEvent` | Callback、EventSink、审计和前端共同使用的事件对象 |
+
+Callback 只观察事件；需要修改或停止执行时使用 Middleware。`AgentRuntime` 支持直接传入
+`callbacks`，也可以注入预先组装的 `callback_manager`。
+
+## 文档与检索
+
+| API | 作用 |
+| --- | --- |
+| `Blob` / `Document` / `DocumentChunk` / `DocumentLocator` | 原始内容、解析文档、切分片段和引用位置 |
+| `DocumentLoader` / `BlobParser` / `TextSplitter` | 文档接入和切分协议 |
+| `TextLoader` / `TextBlobParser` | 零依赖纯文本实现 |
+| `RecursiveCharacterTextSplitter` | 按段落、换行和标点优先切分并保留 overlap |
+| `Embeddings` / `Retriever` / `VectorStore` / `Reranker` | 检索依赖倒置协议 |
+| `RetrievalQuery` / `RetrievalResult` / `SearchType` | 通用查询与结果值对象 |
+| `EmbeddingRetriever` | 组合 Embeddings 和 VectorStore 的语义检索器 |
+| `InMemoryVectorStore` / `KeywordRetriever` | 测试和小型语料实现 |
+| `ChromaVectorStore` | 本地开发持久化向量存储 |
+| `PgVectorStore` | PostgreSQL pgvector 生产存储 |
+| `create_vector_store` / `VectorStoreBackend` | 环境默认与显式后端选择 |
+
+具体 Embedding 模型、MinerU、OCR、FAISS、Milvus 和 Qdrant 通过上述协议扩展。
+
+## 安全序列化
+
+| API | 作用 |
+| --- | --- |
+| `SerializedEnvelope` | `{type, schema_version, payload}` 版本化信封 |
+| `SerializerRegistry` | 类型白名单、编码器、解码器和迁移函数注册 |
+| `dumpd` / `dumps` / `load` / `loads` | 默认注册表的字典和 JSON 操作 |
+
+默认注册表支持 Document、Blob、Message、RunContext、RunEvent、ApprovalRecord、ToolResult 和
+AccessContext。它不会动态导入输入中的类，也不使用 pickle。
+
 ## 状态、工作流与审批
 
 | API | 作用 |
@@ -57,13 +102,16 @@
 | `Checkpointer` / `MemoryCheckpointer` / `FileCheckpointer` | 最新快照协议和实现 |
 | `TimeTravelCheckpointer` / `CheckpointVersion` | 历史版本与回滚 |
 | `StateMachineBuilder` / `StateMachine` | 通用异步状态机 |
+| `NodeExecutionPolicy` / `NodeExecutionContext` | 节点重试、超时、退避和稳定幂等键 |
+| `current_node_execution` | 在节点内读取当前尝试次数和幂等键 |
 | `DurableWorkflowRunner` / `WorkflowPause` | 节点级持久化和中断恢复 |
 | `ApprovalQueue` / `ApprovalRequest` / `ApprovalStatus` | 审批创建、等待和决策 |
 | `ApprovalRecord` | 持久化审批值对象 |
 
 ## 存储与访问
 
-所有 `create_*_store` 工厂按环境选择 Memory、SQLite 或 PostgreSQL。公共 Store 包括：
+关系型 `create_*_store` 工厂按环境选择 Memory、SQLite 或 PostgreSQL；
+`create_vector_store` 单独选择 Memory、Chroma 或 pgvector。公共 Store 包括：
 
 - `SessionStore` / `BaseSessionStore`；
 - `ContextStore`；
@@ -71,9 +119,21 @@
 - `RunLeaseStore`；
 - `WorkflowStore` / `WorkflowExecutionStore`；
 - `ModelSelectionStore`；
+- `MemoryStore` / `MemoryRecord` / `MemorySearchResult`；
 - `AccessContext`。
 
 端口类型位于 `agent_core.ports`，实现位于 `agent_core.storage`。
+`create_memory_store` 按环境创建 `InMemoryMemoryStore`、`SqliteMemoryStore` 或
+`PostgresMemoryStore`。
+
+## Prompt
+
+| API | 作用 |
+| --- | --- |
+| `PromptTemplate` | 安全文本模板、默认变量和 partial |
+| `MessageTemplate` / `MessagesPlaceholder` | 聊天消息模板和历史消息插槽 |
+| `ChatPromptTemplate` | 把多条消息模板渲染为 `list[Message]` |
+| `PromptRegistry` / `PromptVersion` / `PromptEntry` | Prompt 版本、回滚和文件持久化 |
 
 ## ACP
 

@@ -10,7 +10,7 @@ import logging
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from agent_core.access import AccessContext
 from agent_core.middleware.base import (
@@ -52,6 +52,15 @@ class ApprovalRequest:
         return self.request_id
 
     def to_record(self) -> ApprovalRecord:
+        status_by_request: dict[
+            ApprovalStatus,
+            Literal["pending", "approved", "rejected", "expired"],
+        ] = {
+            ApprovalStatus.PENDING: "pending",
+            ApprovalStatus.APPROVED: "approved",
+            ApprovalStatus.REJECTED: "rejected",
+            ApprovalStatus.TIMEOUT: "expired",
+        }
         return ApprovalRecord(
             approval_id=self.request_id,
             thread_id=self.thread_id,
@@ -60,12 +69,7 @@ class ApprovalRequest:
             arguments=dict(self.tool_args),
             user_id=self.user_id,
             tenant_id=self.tenant_id,
-            status={
-                ApprovalStatus.PENDING: "pending",
-                ApprovalStatus.APPROVED: "approved",
-                ApprovalStatus.REJECTED: "rejected",
-                ApprovalStatus.TIMEOUT: "expired",
-            }[self.status],
+            status=status_by_request[self.status],
             reason=self.reason,
         )
 

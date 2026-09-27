@@ -154,7 +154,10 @@ class FileCheckpointer:
 
         try:
             with file_path.open("r", encoding="utf-8") as f:
-                state = json.load(f)
+                raw_state = json.load(f)
+            if not isinstance(raw_state, dict):
+                raise CheckpointError(f"Checkpoint {thread_id!r} 的根节点必须是对象")
+            state: dict[str, Any] = {str(key): value for key, value in raw_state.items()}
             logger.debug("Loaded checkpoint for thread %r from %s", thread_id, file_path)
             return state
         except Exception as exc:

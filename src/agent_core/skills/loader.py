@@ -202,7 +202,7 @@ class SkillLoader:
             name=name,
             kind=cast(SkillToolKind, kind),
             target=target,
-            server=cast(str | None, server),
+            server=server,
             description=description,
             parameters=dict(cast(dict[str, Any], parameters)),
             risk_level=risk_level.strip(),

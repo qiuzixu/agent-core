@@ -19,6 +19,7 @@ Handwritten Agent Core 是一个使用 Python 从头实现的 Agent 运行时内
 - 需要同时支持 Function Calling、MCP 和声明式 Skill；
 - 需要开发 SQLite、生产 PostgreSQL，以及用户和租户隔离；
 - 需要在 Web API、CLI、Worker 或 ACP 客户端中复用同一个 Agent Runtime。
+- 需要在多个 Agent 中复用文档加载、切分、检索协议和生命周期回调。
 
 如果只需要快速拼装简单问答，成熟的第三方框架可能更省时间。这个项目更适合需要可读源码、
 明确依赖方向和可替换端口的团队。
@@ -34,6 +35,8 @@ flowchart LR
     Tools --> Function[本地 Function]
     Tools --> MCP[MCP Server]
     Runtime --> Store[内存 / SQLite / PostgreSQL]
+    Runtime --> Callback[Callback / EventSink]
+    App --> Retrieval[Document / Retriever / VectorStore]
 ```
 
 ## 安装方式

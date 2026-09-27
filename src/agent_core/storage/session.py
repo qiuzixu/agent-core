@@ -36,7 +36,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from agent_core.access import AccessContext
 from agent_core.model import ContextUsage
@@ -65,7 +65,7 @@ def _msg_to_row(msg: Message) -> tuple[str, str, str | None, str | None, str]:
 # ──────────────────────────────────────────────
 # 数据库行 → Message
 # ──────────────────────────────────────────────
-def _row_to_msg(row: tuple | dict) -> Message:
+def _row_to_msg(row: tuple[Any, ...] | dict[str, Any]) -> Message:
     """数据库行 → Message。
 
     兼容 sqlite3.Row（可按列名访问）和普通 tuple。
@@ -481,7 +481,7 @@ class PostgresSessionStore(BaseSessionStore):
     async def initialize(self) -> None:
         """创建连接池并建表（启动时调用一次）。"""
         try:
-            import asyncpg  # type: ignore[import-untyped]
+            import asyncpg
         except ImportError as exc:
             raise ImportError("PostgresSessionStore 需要 asyncpg，请执行：uv add asyncpg") from exc
 
@@ -801,12 +801,15 @@ class SessionManager:
             await self._store.save(thread_id, history, access=access)
 
         # 3. 调用 Agent
-        answer = await agent.run(
-            user_input,
-            memory_context=memory_context,
-            thread_id=thread_id,
-            run_context=run_context,
-            checkpoint_state=checkpoint_state,
+        answer = cast(
+            str,
+            await agent.run(
+                user_input,
+                memory_context=memory_context,
+                thread_id=thread_id,
+                run_context=run_context,
+                checkpoint_state=checkpoint_state,
+            ),
         )
 
         # 4. 追加本轮对话（append 比 save 更高效，只写新增的行）。
@@ -852,7 +855,10 @@ class SessionManager:
         """按真实会话记忆构造下一次模型输入并统计 token。"""
         history = await self._store.load(thread_id, access=access) if thread_id else []
         memory_context = self._build_context(history) if history else None
-        return await agent.context_usage(user_input, memory_context=memory_context)
+        return cast(
+            ContextUsage,
+            await agent.context_usage(user_input, memory_context=memory_context),
+        )
 
     async def clear(
         self,

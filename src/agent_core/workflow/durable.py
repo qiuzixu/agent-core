@@ -6,7 +6,13 @@ from typing import Any
 
 from agent_core.access import AccessContext
 from agent_core.storage.workflow import WorkflowExecution, WorkflowExecutionStore
-from agent_core.workflow.state_machine import END, START, StateMachine, WorkflowPause
+from agent_core.workflow.state_machine import (
+    END,
+    START,
+    NodeExecutionContext,
+    StateMachine,
+    WorkflowPause,
+)
 
 
 class DurableWorkflowRunner:
@@ -74,6 +80,21 @@ class DurableWorkflowRunner:
         await self._store.save(execution)
         completed_offset = execution.steps_completed
 
+        def idempotency_key(node_name: str, completed_nodes: int) -> str:
+            sequence = completed_offset + completed_nodes + 1
+            return f"{execution.execution_id}:{sequence}:{node_name}"
+
+        async def persist_pending(context: NodeExecutionContext, _state: dict[str, Any]) -> None:
+            execution.events.append(
+                {
+                    "event_type": "workflow_step_pending",
+                    "step": context.node_name,
+                    "attempt": context.attempt,
+                    "idempotency_key": context.idempotency_key,
+                }
+            )
+            await self._store.save(execution)
+
         async def persist_step(
             current_node: str,
             next_node: str,
@@ -88,6 +109,7 @@ class DurableWorkflowRunner:
                     "event_type": "workflow_step_completed",
                     "step": current_node,
                     "next_step": next_node,
+                    "idempotency_key": idempotency_key(current_node, completed_nodes - 1),
                 }
             )
             await self._store.save(execution)
@@ -97,6 +119,8 @@ class DurableWorkflowRunner:
                 execution.result_data or execution.input_data,
                 start_node=execution.current_step or START,
                 on_step=persist_step,
+                on_node_start=persist_pending,
+                idempotency_key_factory=idempotency_key,
             )
         except WorkflowPause as exc:
             execution.status = "interrupted"

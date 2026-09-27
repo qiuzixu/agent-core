@@ -18,6 +18,23 @@ Core 不绑定配置框架，也不自动读取 `.env`。工厂通过属性访�
 | `gemini_api_key` | `AGENT_GEMINI_API_KEY` | 无 | Gemini 密钥 |
 | `ollama_base_url` | `AGENT_OLLAMA_BASE_URL` | `http://localhost:11434/v1` | Ollama 兼容地址 |
 
+## 模型调用治理
+
+`ModelExecutionPolicy` 由应用显式传给 `GovernedModelAdapter`，不从环境变量自动读取：
+
+| 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `max_concurrency` | `8` | 每个 scope 的最大并发模型调用数 |
+| `requests_per_window` | `None` | 窗口内最大请求数，`None` 表示不限制 |
+| `tokens_per_window` | `None` | 窗口内最大估算输入 Token，`None` 表示不限制 |
+| `window_seconds` | `60` | 滑动窗口秒数 |
+| `queue_timeout_seconds` | `30` | 等待限流或并发名额的最长时间 |
+| `call_timeout_seconds` | `None` | 单次模型调用超时 |
+| `failure_threshold` | `5` | 连续失败多少次后打开熔断器 |
+| `recovery_timeout_seconds` | `30` | 熔断后多久允许恢复探测 |
+
+应用可用 `model_execution_scope(tenant_id)` 把配额隔离到租户或用户。未设置时使用 `default`。
+
 ## Agent Loop
 
 | 参数 | 默认值 | 说明 |
@@ -39,8 +56,8 @@ Core 不绑定配置框架，也不自动读取 `.env`。工厂通过属性访�
 
 ## 存储工厂
 
-所有工厂接受 `env`、`sqlite_path` 和 `postgres_url`；Session 和 Context 额外接受
-`require_access`。生产环境应把数据库 URL 放在密钥管理系统中。
+所有工厂接受 `env`、`sqlite_path` 和 `postgres_url`；Session、Context 和长期 Memory 工厂额外
+接受 `require_access`。生产环境应把数据库 URL 放在密钥管理系统中。
 
 ```python
 store = create_runtime_store(
@@ -48,6 +65,43 @@ store = create_runtime_store(
     postgres_url="从安全配置读取",
 )
 ```
+
+长期记忆使用独立工厂：
+
+```python
+memory = create_memory_store(
+    env="production",
+    postgres_url="从安全配置读取",
+    require_access=True,
+)
+await memory.initialize()  # PostgreSQL 实现需要初始化连接池和表
+```
+
+## 向量存储
+
+向量存储工厂使用单独参数，且允许显式 `backend` 覆盖环境默认值：
+
+| 环境 | 默认后端 | 必要参数 |
+| --- | --- | --- |
+| `test` / `testing` | `memory` | 无 |
+| 开发环境 | `chroma` | `chroma_path`，默认 `./chroma_db` |
+| `production` / `prod` | `pgvector` | `postgres_url`、`dimension` |
+
+```python
+vectors = create_vector_store(
+    env="production",
+    postgres_url="从安全配置读取",
+    dimension=1536,
+    collection_name="flight-manual",
+    require_access=True,
+)
+await vectors.initialize()
+```
+
+推荐由应用映射 `AGENT_VECTOR_STORE`、`AGENT_VECTOR_PATH`、
+`AGENT_VECTOR_DIMENSION` 和数据库 URL。数据库管理员已安装 `vector` 扩展或已创建索引时，
+可传 `pg_create_extension=False` 或 `pg_create_index=False`。同一 pgvector 表只保存一种维度；
+切换 Embedding 维度时应更换 `table_name` 并重建索引。
 
 ## 压缩
 

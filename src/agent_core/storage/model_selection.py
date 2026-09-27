@@ -33,6 +33,16 @@ def _validate_scope(scope: ModelSelectionScope, user_id: str | None, tenant_id: 
         raise ValueError("模型选择需要 tenant_id")
 
 
+def _parse_scope(value: object) -> ModelSelectionScope:
+    """校验持久化层返回的 scope，避免非法值进入领域对象。"""
+    scope = str(value)
+    if scope == "user":
+        return "user"
+    if scope == "tenant":
+        return "tenant"
+    raise ValueError(f"无效的模型选择范围：{scope}")
+
+
 class MemoryModelSelectionStore:
     """测试环境内存实现。"""
 
@@ -126,7 +136,7 @@ class SqliteModelSelectionStore:
         return ModelSelection(
             provider=str(values[3]),
             model=str(values[4]),
-            scope=str(values[0]),
+            scope=_parse_scope(values[0]),
             user_id=values[1] or None,
             tenant_id=values[2],
             version=int(values[5]),
@@ -203,7 +213,7 @@ class PostgresModelSelectionStore:
 
     async def initialize(self) -> None:
         try:
-            import asyncpg  # type: ignore[import-untyped]
+            import asyncpg
         except ImportError as exc:
             raise ImportError("PostgresModelSelectionStore 需要 asyncpg") from exc
         self._pool = await asyncpg.create_pool(self._dsn, min_size=2, max_size=10)
@@ -228,7 +238,7 @@ class PostgresModelSelectionStore:
         return ModelSelection(
             provider=str(row["provider"]),
             model=str(row["model"]),
-            scope=str(row["scope"]),
+            scope=_parse_scope(row["scope"]),
             user_id=row["user_id"] or None,
             tenant_id=row["tenant_id"],
             version=int(row["version"]),

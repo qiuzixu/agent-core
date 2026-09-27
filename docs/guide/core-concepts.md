@@ -30,6 +30,14 @@ flowchart TB
 
 `ModelAdapter` 是 Agent Loop 依赖的最小协议：普通对话、流式对话和上下文用量。
 应用可以使用内置 Provider，也可以注册自定义 Provider。Agent Loop 不直接依赖任何模型 SDK。
+`GovernedModelAdapter` 在协议外组合限流、并发、超时、熔断和 fallback；`StructuredOutputSpec`
+通过统一 JSON Schema 校验为所有 Provider 提供结构化输出。
+
+## Prompt 模板
+
+`PromptTemplate` 和 `ChatPromptTemplate` 负责安全变量替换、默认变量、partial 与历史消息占位。
+模板只允许简单变量名，不执行属性访问、下标或任意表达式。`PromptRegistry` 在此基础上保存版本、
+当前版本和回滚历史。
 
 ## Tool 与 Skill
 
@@ -41,14 +49,15 @@ Skill 是一组指令和工具声明；激活 Skill 时，应用显式提供 Fun
 `ReActAgent` 实现“模型决定 -> 执行工具 -> 回填结果 -> 再调用模型”的循环。
 `AgentRuntime` 在它外面管理 `RunContext`、事件、持久化、租约、恢复、取消和访问控制。
 
-## Session、Context、Run 与 Checkpoint
+## Session、Context、Memory、Run 与 Checkpoint
 
 这些对象解决的问题不同：
 
 | 对象 | 保存内容 | 典型用途 |
 | --- | --- | --- |
 | Session | 会话消息历史和归属 | 多轮对话 |
-| Context | 长期键值信息、版本和过期时间 | 用户偏好、业务背景、记忆 |
+| Context | Thread 内键值信息、版本和过期时间 | 当前会话的业务背景 |
+| Memory | 跨 Thread 记录、来源、TTL、版本和检索字段 | 用户偏好、可复用事实 |
 | RunContext | 一次执行的状态、事件、审批和恢复数据 | 运行跟踪、重启恢复 |
 | Checkpoint | Agent Loop 某一时刻的完整消息和计数 | 回滚、时间旅行、循环恢复 |
 | WorkflowExecution | 工作流节点状态和输入输出 | 跨进程工作流恢复 |
@@ -57,6 +66,9 @@ Skill 是一组指令和工具声明；激活 Skill 时，应用显式提供 Fun
 
 `agent_core.ports` 定义存储协议和值对象，`agent_core.storage` 提供内存、SQLite 和 PostgreSQL
 实现。应用可以实现同一 Protocol，接入 Redis、云数据库或已有存储系统。
+
+状态机节点可声明 `NodeExecutionPolicy`，设置超时、退避和幂等重试。持久化 Runner 在调用节点前
+写入 pending 事件，并把稳定幂等键暴露给节点；`describe()` 和 `to_mermaid()` 用于检查或展示图。
 
 ## AccessContext
 

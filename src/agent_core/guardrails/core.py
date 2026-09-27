@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import re
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from typing import ClassVar
 
 from agent_core.middleware.base import (
@@ -32,7 +33,7 @@ class Guard(ABC):
 class BlockedKeywordsGuard(Guard):
     """屏蔽指定关键词，默认大小写不敏感。"""
 
-    def __init__(self, keywords: list[str] = (), case_sensitive: bool = False) -> None:
+    def __init__(self, keywords: Sequence[str] = (), case_sensitive: bool = False) -> None:
         flags = 0 if case_sensitive else re.IGNORECASE
         self._keywords = list(keywords)
         self._patterns = [re.compile(re.escape(keyword), flags) for keyword in self._keywords]
@@ -120,8 +121,8 @@ class GuardrailsMiddleware(Middleware):
 
     def __init__(
         self,
-        input_guards: list[Guard] = (),
-        output_guards: list[Guard] = (),
+        input_guards: Sequence[Guard] = (),
+        output_guards: Sequence[Guard] = (),
         pii_redact: bool = False,
     ) -> None:
         self._input_guards = list(input_guards)

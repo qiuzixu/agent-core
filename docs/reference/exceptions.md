@@ -15,6 +15,10 @@
 | `CheckpointError` | 快照读写失败 | 阻止不可靠恢复并告警 |
 | `MiddlewareError` | 中间件链失败 | 检查自定义策略和返回动作 |
 | `StateMachineError` | 节点、路由或最大步数错误 | 修正工作流定义或节点实现 |
+| `MemoryConflictError` | 长期记忆版本已被其他写入者修改 | 重新读取记录并合并或重试 |
+| `SerializationError` | 信封、JSON 或对象编码不合法 | 拒绝输入并检查注册 Codec |
+| `UnknownSerializedTypeError` | 输入类型没有进入白名单 | 显式注册可信类型，不动态导入 |
+| `UnsupportedSchemaVersionError` | 版本过新或缺少迁移函数 | 升级 Core 或补齐逐版本迁移 |
 
 ## MCP 异常
 

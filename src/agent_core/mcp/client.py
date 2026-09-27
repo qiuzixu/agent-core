@@ -154,19 +154,19 @@ class McpToolClient:
             ready.set_result(None)
             await close_requested.wait()
         except TimeoutError:
-            error = McpTimeoutError(f"MCP 初始化超时：{self._entrypoint.name}")
-            self._terminal_error = error
+            timeout_error = McpTimeoutError(f"MCP 初始化超时：{self._entrypoint.name}")
+            self._terminal_error = timeout_error
             if not ready.done():
-                ready.set_exception(error)
+                ready.set_exception(timeout_error)
         except BaseException as exc:
-            error = (
+            connection_error = (
                 exc
                 if isinstance(exc, McpConnectionError)
                 else McpConnectionError(f"无法启动或维持 MCP 服务：{self._entrypoint}（{exc}）")
             )
-            self._terminal_error = error
+            self._terminal_error = connection_error
             if not ready.done():
-                ready.set_exception(error)
+                ready.set_exception(connection_error)
         finally:
             self._session = None
             try:

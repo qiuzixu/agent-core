@@ -9,11 +9,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from collections.abc import AsyncIterator, Coroutine
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 from agent_core.access import AccessContext
+from agent_core.callbacks import CallbackHandler, CallbackManager
 from agent_core.ports import EventSink, RunStore
 from agent_core.protocol.runtime import RunContext, RunEvent
 from agent_core.runtime.react import ReActAgent
@@ -51,6 +52,8 @@ class AgentRuntime:
         *,
         run_store: RunStore | None = None,
         event_sink: EventSink | None = None,
+        callbacks: Sequence[CallbackHandler] | None = None,
+        callback_manager: CallbackManager | None = None,
         lease_store: RunLeaseStore | None = None,
         worker_id: str | None = None,
         lease_seconds: float = 30.0,
@@ -61,9 +64,12 @@ class AgentRuntime:
             raise ValueError("lease_seconds 必须大于 0")
         if heartbeat_seconds <= 0 or heartbeat_seconds >= lease_seconds:
             raise ValueError("heartbeat_seconds 必须大于 0 且小于 lease_seconds")
+        if callbacks is not None and callback_manager is not None:
+            raise ValueError("callbacks 和 callback_manager 不能同时传入")
         self._agent = agent
         self._run_store = run_store or MemoryRunStore()
         self._event_sink = event_sink
+        self._callback_manager = callback_manager or CallbackManager(callbacks)
         self._lease_store = lease_store
         self._worker_id = worker_id or f"worker-{uuid.uuid4()}"
         self._lease_seconds = lease_seconds
@@ -80,6 +86,8 @@ class AgentRuntime:
         *,
         user_id: str | None = None,
         tenant_id: str | None = None,
+        parent_run_id: str | None = None,
+        tags: Sequence[str] | None = None,
         idempotency_key: str | None = None,
         memory_context: str | None = None,
         metadata: dict[str, Any] | None = None,
@@ -99,6 +107,8 @@ class AgentRuntime:
                 run_id=str(uuid.uuid4()),
                 user_id=user_id,
                 tenant_id=tenant_id,
+                parent_run_id=parent_run_id,
+                tags=list(tags or ()),
                 idempotency_key=idempotency_key,
                 metadata={
                     **(metadata or {}),
@@ -195,11 +205,12 @@ class AgentRuntime:
             context = await self.get(thread_id, run_id, access=access)
             if not context.checkpoint:
                 raise ValueError("该 run 没有可恢复的 checkpoint")
+            self._event_cursors.setdefault(context.run_id, len(context.events))
             await self._claim(context)
             try:
                 context.status = "queued"
                 context.emit("run_resumed")
-                await self._run_store.save_run(context)
+                await self._persist(context)
             except Exception:
                 await self._release(context)
                 raise
@@ -249,6 +260,8 @@ class AgentRuntime:
             run_id=str(uuid.uuid4()),
             user_id=kwargs.pop("user_id", None),
             tenant_id=kwargs.pop("tenant_id", None),
+            parent_run_id=kwargs.pop("parent_run_id", None),
+            tags=list(kwargs.pop("tags", ())),
             idempotency_key=kwargs.pop("idempotency_key", None),
             metadata={**kwargs.pop("metadata", {}), "_input": user_input},
         )
@@ -258,6 +271,7 @@ class AgentRuntime:
         context.status = "running"
         context.emit("run_started", input=user_input)
         context.checkpoint_callback = self._checkpoint_callback(context)
+        await self._persist(context)
         lease_errors: list[BaseException] = []
         heartbeat = self._start_stream_heartbeat(context, lease_errors)
         try:
@@ -268,6 +282,8 @@ class AgentRuntime:
                 run_context=context,
                 checkpoint_state=kwargs.pop("checkpoint_state", None),
             ):
+                context.emit("model_stream_chunk", component="model", delta=chunk)
+                await self._publish_pending_events(context)
                 yield chunk
         except asyncio.CancelledError:
             if not lease_errors:
@@ -296,9 +312,10 @@ class AgentRuntime:
             await self._lease_store.release(lease.thread_id, lease.run_id, lease.worker_id)
             if context is None or context.status not in {"queued", "running"}:
                 continue
+            self._event_cursors.setdefault(context.run_id, len(context.events))
             context.status = "interrupted"
             context.emit("run_interrupted", reason="worker_lease_expired")
-            await self._run_store.save_run(context)
+            await self._persist(context)
             recovered.append(context)
             if auto_resume and context.checkpoint:
                 await self.resume(
@@ -436,6 +453,7 @@ class AgentRuntime:
         context.status = "running"
         context.emit("run_started", input=user_input)
         context.checkpoint_callback = self._checkpoint_callback(context)
+        await self._persist(context)
         return await self._agent.run(
             user_input,
             memory_context=memory_context,
@@ -444,7 +462,10 @@ class AgentRuntime:
             checkpoint_state=checkpoint_state,
         )
 
-    def _checkpoint_callback(self, context: RunContext):
+    def _checkpoint_callback(
+        self,
+        context: RunContext,
+    ) -> Callable[[dict[str, Any]], Awaitable[None]]:
         async def persist(_state: dict[str, Any]) -> None:
             await self._persist(context)
 
@@ -452,13 +473,18 @@ class AgentRuntime:
 
     async def _persist(self, context: RunContext) -> None:
         await self._run_store.save_run(context)
-        if self._event_sink is None:
-            return
+        await self._publish_pending_events(context)
+
+    async def _publish_pending_events(self, context: RunContext) -> None:
+        """把尚未发布的事件依次交给进程内 Callback 和进程外 EventSink。"""
+
         cursor = self._event_cursors.get(context.run_id, 0)
         for event in context.events[cursor:]:
-            try:
-                await self._event_sink.publish(event)
-            except Exception:
-                # 事件订阅者故障不能覆盖 Agent 的最终结果。
-                logger.exception("发布 Agent 运行事件失败：%s", event.event_type)
+            await self._callback_manager.dispatch(event)
+            if self._event_sink is not None:
+                try:
+                    await self._event_sink.publish(event)
+                except Exception:
+                    # 事件订阅者故障不能覆盖 Agent 的最终结果。
+                    logger.exception("发布 Agent 运行事件失败：%s", event.event_type)
         self._event_cursors[context.run_id] = len(context.events)

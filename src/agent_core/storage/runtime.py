@@ -20,7 +20,6 @@ from typing import Any
 from agent_core.protocol.runtime import (
     ApprovalRecord,
     RunContext,
-    RunEvent,
 )
 
 
@@ -95,19 +94,7 @@ def _approval_from_dict(value: dict[str, Any] | None) -> ApprovalRecord | None:
     arguments = value.get("arguments") or {}
     if isinstance(arguments, str):  # asyncpg 默认把 JSONB 返回为字符串，统一转换后再重建领域对象。
         arguments = json.loads(arguments) if arguments else {}  # 确保 arguments 是字典类型
-    return ApprovalRecord(
-        approval_id=str(value.get("approval_id", "")),  # 审批记录 ID
-        thread_id=str(value.get("thread_id", "")),  # 线程 ID
-        run_id=str(value.get("run_id", "")),  # 运行 ID
-        action=str(value.get("action", "")),  # 审批操作
-        arguments=dict(arguments),  # 审批参数
-        user_id=value.get("user_id"),  # 用户 ID
-        tenant_id=value.get("tenant_id"),  # 租户 ID
-        status=value.get("status", "pending"),  # 审批状态
-        reason=value.get("reason"),  # 审批原因
-        created_at=str(value.get("created_at", "")),  # 创建时间
-        expires_at=value.get("expires_at"),  # 过期时间
-    )
+    return ApprovalRecord.from_dict({**value, "arguments": dict(arguments)})
 
 
 # ──────────────────────────────────────────────
@@ -116,37 +103,18 @@ def _approval_from_dict(value: dict[str, Any] | None) -> ApprovalRecord | None:
 def _context_from_dict(value: dict[str, Any]) -> RunContext:
     value = copy.deepcopy(value)
     # asyncpg 默认把 JSONB 返回为字符串，统一转换后再重建领域对象。
-    for key in ("pending_approval", "pending_clarification", "state", "metadata", "checkpoint", "events"):
+    for key in (
+        "tags",
+        "pending_approval",
+        "pending_clarification",
+        "state",
+        "metadata",
+        "checkpoint",
+        "events",
+    ):
         if isinstance(value.get(key), str):
             value[key] = json.loads(value[key])
-    context = RunContext(
-        thread_id=str(value["thread_id"]),
-        run_id=str(value["run_id"]),
-        user_id=value.get("user_id"),
-        tenant_id=value.get("tenant_id"),
-        status=value.get("status", "queued"),
-        version=int(value.get("version", 0)),
-        idempotency_key=value.get("idempotency_key"),
-        iteration=int(value.get("iteration", 0)),
-        tool_calls_used=int(value.get("tool_calls_used", 0)),
-        pending_approval=_approval_from_dict(value.get("pending_approval")),
-        pending_clarification=value.get("pending_clarification"),
-        state=dict(value.get("state") or {}),
-        metadata=dict(value.get("metadata") or {}),
-        checkpoint=dict(value.get("checkpoint") or {}),
-    )
-    context.events = [
-        RunEvent(
-            event_type=str(item["event_type"]),
-            run_id=str(item["run_id"]),
-            thread_id=str(item["thread_id"]),
-            sequence=int(item["sequence"]),
-            payload=dict(item.get("payload") or {}),
-            timestamp=str(item["timestamp"]),
-        )
-        for item in value.get("events", [])
-    ]
-    return context
+    return RunContext.from_dict(value)
 
 
 # ──────────────────────────────────────────────
@@ -234,6 +202,8 @@ class SqliteRuntimeStore(RuntimeStore):
         run_id TEXT NOT NULL,
         user_id TEXT,
         tenant_id TEXT,
+        parent_run_id TEXT,
+        tags TEXT NOT NULL DEFAULT '[]',
         status TEXT NOT NULL,
         version INTEGER NOT NULL DEFAULT 0,
         idempotency_key TEXT,
@@ -281,6 +251,8 @@ class SqliteRuntimeStore(RuntimeStore):
         columns = {row[1] for row in conn.execute("PRAGMA table_info(agent_runs)")}
         for name, definition in {
             "tenant_id": "TEXT",
+            "parent_run_id": "TEXT",
+            "tags": "TEXT NOT NULL DEFAULT '[]'",
             "version": "INTEGER NOT NULL DEFAULT 0",
             "idempotency_key": "TEXT",
             "checkpoint": "TEXT NOT NULL DEFAULT '{}'",
@@ -323,12 +295,14 @@ class SqliteRuntimeStore(RuntimeStore):
             value = context.to_dict()
             conn.execute(
                 """INSERT INTO agent_runs
-                (thread_id, run_id, user_id, tenant_id, status, version, idempotency_key,
+                (thread_id, run_id, user_id, tenant_id, parent_run_id, tags,
+                 status, version, idempotency_key,
                  iteration, tool_calls_used, pending_approval, pending_clarification,
                  state, metadata, checkpoint, events)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(thread_id, run_id) DO UPDATE SET
                   user_id=excluded.user_id, tenant_id=excluded.tenant_id,
+                  parent_run_id=excluded.parent_run_id, tags=excluded.tags,
                   status=excluded.status, version=excluded.version,
                   idempotency_key=excluded.idempotency_key,
                   iteration=excluded.iteration, tool_calls_used=excluded.tool_calls_used,
@@ -342,6 +316,8 @@ class SqliteRuntimeStore(RuntimeStore):
                     context.run_id,
                     context.user_id,
                     context.tenant_id,
+                    context.parent_run_id,
+                    json.dumps(value["tags"], ensure_ascii=False),
                     context.status,
                     context.version,
                     context.idempotency_key,
@@ -361,7 +337,8 @@ class SqliteRuntimeStore(RuntimeStore):
     async def load_run(self, thread_id: str, run_id: str) -> RunContext | None:
         with self._connect() as conn:
             row = conn.execute(
-                """SELECT thread_id, run_id, user_id, tenant_id, status, version,
+                """SELECT thread_id, run_id, user_id, tenant_id, parent_run_id, tags,
+                   status, version,
                    idempotency_key, iteration, tool_calls_used, pending_approval,
                    pending_clarification, state, metadata, checkpoint, events
                    FROM agent_runs WHERE thread_id = ? AND run_id = ?""",
@@ -375,6 +352,8 @@ class SqliteRuntimeStore(RuntimeStore):
             "run_id",
             "user_id",
             "tenant_id",
+            "parent_run_id",
+            "tags",
             "status",
             "version",
             "idempotency_key",
@@ -388,7 +367,15 @@ class SqliteRuntimeStore(RuntimeStore):
             "events",
         ]
         value = dict(zip(keys, row, strict=True))
-        for key in ("pending_approval", "pending_clarification", "state", "metadata", "checkpoint", "events"):
+        for key in (
+            "tags",
+            "pending_approval",
+            "pending_clarification",
+            "state",
+            "metadata",
+            "checkpoint",
+            "events",
+        ):
             value[key] = json.loads(value[key]) if value[key] else (None if key.startswith("pending") else {})
         return _context_from_dict(value)
 
@@ -519,7 +506,7 @@ class PostgresRuntimeStore(RuntimeStore):
 
     async def initialize(self) -> None:
         try:
-            import asyncpg  # type: ignore[import-untyped]
+            import asyncpg
         except ImportError as exc:
             raise ImportError("PostgresRuntimeStore 需要 asyncpg，请执行：uv add asyncpg") from exc
         self._pool = await asyncpg.create_pool(self._dsn, min_size=2, max_size=10)
@@ -527,6 +514,7 @@ class PostgresRuntimeStore(RuntimeStore):
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS agent_runs (
                     thread_id TEXT NOT NULL, run_id TEXT NOT NULL, user_id TEXT, tenant_id TEXT,
+                    parent_run_id TEXT, tags JSONB NOT NULL DEFAULT '[]'::jsonb,
                     status TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 0,
                     idempotency_key TEXT,
                     iteration INTEGER NOT NULL DEFAULT 0,
@@ -550,6 +538,8 @@ class PostgresRuntimeStore(RuntimeStore):
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 );
                 ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS tenant_id TEXT;
+                ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS parent_run_id TEXT;
+                ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS tags JSONB NOT NULL DEFAULT '[]'::jsonb;
                 ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 0;
                 ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS idempotency_key TEXT;
                 ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS checkpoint JSONB NOT NULL DEFAULT '{}'::jsonb;
@@ -604,24 +594,28 @@ class PostgresRuntimeStore(RuntimeStore):
                 value = context.to_dict()
                 command = await conn.execute(
                     """INSERT INTO agent_runs
-                    (thread_id, run_id, user_id, tenant_id, status, version, idempotency_key,
+                    (thread_id, run_id, user_id, tenant_id, parent_run_id, tags,
+                     status, version, idempotency_key,
                      iteration, tool_calls_used, state, metadata, checkpoint,
                      pending_approval, pending_clarification, events)
                     VALUES (
-                      $1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,
-                      $12::jsonb,$13::jsonb,$14::jsonb,$15::jsonb
+                      $1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9,$10,$11,$12::jsonb,$13::jsonb,
+                      $14::jsonb,$15::jsonb,$16::jsonb,$17::jsonb
                     )
                     ON CONFLICT (thread_id, run_id) DO UPDATE SET
-                      user_id=$3, tenant_id=$4, status=$5, version=$6,
-                      idempotency_key=$7, iteration=$8, tool_calls_used=$9,
-                      state=$10::jsonb, metadata=$11::jsonb, checkpoint=$12::jsonb,
-                      pending_approval=$13::jsonb, pending_clarification=$14::jsonb,
-                      events=$15::jsonb, updated_at=NOW()
-                    WHERE agent_runs.version=$16""",
+                      user_id=$3, tenant_id=$4, parent_run_id=$5, tags=$6::jsonb,
+                      status=$7, version=$8, idempotency_key=$9,
+                      iteration=$10, tool_calls_used=$11,
+                      state=$12::jsonb, metadata=$13::jsonb, checkpoint=$14::jsonb,
+                      pending_approval=$15::jsonb, pending_clarification=$16::jsonb,
+                      events=$17::jsonb, updated_at=NOW()
+                    WHERE agent_runs.version=$18""",
                     context.thread_id,
                     context.run_id,
                     context.user_id,
                     context.tenant_id,
+                    context.parent_run_id,
+                    json.dumps(value["tags"], ensure_ascii=False),
                     context.status,
                     context.version,
                     context.idempotency_key,

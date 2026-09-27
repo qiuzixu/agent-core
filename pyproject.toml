@@ -44,6 +44,14 @@ production = [
   "asyncpg>=0.30,<1",
 ]
 
+chroma = [
+  "chromadb>=1.0,<2",
+]
+
+pgvector = [
+  "asyncpg>=0.30,<1",
+]
+
 mcp = [
   "mcp>=1.27,<2",
 ]
@@ -97,3 +105,20 @@ ignore = ["RUF001", "RUF002", "RUF003"]
 python_version = "3.13"
 strict = true
 files = ["src"]
+
+[[tool.mypy.overrides]]
+# 这些模块都属于可选 extra，最小开发环境不会安装；Core 仍然严格检查自身代码。
+module = [
+  "anthropic",
+  "asyncpg",
+  "chromadb",
+  "dashscope.*",
+  "google.*",
+  "httpx",
+  "mcp",
+  "mcp.*",
+  "openai",
+  "opentelemetry",
+  "opentelemetry.*",
+]
+ignore_missing_imports = true

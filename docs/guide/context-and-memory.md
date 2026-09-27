@@ -21,6 +21,46 @@ Agent 的“上下文”不是单一对象。把不同生命周期的数据分�
 这些字段让应用能够判断记忆来自用户、工具还是系统，以及当前更新是否覆盖了其他进程刚写入
 的版本。业务仍需决定哪些内容值得长期保存，Core 不自动把所有对话转成记忆。
 
+`ContextStore` 的键值属于一个 Thread，适合保存当前会话持续使用的结构化字段。跨 Thread 的用户
+偏好、事实和历史经验使用独立的 `MemoryStore`。
+
+## 跨会话长期记忆
+
+```python
+from agent_core import AccessContext, MemoryRecord, create_memory_store
+
+access = AccessContext(user_id="u-1", tenant_id="t-1")
+memory = create_memory_store(
+    "development",
+    sqlite_path="./agent.db",
+    require_access=True,
+)
+
+record = await memory.put(
+    MemoryRecord(
+        namespace="preferences",
+        content="用户偏好中文回答",
+        source="conversation",
+        metadata={"kind": "preference"},
+    ),
+    access=access,
+)
+results = await memory.search(
+    "preferences",
+    query="中文",
+    metadata={"kind": "preference"},
+    access=access,
+)
+```
+
+`MemoryRecord` 包含 namespace、来源、metadata、TTL、版本以及用户/租户归属。`put()` 和
+`delete()` 可传 `expected_version` 做乐观并发检查。内存实现用于测试，SQLite 用于本地开发，
+PostgreSQL 用于生产；PostgreSQL 实例需要先调用 `initialize()`，退出前调用 `close()`。
+
+内置 Memory 检索是轻量关键词匹配，适合偏好和结构化事实。外部知识文档使用独立的
+`Retriever`、`Embeddings` 和 `VectorStore` 协议；需要把长期记忆加入统一检索时，可以实现
+`MemoryRetriever` 适配器，并保留相同的访问隔离、TTL 和版本语义。
+
 ## 上下文压缩
 
 `CompactionMiddleware` 在模型调用前读取 `context_usage()`。达到窗口阈值时，它会：
@@ -60,7 +100,7 @@ Spill 将超长工具结果放入有容量限制的进程内存储，并在消�
 
 ## 记忆策略建议
 
-- 用户明确表达且长期稳定的偏好可写入 Context；
+- 当前 Thread 使用的结构化字段写入 Context，跨会话稳定偏好写入 Memory；
 - 工具原始结果优先保留来源和时间，不直接视为事实永久保存；
 - 临时推理、模型中间文本和可重新计算数据留在 Run 或 Checkpoint；
 - 多租户应用始终启用 `require_access=True`；

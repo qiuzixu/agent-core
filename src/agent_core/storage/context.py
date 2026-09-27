@@ -251,7 +251,7 @@ class PostgresContextStore(ContextStore):
     # 创建上下文表
     async def initialize(self) -> None:
         try:
-            import asyncpg  # type: ignore[import-untyped]
+            import asyncpg
         except ImportError as exc:
             raise ImportError(
                 "PostgresContextStore 需要 asyncpg，请执行：uv sync --extra production"

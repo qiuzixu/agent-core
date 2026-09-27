@@ -22,8 +22,8 @@ import asyncio
 import json
 import logging
 import uuid
-from collections.abc import AsyncIterator
-from typing import Any
+from collections.abc import AsyncIterator, Awaitable, Callable
+from typing import Any, cast
 
 from agent_core.checkpoint import Checkpointer
 from agent_core.errors import (
@@ -753,7 +753,7 @@ class ReActAgent:
     # 时间旅行接口
     # ──────────────────────────────────────────────
 
-    async def get_checkpoint_history(self) -> list[dict]:
+    async def get_checkpoint_history(self) -> list[dict[str, Any]]:
         """返回当前 thread 的 checkpoint 版本列表（需要 checkpointer）。"""
         if not self._checkpointer:
             return []
@@ -761,7 +761,11 @@ class ReActAgent:
         if list_versions is None:
             # 内存和文件快照只有当前状态，没有时间旅行版本列表。
             return []
-        return await list_versions(self._thread_id)
+        loader = cast(
+            Callable[[str], Awaitable[list[dict[str, Any]]]],
+            list_versions,
+        )
+        return await loader(self._thread_id)
 
     async def rollback_to(self, version_id: str) -> bool:
         """回滚到指定 checkpoint 版本（需要 checkpointer）。"""
@@ -770,4 +774,8 @@ class ReActAgent:
         rollback = getattr(self._checkpointer, "rollback", None)
         if rollback is None:
             return False
-        return await rollback(self._thread_id, version_id)
+        rollback_version = cast(
+            Callable[[str, str], Awaitable[bool]],
+            rollback,
+        )
+        return await rollback_version(self._thread_id, version_id)

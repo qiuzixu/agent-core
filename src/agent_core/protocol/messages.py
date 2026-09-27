@@ -49,6 +49,18 @@ class Message:
             ]
         return result
 
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> Message:
+        """从 Core 内部格式恢复消息。"""
+
+        return cls(
+            role=value["role"],
+            content=str(value.get("content", "")),
+            name=value.get("name"),
+            tool_call_id=value.get("tool_call_id"),
+            tool_calls=[dict(call) for call in value.get("tool_calls", [])],
+        )
+
 
 def system_message(content: str) -> Message:
     """创建系统消息。"""

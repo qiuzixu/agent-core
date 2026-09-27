@@ -13,6 +13,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from agent_core.prompts.templates import PromptTemplate
+
 logger = logging.getLogger(__name__)
 
 
@@ -23,14 +25,18 @@ class PromptVersion:
     version: int
     content: str
     description: str
+    defaults: dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
+
+    @property
+    def variables(self) -> tuple[str, ...]:
+        """返回模板声明的变量。"""
+
+        return PromptTemplate(self.content, defaults=self.defaults).variables
 
     def render(self, **kwargs: Any) -> str:
         """使用 ``str.format`` 渲染模板变量。"""
-        try:
-            return self.content.format(**kwargs)
-        except KeyError as exc:
-            raise ValueError(f"提示词变量缺失：{exc}，可用变量：{list(kwargs.keys())}") from exc
+        return PromptTemplate(self.content, defaults=self.defaults).render(**kwargs)
 
 
 @dataclass
@@ -60,17 +66,36 @@ class PromptRegistry:
         self._entries: dict[str, PromptEntry] = {}
         self._load()
 
-    def register(self, name: str, content: str, description: str = "") -> PromptVersion:
+    def register(
+        self,
+        name: str,
+        content: str,
+        description: str = "",
+        *,
+        defaults: dict[str, Any] | None = None,
+    ) -> PromptVersion:
         """注册提示词；同名提示词会创建新版本。"""
         if name in self._entries:
-            return self.update(name, content, description=description)
-        version = PromptVersion(version=1, content=content, description=description)
+            return self.update(name, content, description=description, defaults=defaults)
+        version = PromptVersion(
+            version=1,
+            content=content,
+            description=description,
+            defaults=dict(defaults or {}),
+        )
         self._entries[name] = PromptEntry(name=name, current_version=1, versions=[version])
         self._save()
         logger.info("[Prompt] 注册：%s v1", name)
         return version
 
-    def update(self, name: str, content: str, description: str = "") -> PromptVersion:
+    def update(
+        self,
+        name: str,
+        content: str,
+        description: str = "",
+        *,
+        defaults: dict[str, Any] | None = None,
+    ) -> PromptVersion:
         """创建同一提示词的新版本并切换为当前版本。"""
         entry = self._entries.get(name)
         if entry is None:
@@ -79,6 +104,7 @@ class PromptRegistry:
             version=max(item.version for item in entry.versions) + 1,
             content=content,
             description=description,
+            defaults=dict(defaults or {}),
         )
         entry.versions.append(version)
         entry.current_version = version.version
@@ -113,6 +139,7 @@ class PromptRegistry:
                 "version": item.version,
                 "description": item.description,
                 "created_at": item.created_at,
+                "variables": list(item.variables),
                 "is_current": item.version == entry.current_version,
                 "content_preview": item.content[:100] + "..." if len(item.content) > 100 else item.content,
             }
@@ -142,6 +169,7 @@ class PromptRegistry:
                         "version": item.version,
                         "content": item.content,
                         "description": item.description,
+                        "defaults": item.defaults,
                         "created_at": item.created_at,
                     }
                     for item in entry.versions
@@ -163,6 +191,7 @@ class PromptRegistry:
                         version=item["version"],
                         content=item["content"],
                         description=item.get("description", ""),
+                        defaults=dict(item.get("defaults") or {}),
                         created_at=item.get("created_at", ""),
                     )
                     for item in raw["versions"]

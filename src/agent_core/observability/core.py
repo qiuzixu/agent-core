@@ -208,7 +208,7 @@ class ObservabilityMiddleware(Middleware):
 def _get_tracer() -> Any:
     """按需获取 OTel tracer，未安装依赖时返回 None。"""
     try:
-        from opentelemetry import trace  # type: ignore[import-untyped]
+        from opentelemetry import trace
 
         return trace.get_tracer("handwritten-agent-core")
     except ImportError:
@@ -223,10 +223,10 @@ def setup_tracing(
 ) -> bool:
     """配置可选的 OpenTelemetry 导出器。"""
     try:
-        from opentelemetry import trace  # type: ignore[import-untyped]
-        from opentelemetry.sdk.resources import Resource  # type: ignore[import-untyped]
-        from opentelemetry.sdk.trace import TracerProvider  # type: ignore[import-untyped]
-        from opentelemetry.sdk.trace.export import (  # type: ignore[import-untyped]
+        from opentelemetry import trace
+        from opentelemetry.sdk.resources import Resource
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import (
             BatchSpanProcessor,
             SimpleSpanProcessor,
         )
@@ -236,12 +236,12 @@ def setup_tracing(
 
     provider = TracerProvider(resource=Resource.create({"service.name": service_name}))
     if console_export:
-        from opentelemetry.sdk.trace.export import ConsoleSpanExporter  # type: ignore[import-untyped]
+        from opentelemetry.sdk.trace.export import ConsoleSpanExporter
 
         provider.add_span_processor(SimpleSpanProcessor(ConsoleSpanExporter()))
     if otlp_endpoint:
         try:
-            from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (  # type: ignore[import-untyped]
+            from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
                 OTLPSpanExporter,
             )
 

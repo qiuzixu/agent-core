@@ -275,7 +275,7 @@ class PostgresRunLeaseStore(RunLeaseStore):
 
     async def initialize(self) -> None:
         try:
-            import asyncpg  # type: ignore[import-untyped]
+            import asyncpg
         except ImportError as exc:
             raise ImportError("PostgresRunLeaseStore 需要 asyncpg") from exc
         self._pool = await asyncpg.create_pool(self._dsn, min_size=2, max_size=10)
@@ -353,7 +353,7 @@ class PostgresRunLeaseStore(RunLeaseStore):
                 worker_id,
                 ttl_seconds,
             )
-        return result == "UPDATE 1"
+        return bool(result == "UPDATE 1")
 
     async def release(self, thread_id: str, run_id: str, worker_id: str) -> bool:
         self._check()
@@ -364,7 +364,7 @@ class PostgresRunLeaseStore(RunLeaseStore):
                 run_id,
                 worker_id,
             )
-        return result == "DELETE 1"
+        return bool(result == "DELETE 1")
 
     async def list_expired(self) -> list[RunLease]:
         self._check()
