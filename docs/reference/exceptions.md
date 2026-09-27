@@ -14,6 +14,14 @@
 | `ToolExecutionError` | 工具执行失败 | 根据工具幂等性决定重试 |
 | `CheckpointError` | 快照读写失败 | 阻止不可靠恢复并告警 |
 | `MiddlewareError` | 中间件链失败 | 检查自定义策略和返回动作 |
+| `DocumentError` | 文档加载或解析失败 | 检查文件、服务配置和响应 |
+| `DocumentParsingError` | 文件或解析响应无法转换 | 拒绝当前文档并记录来源 |
+| `DocumentServiceError` | 外部文档解析服务失败 | 有限重试或检查 MinerU 服务 |
+| `MultiAgentError` | 多 Agent 扩展基础错误 | 检查路由、注册、访问或预算配置 |
+| `AgentRoutingError` | 没有唯一且可访问的目标 Agent | 指定目标/能力或配置默认/模型路由 |
+| `CoordinationBudgetExceededError` | handoff、调用、访问或使用量超限 | 调整编排逻辑或显式提高预算 |
+| `CoordinationBusyError` | 协调实例已被其他 Worker 持有 | 等待当前租约释放或过期后恢复 |
+| `CoordinationLeaseLostError` | 执行中失去 Worker 租约 | 中断副作用并从最新快照恢复 |
 | `StateMachineError` | 节点、路由或最大步数错误 | 修正工作流定义或节点实现 |
 | `MemoryConflictError` | 长期记忆版本已被其他写入者修改 | 重新读取记录并合并或重试 |
 | `SerializationError` | 信封、JSON 或对象编码不合法 | 拒绝输入并检查注册 Codec |

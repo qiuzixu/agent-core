@@ -14,6 +14,9 @@
 - Middleware、Guardrails、HITL、调用统计和可选 OpenTelemetry；
 - 生命周期 Callback、统一 RunEvent 和流式增量事件；
 - Document/Blob、文本加载与切分、Embedding/Retriever/VectorStore 协议；
+- 可选 `handwritten-agent-core-mineru` 扩展包解析 PDF、扫描件和复杂版面；
+- 可选 `handwritten-agent-core-embeddings` 扩展包接入 OpenAI、Gemini 和 Ollama；
+- 可选 `handwritten-agent-core-multi-agent` 扩展包编排多个独立 Agent；
 - 内存、Chroma、pgvector 向量存储，关键词检索以及用户/租户/namespace 隔离；
 - 带类型白名单、Schema 版本和迁移函数的安全 JSON 序列化；
 - 安全文本/聊天 Prompt 模板、消息占位符、partial 和版本管理；
@@ -48,6 +51,11 @@ pip install "handwritten-agent-core[gemini]"
 pip install "handwritten-agent-core[models,mcp,production]"
 pip install "handwritten-agent-core[chroma]"    # 本地持久化向量存储
 pip install "handwritten-agent-core[pgvector]"  # PostgreSQL 向量存储
+pip install handwritten-agent-core-mineru       # 独立 MinerU 文档解析扩展包
+pip install "handwritten-agent-core-embeddings[openai]"
+pip install "handwritten-agent-core-embeddings[gemini]"
+pip install "handwritten-agent-core-embeddings[ollama]"
+pip install handwritten-agent-core-multi-agent  # 独立多 Agent 编排扩展包
 ```
 
 最小组装方式：

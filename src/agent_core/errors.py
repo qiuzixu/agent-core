@@ -47,6 +47,18 @@ class MiddlewareError(AgentError):
     """中间件错误。"""
 
 
+class DocumentError(AgentError):
+    """文档加载或解析基础错误。"""
+
+
+class DocumentParsingError(DocumentError):
+    """文档内容或解析服务响应无法转换成 Core Document。"""
+
+
+class DocumentServiceError(DocumentError):
+    """外部文档解析服务调用失败。"""
+
+
 class MemoryConflictError(AgentError):
     """长期记忆发生乐观并发冲突。"""
 

@@ -77,6 +77,31 @@ memory = create_memory_store(
 await memory.initialize()  # PostgreSQL 实现需要初始化连接池和表
 ```
 
+## Embedding Provider 扩展包
+
+`handwritten-agent-core-embeddings` 不读取环境变量，应用可以按以下名称映射配置：
+
+| 配置属性 | 推荐环境变量 | 常用默认值 | 说明 |
+| --- | --- | --- | --- |
+| `provider` | `AGENT_EMBEDDING_PROVIDER` | 无 | `openai`、`gemini` 或 `ollama` |
+| `model` | `AGENT_EMBEDDING_MODEL` | Provider 默认值 | Embedding 模型 ID |
+| `api_key` | `AGENT_EMBEDDING_API_KEY` | 无 | OpenAI/Gemini 或受保护 Ollama 的密钥 |
+| `base_url` | `AGENT_EMBEDDING_BASE_URL` | Provider 默认值 | OpenAI 兼容地址或 Ollama 地址 |
+| `dimensions` | `AGENT_EMBEDDING_DIMENSIONS` | 模型默认值 | OpenAI/Gemini 请求维度 |
+
+`EmbeddingExecutionPolicy` 由应用显式构造：
+
+| 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `batch_size` | `64` | 每次 Provider 请求的文本数 |
+| `max_concurrency` | `2` | 同时执行的批次数 |
+| `timeout_seconds` | `60` | 单批调用超时 |
+| `max_retries` | `2` | 失败后的最大重试次数 |
+| `retry_base_seconds` | `0.5` | 指数退避起始秒数 |
+| `expected_dimensions` | `None` | 强制校验返回向量维度 |
+
+索引和查询必须使用相同模型与维度。切换模型或维度后，应使用新的 namespace/表并重建索引。
+
 ## 向量存储
 
 向量存储工厂使用单独参数，且允许显式 `backend` 覆盖环境默认值：
@@ -102,6 +127,49 @@ await vectors.initialize()
 `AGENT_VECTOR_DIMENSION` 和数据库 URL。数据库管理员已安装 `vector` 扩展或已创建索引时，
 可传 `pg_create_extension=False` 或 `pg_create_index=False`。同一 pgvector 表只保存一种维度；
 切换 Embedding 维度时应更换 `table_name` 并重建索引。
+
+## MinerU 扩展包
+
+独立包 `handwritten-agent-core-mineru` 的 `MinerUConfig` 只配置自托管 MinerU `/file_parse`
+HTTP 调用。Core 与扩展包都不自动读取环境变量，应用可以按下表映射配置：
+
+| 配置属性 | 推荐环境变量 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `endpoint` | `AGENT_MINERU_ENDPOINT` | `http://127.0.0.1:8000/file_parse` | 自托管解析地址 |
+| `api_key` | `AGENT_MINERU_API_KEY` | 无 | 可选 Bearer Token |
+| `timeout_seconds` | `AGENT_MINERU_TIMEOUT` | `300` | 单次解析超时秒数 |
+| `backend` | `AGENT_MINERU_BACKEND` | `pipeline` | MinerU 解析后端 |
+| `parse_method` | `AGENT_MINERU_PARSE_METHOD` | `auto` | 解析方式 |
+| `language` | `AGENT_MINERU_LANGUAGE` | `ch` | 文档语言 |
+| `output_mode` | `AGENT_MINERU_OUTPUT_MODE` | `blocks` | 返回区块或完整 Markdown |
+| `max_file_bytes` | `AGENT_MINERU_MAX_FILE_BYTES` | `104857600` | 客户端文件大小上限 |
+
+API Key 应由应用从密钥管理系统读取后传入。MinerU 云端异步 API 不使用这组配置，应实现自定义
+`MinerUTransport`。
+
+## Multi-Agent 扩展包
+
+`CoordinationPolicy` 由应用显式构造，扩展包不自动读取环境变量：
+
+| 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `max_handoffs` | `8` | 一个协调实例最多交接次数 |
+| `max_agent_calls` | `16` | 包含重试的子 Agent 调用总数 |
+| `max_visits_per_agent` | `2` | 防止 Agent 之间无限循环 |
+| `max_agent_attempts` | `1` | 单个子任务最大尝试次数 |
+| `agent_timeout_seconds` | `120` | 单次 Agent 调用超时 |
+| `retry_base_seconds` | `0.5` | 指数退避起始秒数 |
+| `max_parallelism` | `4` | `run_parallel()` 全局并行数 |
+| `max_total_tokens` | `None` | 可选协调实例 Token 预算 |
+| `max_total_cost` | `None` | 可选协调实例费用预算 |
+| `require_access` | `False` | 是否强制要求 `AccessContext` |
+| `lease_seconds` | `30` | 多 Worker 租约有效期 |
+| `heartbeat_seconds` | `10` | 租约续期频率，必须小于有效期 |
+
+推荐由应用映射 `AGENT_MULTI_MAX_HANDOFFS`、`AGENT_MULTI_MAX_CALLS`、
+`AGENT_MULTI_AGENT_TIMEOUT`、`AGENT_MULTI_MAX_PARALLELISM` 和租约配置。测试、开发和生产分别把
+`WorkflowCoordinationStore` 接到 Memory、SQLite、PostgreSQL Workflow Store；多 Worker 环境同时
+注入同后端的 `RunLeaseStore`。
 
 ## 压缩
 

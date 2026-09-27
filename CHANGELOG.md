@@ -18,6 +18,10 @@
 - 安全 Prompt 文本/聊天模板、消息占位符、partial 和默认变量。
 - 生命周期 CallbackManager、增强 RunEvent 和流式增量事件。
 - 文档加载/切分、Embedding/Retriever/VectorStore 协议及轻量内存实现。
+- 独立 `handwritten-agent-core-mineru` 扩展包，支持自托管 `/file_parse`、区块、页码和来源追踪。
+- 独立 `handwritten-agent-core-embeddings` 扩展包，支持 OpenAI、Gemini、Ollama 和统一工厂。
+- 独立 `handwritten-agent-core-multi-agent` 扩展包，支持 Agent 注册、路由、handoff、父子 Run、
+  预算、恢复、租约和顺序/并行协调。
 - Chroma 本地持久化、PostgreSQL pgvector 生产适配器及统一向量存储工厂。
 - 带类型白名单、Schema 版本和迁移函数的安全 JSON 序列化。
 

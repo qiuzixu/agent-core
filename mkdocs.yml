@@ -43,6 +43,7 @@ nav:
       - 文档、检索与回调: guide/documents-retrieval-and-callbacks.md
       - 上下文与记忆: guide/context-and-memory.md
       - 工作流与 Checkpoint: guide/workflows-and-checkpoints.md
+      - Multi-Agent 编排: guide/multi-agent.md
       - 存储与生产部署: guide/storage-and-production.md
       - ACP: guide/acp.md
       - 可观测性与 Guardrails: guide/observability-and-guardrails.md

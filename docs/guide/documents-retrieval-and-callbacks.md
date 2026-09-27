@@ -38,7 +38,26 @@ checksum 和 `DocumentLocator`。Loader 或解析器应
 
 ## 语义检索
 
-应用只需要实现 `Embeddings`，再选择 Core 内存实现或外部 VectorStore 适配器：
+应用可以自己实现 `Embeddings`，也可以安装独立 Provider 扩展：
+
+```bash
+pip install "handwritten-agent-core-embeddings[openai]"
+```
+
+```python
+from agent_core_embeddings import EmbeddingExecutionPolicy, create_embeddings
+
+my_embeddings = create_embeddings(
+    "openai",
+    api_key="从安全配置读取",
+    model="text-embedding-3-small",
+    dimensions=1536,
+    policy=EmbeddingExecutionPolicy(batch_size=64, max_concurrency=2),
+)
+```
+
+同一个工厂还支持 `provider="gemini"` 和 `provider="ollama"`。然后选择 Core 内存实现或外部
+VectorStore 适配器：
 
 ```python
 from agent_core import (
@@ -71,6 +90,10 @@ results = await retriever.retrieve(
 生产适配器必须在 VectorStore 内执行 tenant、user、namespace 和 metadata 过滤，不能只在应用取回
 结果后过滤。索引任务还应保存来源 checksum、切分配置版本和 Embedding 模型版本，避免不同向量
 空间的数据混写。
+
+`handwritten-agent-core-embeddings` 对三个 Provider 统一执行批处理、有限并发、超时、有限重试、
+NaN/Infinity 检查和维度检查。Gemini 会分别使用 `RETRIEVAL_DOCUMENT` 和 `RETRIEVAL_QUERY`
+task type；Ollama 使用原生 `/api/embed`。扩展包不自动读取 `.env`，密钥仍由应用注入。
 
 ## 向量存储分层
 
@@ -120,10 +143,37 @@ restored = loads(encoded)
 序列化信封包含稳定 `type` 和 `schema_version`。自定义对象必须显式注册编码器、解码器和版本迁移，
 Core 不接受类路径动态导入或 pickle。
 
-## MinerU 接入边界
+## 使用 MinerU 解析复杂文档
 
-MinerU 适合实现 `DocumentLoader` 或 `BlobParser` 扩展。适配器应把 Markdown 或 Structured Content
-转换成 `Document`，并把页码、block、表格和布局位置写入 `DocumentLocator`/metadata。
+安装可选 HTTP 依赖后，可以调用已经部署好的 MinerU 自托管服务：
 
-MinerU、OCR 模型和其服务运行时较重，许可证也带有额外条件，因此不属于基础 Core 依赖。推荐以
-独立扩展包或应用适配器提供，再通过 Core 协议注入。
+```bash
+pip install handwritten-agent-core-mineru
+```
+
+```python
+from agent_core_mineru import MinerUConfig, MinerUDocumentLoader
+
+loader = MinerUDocumentLoader(
+    "./knowledge/flight-manual.pdf",
+    config=MinerUConfig(
+        endpoint="http://127.0.0.1:8000/file_parse",
+        language="ch",
+        output_mode="blocks",
+    ),
+    metadata={"namespace": "flight-manual"},
+)
+documents = await loader.load()
+```
+
+`output_mode="blocks"` 优先把 `content_list` 中可检索的文字、表格、公式和图片说明分别转换成
+`Document`，并在 `DocumentLocator` 中保留页码和 block id。`output_mode="markdown"` 返回完整
+Markdown，适合先保留版面结构，再交给 `RecursiveCharacterTextSplitter` 切分。
+
+该能力由独立 `handwritten-agent-core-mineru` 包提供，不进入 `agent_core` 顶层 API。适配器面向
+MinerU 自托管 `/file_parse` multipart 接口，读取常见的 `md_content` 和
+`content_list` 响应。MinerU 云端异步批处理、预签名上传和结果压缩包下载采用不同协议，需要应用
+实现 `MinerUTransport` 后注入。自定义网关、认证和测试替身也使用同一传输端口。
+
+扩展包只包含 HTTP 适配和响应转换。Core 只保留 `DocumentLoader`、`BlobParser`、`Document` 及
+通用文档异常。MinerU 模型、OCR 运行时、GPU 资源及服务部署仍由应用或基础设施负责。

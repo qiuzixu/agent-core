@@ -29,6 +29,7 @@ Agent Core 是一套零外部平台绑定的手写 Agent 运行时内核。
 | `checkpoint` | 内存/文件 checkpoint、历史版本、回滚和时间旅行 | `MemoryCheckpointer`、`FileCheckpointer`、`TimeTravelCheckpointer` |
 | `hitl` | 人工审批请求、等待、批准、拒绝、超时、跨进程决策同步和中间件接入 | `ApprovalQueue`、`HumanInTheLoopMiddleware` |
 | `workflow` | 异步状态机、节点策略、重试、超时、幂等、pending write、恢复和 Mermaid 导出 | `StateMachine`、`NodeExecutionPolicy`、`DurableWorkflowRunner` |
+| `multi-agent` 扩展 | Agent 注册、权限过滤、规则/模型路由、handoff、父子 Run、预算、租约和恢复 | `AgentRegistry`、`SupervisorAgent`、`RuntimeAgentInvoker` |
 | `storage` | 会话、上下文、长期记忆、Run、审批、模型选择和工作流实例持久化 | 各类 `Memory*`、`Sqlite*`、`Postgres*Store` |
 | `guardrails` | 关键词、长度、PII 脱敏和输出格式检查 | `GuardrailsMiddleware` |
 | `prompts` | 安全文本/聊天模板、消息占位符、partial、Prompt 版本和历史查询 | `PromptTemplate`、`ChatPromptTemplate`、`PromptRegistry` |
@@ -161,8 +162,12 @@ Core 已提供完整的零依赖检索边界：
 AccessContext。Core 不使用 pickle，也不会
 根据输入中的 Python 类路径动态导入代码。
 
-Chroma 和 pgvector 通过 optional extras 安装，基础安装不依赖它们。OpenAI/Gemini Embedding、
-Qdrant、FAISS、Milvus、MinerU 和 OCR 尚未提供具体适配器，仍可通过 Core 协议扩展。
+Chroma 和 pgvector 通过 optional extras 安装，基础安装不依赖它们。仓库中的独立
+`handwritten-agent-core-mineru` 扩展包实现 `DocumentLoader` 和 `BlobParser`，调用自托管
+`/file_parse` 并保留页码、block id、区块类型、来源 checksum 和解析器版本。OpenAI/Gemini
+Embedding 由独立 `handwritten-agent-core-embeddings` 扩展包实现，并与 Ollama 共用批处理、并发、
+重试、超时和维度校验。Qdrant、FAISS、Milvus 和通用 OCR 尚未提供具体适配器。MinerU 模型、
+OCR 运行时和服务部署不属于 Core。
 
 ## 8. 上下文、会话和记忆
 
@@ -222,6 +227,22 @@ Checkpoint 支持内存和文件后端。`TimeTravelCheckpointer` 在基础 Chec
 
 工作流定义由上层项目编写，工作流执行实例可通过 `WorkflowExecutionStore` 持久化。
 
+### Multi-Agent 扩展包
+
+独立 `handwritten-agent-core-multi-agent` 扩展包实现：
+
+- `AgentInvoker` 统一子 Agent 调用协议，`RuntimeAgentInvoker` 可直接包装现有 `AgentRuntime`；
+- `AgentRegistry` 管理能力、别名、优先级、角色要求和每个 Agent 的并发上限；
+- `CapabilityRouter` 做确定性路由，`ModelAgentRouter` 在权限过滤后的候选中做结构化模型选择；
+- `SupervisorAgent` 执行 handoff 链，记录 task/run 父子关系、lineage、调用结果和统一 `RunEvent`；
+- handoff、Agent 调用、同一 Agent 访问、超时、重试、并行数、Token 和费用预算；
+- `WorkflowCoordinationStore` 复用 Memory/SQLite/PostgreSQL Workflow Store 保存每个 Agent 边界；
+- 可选 `RunLeaseStore` 提供多 Worker 认领、心跳和失租中断；
+- `run_sequence()`、`run_parallel()`、取消以及 interrupted/进程重启后的显式恢复。
+
+扩展包不包含业务角色、业务 Agent 实现或自动生成 Agent。应用决定注册哪些 Agent、共享哪些上下文
+以及 handoff 的业务条件。
+
 ## 10. HITL 人工审批
 
 Core 提供两层审批能力：
@@ -246,6 +267,7 @@ Web 弹窗、消息通知和审批人选择属于上层应用职责。
 | Run、事件和审批 | 支持 | 支持 | 支持 |
 | 模型选择 | 支持 | 支持 | 支持 |
 | 工作流执行实例 | 支持 | 支持 | 支持 |
+| Multi-Agent 协调实例 | 支持 | 支持 | 支持 |
 | Run Worker 租约 | 支持 | 支持 | 支持 |
 
 推荐用途：内存用于单元测试和临时运行，SQLite 用于本地开发，PostgreSQL 用于生产环境。
@@ -293,11 +315,12 @@ Checkpoint、状态机和 Middleware。上层 API 可以据此统一映射 HTTP 
 以下内容应留在具体 Agent 项目中：
 
 - 特定领域的地图、IoT 或外部系统控制；
-- MinerU、OCR、云文档源、模型 Embedding SDK 和向量数据库部署运维；
+- MinerU/OCR 服务部署、云文档源、模型 Embedding SDK 和向量数据库部署运维；
 - 业务规则、业务流程和业务数据模型；
 - HTTP/SSE/WebSocket 路由和前端页面；
 - 业务数据库表和业务 DTO；
 - Agent 品牌、页面文案和部署端口；
 - 业务特有的工作流节点。
+- 具体 Agent 团队、角色说明、业务路由规则和允许共享的上下文。
 
 这个边界保证 `agent-core` 可以被任何新 Agent 项目直接依赖。

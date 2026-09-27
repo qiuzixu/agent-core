@@ -18,6 +18,9 @@ python -m pip install mkdocs-material
 ```bash
 python -m venv .venv
 python -m pip install -e ".[dev,models,mcp,production]"
+python -m pip install -e "./packages/mineru"
+python -m pip install -e "./packages/embeddings"
+python -m pip install -e "./packages/multi-agent"
 python -m pip install build twine mkdocs-material
 ```
 
@@ -26,16 +29,26 @@ python -m pip install build twine mkdocs-material
 ```bash
 ruff check src tests examples
 pytest
+mypy src
+mypy --config-file packages/mineru/pyproject.toml packages/mineru/src
+pytest packages/mineru/tests
+mypy --config-file packages/embeddings/pyproject.toml packages/embeddings/src
+pytest packages/embeddings/tests
+mypy --config-file packages/multi-agent/pyproject.toml packages/multi-agent/src
+pytest packages/multi-agent/tests
 python -m mkdocs build
 python -m build
+python -m build packages/mineru
+python -m build packages/embeddings
+python -m build packages/multi-agent
 ```
 
-严格类型检查可用 `mypy src` 运行。当前仓库仍有记录在
-`OPEN_SOURCE_CHECKLIST.md` 的历史类型债务，因此它暂不作为合并阻塞项。
+Core 和扩展包都执行 strict mypy，类型错误会阻止 CI 合并。
 
 ## 修改约束
 
 - 公共 API 优先从 `agent_core` 顶层导出，并为行为变化补充测试。
+- 第三方平台适配优先放在 `packages/` 独立发行包中，通过 Core Protocol 和值对象接入。
 - 修改 `src/agent_core/**` 后，检查并更新 `docs/ARCHITECTURE.md` 的架构图或同步记录。
 - 新增公共能力时，同步更新 `docs/CAPABILITIES.md` 和对应使用指南。
 - 注释和架构说明优先使用中文；公共类型名、协议名与行业术语保留英文。

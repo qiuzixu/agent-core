@@ -18,10 +18,33 @@ jobs:
           python-version: "3.13"
           cache: pip
       - name: Install project
-        run: python -m pip install -e ".[dev]" build
+        run: >-
+          python -m pip install -e ".[dev]"
+          -e "./packages/mineru"
+          -e "./packages/embeddings"
+          -e "./packages/multi-agent"
+          build
       - name: Lint
-        run: ruff check src tests examples
+        run: >-
+          ruff check src tests examples
+          packages/mineru/src packages/mineru/tests
+          packages/embeddings/src packages/embeddings/tests
+          packages/multi-agent/src packages/multi-agent/tests
+      - name: Type check
+        run: |
+          mypy src
+          mypy --config-file packages/mineru/pyproject.toml packages/mineru/src
+          mypy --config-file packages/embeddings/pyproject.toml packages/embeddings/src
+          mypy --config-file packages/multi-agent/pyproject.toml packages/multi-agent/src
       - name: Test
-        run: pytest
+        run: |
+          pytest
+          pytest packages/mineru/tests
+          pytest packages/embeddings/tests
+          pytest packages/multi-agent/tests
       - name: Build package
-        run: python -m build
+        run: |
+          python -m build
+          python -m build packages/mineru
+          python -m build packages/embeddings
+          python -m build packages/multi-agent

@@ -122,7 +122,8 @@ flowchart TB
 - `tools` 统一调度本地函数和 MCP 工具，模型只看到统一的 Tool Schema；
 - `middleware` 承载可组合的横切能力，例如审批、压缩、安全和可观测性；
 - `callbacks` 只观察生命周期事件，与 `EventSink` 共用 `RunEvent`，不能修改执行流程；
-- `documents` 定义外部语料及来源定位，`retrieval` 定义检索端口及 Memory、Chroma、pgvector 适配器；
+- `documents` 定义外部语料及来源定位，`retrieval` 定义检索端口及 Memory、Chroma、pgvector
+  适配器；具体文档解析平台通过独立扩展包依赖这些协议；
 - `serialization` 只恢复白名单类型，不使用 pickle 或输入中的 Python 类路径；
 - `workflow` 提供确定性状态机和节点级恢复，上层 Agent 定义具体业务节点；
 - `model` 在 Provider 协议外提供可组合的结构化输出与调用治理，不把厂商能力写进 Agent Loop；
@@ -164,11 +165,18 @@ flowchart LR
         EVENTS["RunEvent<br/>CallbackManager / EventSink"]
     end
 
+    subgraph EXTENSIONS["可选扩展包"]
+        MINERUADAPTER["handwritten-agent-core-mineru<br/>Loader / Parser / Transport"]
+        EMBEDDINGADAPTER["handwritten-agent-core-embeddings<br/>OpenAI / Gemini / Ollama"]
+        MULTIAGENT["handwritten-agent-core-multi-agent<br/>Registry / Router / Supervisor"]
+    end
+
     subgraph EXTERNAL["外部系统"]
         LLM["模型服务"]
         MCPSERVER["MCP Servers"]
         DBS["SQLite / PostgreSQL"]
-        CORPUS["文件 / 知识库 / MinerU 适配器"]
+        CORPUS["文件 / 知识库"]
+        MINERU["MinerU HTTP 服务"]
         VECTORDB["向量数据库适配器"]
         SERVICES["业务 API / 数据服务"]
     end
@@ -182,6 +190,8 @@ flowchart LR
     ASSEMBLY --> MODELFACTORY
     ASSEMBLY --> TOOLING
     ASSEMBLY --> AGENTRUNTIME
+    ASSEMBLY --> EMBEDDINGADAPTER
+    ASSEMBLY --> MULTIAGENT
 
     BUSINESS --> AGENTRUNTIME
     SKILLPACKS --> SKILLENGINE
@@ -193,12 +203,17 @@ flowchart LR
 
     ACCESSCTX --> SESSIONS
     ACCESSCTX --> AGENTRUNTIME
+    ACCESSCTX --> MULTIAGENT
     AGENTRUNTIME --> SESSIONS
     AGENTRUNTIME --> LOOP
     LOOP --> MODELFACTORY
     LOOP --> TOOLING
     LOOP --> APPROVAL
     MODELFACTORY --> LLM
+    MULTIAGENT --> MODELFACTORY
+    MULTIAGENT --> AGENTRUNTIME
+    MULTIAGENT --> PERSIST
+    MULTIAGENT --> EVENTS
     TOOLING --> LOCAL
     TOOLING --> MCPCLIENT
     MCPCLIENT --> MCPSERVER
@@ -206,6 +221,12 @@ flowchart LR
     AGENTRUNTIME --> PERSIST
     BUSINESS --> MEMORY
     CORPUS --> KNOWLEDGE
+    CORPUS --> MINERUADAPTER
+    BUSINESS --> MINERUADAPTER
+    MINERUADAPTER --> KNOWLEDGE
+    MINERUADAPTER --> MINERU
+    EMBEDDINGADAPTER --> KNOWLEDGE
+    EMBEDDINGADAPTER --> LLM
     KNOWLEDGE --> VECTORDB
     BUSINESS --> KNOWLEDGE
     APPROVAL --> PERSIST
@@ -273,21 +294,35 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant Source as 文档源
-    participant Loader as DocumentLoader / BlobParser
+    participant Loader as Core TextLoader
+    participant Adapter as agent-core-mineru
+    participant MinerU as MinerU HTTP 服务
     participant Splitter as TextSplitter
-    participant Embed as Embeddings
+    participant Embed as agent-core-embeddings
+    participant Provider as OpenAI / Gemini / Ollama
     participant Vector as VectorStore
     participant Retriever as Retriever
     participant Agent as 应用 Agent
 
-    Source->>Loader: 文件、Blob 或外部资源
-    Loader-->>Splitter: Document + locator + checksum
-    Splitter-->>Embed: DocumentChunk 列表
+    alt 纯文本
+        Source->>Loader: 文本文件
+        Loader-->>Splitter: Document + locator + checksum
+    else PDF、扫描件或复杂版面
+        Source->>Adapter: 文件或 Blob
+        Adapter->>MinerU: multipart /file_parse
+        MinerU-->>Adapter: Markdown + content_list
+        Adapter-->>Splitter: Core Document + locator + checksum
+    end
+    Splitter->>Embed: DocumentChunk 文本列表
+    Embed->>Provider: 批量 embed_documents
+    Provider-->>Embed: 文档向量
     Embed-->>Vector: VectorRecord + namespace + access
     Vector-->>Vector: 幂等写入和 metadata 索引
 
     Agent->>Retriever: RetrievalQuery + AccessContext
     Retriever->>Embed: embed_query
+    Embed->>Provider: 查询文本
+    Provider-->>Embed: 查询向量
     Embed-->>Retriever: query vector
     Retriever->>Vector: VectorQuery + filter
     Vector-->>Retriever: 有权限的相似结果
@@ -295,9 +330,47 @@ sequenceDiagram
 ```
 
 Core 内置纯文本 Loader、递归字符切分器、内存 VectorStore、Chroma/pgvector 可选适配器和关键词
-Retriever。MinerU、OCR、模型 Embedding SDK、Qdrant 和 FAISS 通过这些协议接入，不成为基础依赖。
+Retriever。自托管 MinerU HTTP 和模型 Embedding SDK 分别位于独立
+`handwritten-agent-core-mineru`、`handwritten-agent-core-embeddings` 包；MinerU 服务运行时、
+通用 OCR、Qdrant 和 FAISS 不成为 Core 基础依赖。
 
-## 5. 应用接入示例
+## 5. Multi-Agent 协调时序
+
+```mermaid
+sequenceDiagram
+    participant App as 应用 API
+    participant Supervisor as SupervisorAgent
+    participant Store as CoordinationStore
+    participant Router as AgentRouter
+    participant Registry as AgentRegistry
+    participant AgentA as 子 Agent A
+    participant AgentB as 子 Agent B
+
+    App->>Supervisor: AgentTask + AccessContext
+    Supervisor->>Store: 保存 queued 协调实例
+    Supervisor->>Router: 目标 / 能力 / 任务文本
+    Router-->>Supervisor: RoutingDecision(A)
+    Supervisor->>Store: 保存 agent_started + 幂等键
+    Supervisor->>Registry: invoke(A, task)
+    Registry->>AgentA: AgentInvoker.invoke
+    AgentA-->>Registry: AgentResult + HandoffRequest
+    Registry-->>Supervisor: 已校验的 AgentResult
+    Supervisor->>Store: 保存结果和 handoff 子任务
+    Supervisor->>Router: target_agent / capability
+    Router-->>Supervisor: RoutingDecision(B)
+    Supervisor->>Registry: invoke(B, child task)
+    Registry->>AgentB: AgentInvoker.invoke
+    AgentB-->>Supervisor: 最终 AgentResult
+    Supervisor->>Store: 保存 completed 快照
+    Supervisor-->>App: CoordinationExecution
+```
+
+`RuntimeAgentInvoker` 把现有 `AgentRuntime` 转成 `AgentInvoker`，并把协调实例、父任务和上一个子
+Run 写入调用链。`WorkflowCoordinationStore` 复用 Core 的内存、SQLite、PostgreSQL Workflow Store；
+多 Worker 部署可注入 `RunLeaseStore`，防止同一个协调实例同时执行。恢复时优先消费已落库的终态
+Agent 结果，未完成调用继续使用原 task id 和幂等键。
+
+## 6. 应用接入示例
 
 ```mermaid
 flowchart LR
@@ -335,7 +408,7 @@ flowchart LR
 两者读取同一套共享 Skill 清单和指令，但分别注入自己的 Function 与 MCP 客户端，
 并分别运行应用 API 和 MCP Server，避免进程与端口冲突。
 
-## 6. 架构图维护待办
+## 7. 架构图维护待办
 
 - [ ] **持续任务，不关闭：** 每次修改 `agent-core/src/agent_core/**` 后，在同一提交中检查并更新本文。
 - [ ] 模块、公共接口、调用方向、持久化对象、协议或应用接入关系变化时，更新对应 Mermaid 图。
@@ -356,3 +429,6 @@ flowchart LR
 | 2026-09-27 | Callback 与 Retrieval Core | 新增统一生命周期回调、文档加载和切分、检索协议、内存向量实现及安全序列化，并同步文档摄取和应用调用关系。 |
 | 2026-09-27 | 严格类型检查修复 | 修正可选依赖边界、持久化数据收窄及动态 checkpoint 调用类型；模块关系和调用方向未变化，无需修改架构图。 |
 | 2026-09-27 | 向量存储分层 | 新增 Chroma 开发适配器、pgvector 生产适配器和环境工厂，并同步检索与存储调用关系。 |
+| 2026-09-27 | MinerU 扩展包 | 新增独立 `handwritten-agent-core-mineru`，并同步扩展包、Core 与外部解析服务调用关系。 |
+| 2026-09-27 | Embedding 扩展包 | 新增 OpenAI、Gemini、Ollama 适配器、执行策略和工厂，并同步检索调用关系。 |
+| 2026-09-27 | Multi-Agent 扩展包 | 新增 Agent 注册、规则/模型路由、handoff、协调存储、租约和恢复，并同步应用与多个 Agent 的调用关系。 |

@@ -20,6 +20,7 @@ Handwritten Agent Core 是一个使用 Python 从头实现的 Agent 运行时内
 - 需要开发 SQLite、生产 PostgreSQL，以及用户和租户隔离；
 - 需要在 Web API、CLI、Worker 或 ACP 客户端中复用同一个 Agent Runtime。
 - 需要在多个 Agent 中复用文档加载、切分、检索协议和生命周期回调。
+- 需要用独立扩展包组合多个 Agent，并保留权限、事件、父子 Run 和恢复能力。
 
 如果只需要快速拼装简单问答，成熟的第三方框架可能更省时间。这个项目更适合需要可读源码、
 明确依赖方向和可替换端口的团队。
@@ -37,6 +38,8 @@ flowchart LR
     Runtime --> Store[内存 / SQLite / PostgreSQL]
     Runtime --> Callback[Callback / EventSink]
     App --> Retrieval[Document / Retriever / VectorStore]
+    App --> Supervisor[Multi-Agent Supervisor]
+    Supervisor --> Runtime
 ```
 
 ## 安装方式
@@ -55,12 +58,14 @@ python examples/basic_agent.py
 ```bash
 pip install handwritten-agent-core
 pip install "handwritten-agent-core[openai,mcp,production]"
+pip install handwritten-agent-core-multi-agent
 ```
 
 模型、MCP 和 PostgreSQL SDK 都是可选依赖，未启用时不会影响基础包导入。
 
 ## 下一步
 
-先阅读[快速开始](./guide/getting-started.md)，然后按需求选择模型、工具、存储和中间件。
+先阅读[快速开始](./guide/getting-started.md)，然后按需求选择模型、工具、存储和中间件。需要组合
+多个 Agent 时继续阅读[Multi-Agent 编排](./guide/multi-agent.md)。
 准备部署前，请检查[存储与生产部署](./guide/storage-and-production.md)和项目根目录的
 `SECURITY.md`。

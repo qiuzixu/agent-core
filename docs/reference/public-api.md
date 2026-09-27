@@ -82,7 +82,33 @@ Callback 只观察事件；需要修改或停止执行时使用 Middleware。`Ag
 | `PgVectorStore` | PostgreSQL pgvector 生产存储 |
 | `create_vector_store` / `VectorStoreBackend` | 环境默认与显式后端选择 |
 
-具体 Embedding 模型、MinerU、OCR、FAISS、Milvus 和 Qdrant 通过上述协议扩展。
+具体 Embedding 模型、通用 OCR、FAISS、Milvus 和 Qdrant 通过上述协议扩展。
+
+### Embedding Provider 扩展包
+
+`handwritten-agent-core-embeddings` 从 `agent_core_embeddings` 导入：
+
+| API | 作用 |
+| --- | --- |
+| `OpenAIEmbeddings` | OpenAI Embeddings API 适配器 |
+| `GeminiEmbeddings` | Google Gen AI Embedding 适配器，区分文档和查询任务 |
+| `OllamaEmbeddings` | Ollama 原生 `/api/embed` 适配器 |
+| `EmbeddingExecutionPolicy` | 批大小、并发、超时、重试和预期维度 |
+| `EmbeddingProviderRegistry` / `create_embeddings` | 自定义 Provider 注册和统一创建入口 |
+
+扩展返回的对象全部满足 Core `Embeddings` Protocol，可以直接传给 `EmbeddingRetriever`。
+
+### MinerU 扩展包
+
+`handwritten-agent-core-mineru` 是独立发行包，从 `agent_core_mineru` 导入：
+
+| API | 作用 |
+| --- | --- |
+| `MinerUDocumentLoader` / `MinerUBlobParser` | 自托管 MinerU 文档加载和 Blob 解析 |
+| `MinerUConfig` / `MinerUTransport` | MinerU 请求配置和可替换传输端口 |
+| `HttpxMinerUTransport` | `/file_parse` multipart HTTP 传输实现 |
+
+云端批处理 API 可以通过实现 `MinerUTransport` 接入，不改变 Core。
 
 ## 安全序列化
 
@@ -107,6 +133,24 @@ AccessContext。它不会动态导入输入中的类，也不使用 pickle。
 | `DurableWorkflowRunner` / `WorkflowPause` | 节点级持久化和中断恢复 |
 | `ApprovalQueue` / `ApprovalRequest` / `ApprovalStatus` | 审批创建、等待和决策 |
 | `ApprovalRecord` | 持久化审批值对象 |
+
+## Multi-Agent 扩展包
+
+`handwritten-agent-core-multi-agent` 从 `agent_core_multi_agent` 导入：
+
+| API | 作用 |
+| --- | --- |
+| `AgentDescriptor` / `AgentTask` / `AgentResult` | Agent 声明、任务和统一结果 |
+| `HandoffRequest` / `CoordinationExecution` | 任务交接和可恢复协调实例 |
+| `AgentInvoker` / `AgentRouter` / `CoordinationStore` | 自定义 Agent、路由和存储端口 |
+| `AgentRegistry` | 能力发现、别名、权限过滤和 Agent 并发限制 |
+| `CapabilityRouter` / `ModelAgentRouter` | 确定性能力路由和结构化模型路由 |
+| `CallableAgentInvoker` / `RuntimeAgentInvoker` | 函数与现有 `AgentRuntime` 适配器 |
+| `SupervisorAgent` / `CoordinationPolicy` | handoff 循环、预算、重试、并行、取消和恢复 |
+| `WorkflowCoordinationStore` | 复用 Core Workflow Store 的持久化适配器 |
+
+扩展包依赖 Core，Core 不反向依赖扩展包。业务 Agent 只需实现 `AgentInvoker`，或者用适配器包装现有
+运行时。
 
 ## 存储与访问
 

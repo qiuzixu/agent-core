@@ -19,9 +19,9 @@
 | **chat_models** | `BaseChatModel` 统一接口、`init_chat_model`、bind_tools、结构化输出、rate limiter | `ModelAdapter`、`create_model_provider()`、`StructuredOutputSpec`、`GovernedModelAdapter` | 已覆盖 |
 | **tools** | `@tool` 装饰器、`BaseTool`、`InjectedToolArg`、`StructuredTool` | `ToolSpec` / `ToolRegistry` / `ToolExecutor` | 已覆盖 |
 | **output_parsers** | JSON / XML / Pydantic / 逗号列表等解析器 | JSON 提取、JSON Schema 子集校验、decoder 和失败重试 | 部分覆盖（无 XML/Pydantic 专用解析器） |
-| **vectorstores / retrievers / embeddings** | 接口定义 | `Embeddings`、`Retriever`、`VectorStore`、`EmbeddingRetriever`、内存实现 | 已覆盖核心协议（厂商和数据库适配器待扩展） |
+| **vectorstores / retrievers / embeddings** | 接口定义 | Core 协议、EmbeddingRetriever、Memory/Chroma/pgvector；独立 OpenAI/Gemini/Ollama 扩展 | 已覆盖核心协议和首批适配器 |
 | **documents** | `Document` 类型 | `Blob`、`Document`、`DocumentChunk`、`DocumentLocator` | 已覆盖 |
-| **document loaders / text splitters** | 加载器协议和独立 splitter 包 | Loader/Parser/Splitter 协议、纯文本加载、递归字符切分 | 已覆盖基础能力 |
+| **document loaders / text splitters** | 加载器协议和独立 splitter 包 | Core 协议和纯文本加载；独立 MinerU 扩展；递归字符切分 | 已覆盖基础能力 |
 | **load / serialization** | LangChain 对象 JSON 序列化协议 | 类型白名单、Schema 版本、迁移注册表 | 已覆盖安全序列化核心 |
 | **callbacks** | 回调系统（LangSmith 埋点基础） | `CallbackHandler`、`CallbackManager`，和 EventSink 共用 `RunEvent` | 已覆盖核心生命周期订阅 |
 | **caches / rate_limiters** | LLM 结果缓存、限流 | 按 scope 的请求/输入 Token 滑动窗口限流、并发队列；无结果缓存 | 部分覆盖 |
@@ -43,7 +43,7 @@
 | **Memory** | short-term（thread 内）+ long-term（Store 跨线程） | `SessionStore`（短期）+ `MemoryStore`（跨会话、TTL、版本、隔离、关键词检索） | 已覆盖通用存储端口（语义检索需适配器） |
 | **Retry policy / caching** | 节点级重试策略、任务结果缓存 | `NodeExecutionPolicy`（超时、退避、异常范围、幂等约束）；无节点结果缓存 | 部分覆盖 |
 | **prebuilt** | `create_react_agent`、`ToolNode` 开箱即用 | `ReActAgent` | 已覆盖 |
-| **Multi-agent** | supervisor / swarm 多智能体编排 | 无 | 空白 |
+| **Multi-agent** | supervisor / swarm 多智能体编排 | 独立扩展提供注册表、规则/模型路由、handoff、父子 Run、预算、持久化恢复和租约 | 已覆盖 supervisor 与显式 handoff；无动态 swarm 群聊 |
 | **图可视化** | `get_graph().draw_mermaid()` | `StateMachine.describe()` / `to_mermaid()` | 已覆盖 Mermaid |
 
 ---
@@ -52,9 +52,9 @@
 
 以下按优先级排列：
 
-1. **Multi-agent 编排**
-   - supervisor 模式、swarm 模式、agent-to-agent 通信
-   - 当前只有一个 `ReActAgent`，多 agent 需要应用自己协调
+1. **更高阶 Multi-agent 模式**
+   - `handwritten-agent-core-multi-agent` 已提供 supervisor、显式 handoff、顺序/并行协调和恢复
+   - 动态 swarm、群聊、投票/共识和运行时生成 Agent 尚未提供
 
 2. **结果缓存**
    - 当前已有模型限流、并发、熔断和 fallback，但没有模型响应缓存或工作流节点结果缓存
@@ -63,12 +63,12 @@
    - Core 采用显式 Python 组装和 Middleware，没有 Runnable 管道 DSL
 
 4. **第三方 Retrieval 适配器**
-   - 尚未内置 OpenAI/Gemini Embedding、pgvector、Milvus、Qdrant、MinerU 和 OCR
+   - 尚未提供 Milvus、Qdrant 和通用 OCR
    - 这些实现应依赖 Core 协议，并作为可选扩展发布
 
 5. **更多专用输出解析器**
    - JSON Schema 结构化输出已覆盖主路径，但 XML、CSV、Pydantic 等专用解析器仍由应用提供
 
-这些差异不都需要照搬。Multi-agent 需要先确定共享上下文、授权、事件和失败语义；LCEL 属于
-编程模型选择，不是运行 Agent 的前置条件。第三方文档和向量实现通过扩展适配器接入，避免改变
-Core 的零运行时依赖属性。
+这些差异不都需要照搬。Multi-agent 扩展已经明确共享上下文、授权、事件和失败语义；更复杂的
+群聊或 swarm 应在出现真实业务需求后继续扩展。LCEL 属于编程模型选择，不是运行 Agent 的前置
+条件。第三方文档和向量实现通过扩展适配器接入，避免改变 Core 的零运行时依赖属性。
