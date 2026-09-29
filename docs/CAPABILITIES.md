@@ -33,7 +33,7 @@ Agent Core 是一套零外部平台绑定的手写 Agent 运行时内核。
 | `storage` | 会话、上下文、长期记忆、Run、审批、模型选择和工作流实例持久化 | 各类 `Memory*`、`Sqlite*`、`Postgres*Store` |
 | `guardrails` | 关键词、长度、PII 脱敏和输出格式检查 | `GuardrailsMiddleware` |
 | `prompts` | 安全文本/聊天模板、消息占位符、partial、Prompt 版本和历史查询 | `PromptTemplate`、`ChatPromptTemplate`、`PromptRegistry` |
-| `observability` | 模型/工具耗时、调用计数、Thread/Agent 统计和可选 OTel | `ObservabilityMiddleware`、`setup_tracing` |
+| `observability` | 并发隔离的模型/工具耗时、调用计数、Thread/Agent 统计和可选 OTel | `ObservabilityMiddleware`、`setup_tracing` |
 | `access` | 用户和租户访问上下文 | `AccessContext` |
 | `ports` | 存储、审批、事件和长期记忆等依赖倒置接口 | `RunStore`、`SessionStore`、`ContextStore`、`MemoryStore`、`EventSink` |
 | `acp` | ACP JSON-RPC/stdio、会话、提示、更新、取消和审批请求 | `AcpStdioServer`、`AcpBackend` |
@@ -206,7 +206,7 @@ Session Store 在调用方传入 `AccessContext` 时，会在首次写入时绑�
 ## 9. Checkpoint 和工作流
 
 Checkpoint 支持内存和文件后端。`TimeTravelCheckpointer` 在基础 Checkpointer 上增加版本历史、
-指定版本读取和回滚能力。
+指定版本读取、持久化回滚指针、整条 thread 删除和时间旅行能力。
 
 通用工作流不依赖外部编排框架，支持：
 
@@ -223,6 +223,7 @@ Checkpoint 支持内存和文件后端。`TimeTravelCheckpointer` 在基础 Chec
 - 节点执行前持久化 `workflow_step_pending`，完成后保存状态和下一节点；
 - `DurableWorkflowRunner` 在节点边界保存状态和下一节点；
 - 进程重启后从最后保存的下一节点恢复，避免重复执行已经完成的节点；
+- 默认在失败后重新抛出异常，也可设置 `raise_on_failure=False` 返回已经持久化的失败执行实例；
 - `describe()` 输出结构化图定义，`to_mermaid()` 导出 Mermaid 流程图。
 
 工作流定义由上层项目编写，工作流执行实例可通过 `WorkflowExecutionStore` 持久化。
@@ -293,7 +294,9 @@ Core 只定义 `AcpBackend` 端口和协议服务端。具体 Agent 负责把自
 
 ## 13. 可观测性和错误体系
 
-可观测性模块记录模型调用、工具调用、耗时、成功失败、Thread 汇总和 Agent 汇总，
+可观测性模块记录模型调用、工具调用、耗时、成功失败、Thread 汇总和 Agent 汇总。
+同一个中间件实例可被多个异步会话并发复用，调用计时和 span 使用 `ContextVar` 隔离，
+`thread_id` 优先读取当前 `MiddlewareContext.metadata`，
 并提供可选 OpenTelemetry 初始化入口。
 
 统一错误体系覆盖配置、模型调用、限流、超时、模型不可用、输出校验、工具执行、MCP、

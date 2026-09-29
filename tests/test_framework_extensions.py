@@ -11,6 +11,7 @@ from typing import Any
 
 from agent_core import (
     ChatPromptTemplate,
+    Checkpointer,
     DurableWorkflowRunner,
     GovernedModelAdapter,
     InMemoryMemoryStore,
@@ -26,6 +27,7 @@ from agent_core import (
     SqliteMemoryStore,
     StateMachineBuilder,
     StructuredOutputSpec,
+    TimeTravelCheckpointer,
     assistant_message,
     chat_structured,
     current_node_execution,
@@ -166,6 +168,27 @@ class PromptTemplateTests(unittest.TestCase):
             self.assertEqual(reloaded.get_history("welcome")[0]["variables"], ["greeting", "name"])
 
 
+class TimeTravelCheckpointerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_rollback_pointer_survives_restart_and_delete_clears_history(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            storage_dir = Path(directory)
+            checkpointer: Checkpointer = TimeTravelCheckpointer(storage_dir)
+            first_version = await checkpointer.save("thread-1", {"step": 1})
+            await checkpointer.save("thread-1", {"step": 2})
+
+            self.assertIsInstance(first_version, str)
+            assert isinstance(first_version, str)
+            self.assertTrue(
+                await TimeTravelCheckpointer(storage_dir).rollback("thread-1", first_version)
+            )
+
+            restarted: Checkpointer = TimeTravelCheckpointer(storage_dir)
+            self.assertEqual(await restarted.load("thread-1"), {"step": 1})
+
+            await restarted.delete("thread-1")
+            self.assertIsNone(await TimeTravelCheckpointer(storage_dir).load("thread-1"))
+
+
 class LongTermMemoryTests(unittest.IsolatedAsyncioTestCase):
     async def test_memory_access_search_ttl_and_conflict(self) -> None:
         store = InMemoryMemoryStore(require_access=True)
@@ -255,6 +278,29 @@ class WorkflowPolicyTests(unittest.IsolatedAsyncioTestCase):
     async def test_retry_requires_idempotent_node(self) -> None:
         with self.assertRaisesRegex(ValueError, "idempotent=True"):
             NodeExecutionPolicy(max_attempts=2)
+
+    async def test_durable_runner_can_return_persisted_failure(self) -> None:
+        async def fail(_state: dict[str, Any]) -> dict[str, Any]:
+            raise RuntimeError("业务步骤失败")
+
+        machine = (
+            StateMachineBuilder()
+            .add_node("fail", fail)
+            .add_edge("__start__", "fail")
+            .add_edge("fail", "__end__")
+            .build()
+        )
+        store = MemoryWorkflowExecutionStore()
+        runner = DurableWorkflowRunner(machine, store, raise_on_failure=False)
+
+        execution = await runner.start("failure-demo", {})
+
+        self.assertEqual(execution.status, "failed")
+        self.assertEqual(execution.current_step, "fail")
+        persisted = await store.load(execution.execution_id)
+        self.assertIsNotNone(persisted)
+        assert persisted is not None
+        self.assertEqual(persisted.events[-1]["event_type"], "workflow_failed")
 
 
 if __name__ == "__main__":

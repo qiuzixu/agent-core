@@ -24,10 +24,12 @@ class DurableWorkflowRunner:
         store: WorkflowExecutionStore,
         *,
         require_access: bool = False,
+        raise_on_failure: bool = True,
     ) -> None:
         self._machine = machine
         self._store = store
         self._strict_access = require_access
+        self._raise_on_failure = raise_on_failure
 
     async def start(
         self,
@@ -144,7 +146,9 @@ class DurableWorkflowRunner:
                 }
             )
             await self._store.save(execution)
-            raise
+            if self._raise_on_failure:
+                raise
+            return execution
 
         execution.status = "completed"
         execution.current_step = END

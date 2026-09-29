@@ -8,19 +8,19 @@
 ```mermaid
 sequenceDiagram
     participant App as 应用
-    participant Loop as ReActAgent
+    participant AgentLoop as ReActAgent
     participant Model as ModelAdapter
     participant Tools as ToolExecutor
-    App->>Loop: run(user_input)
+    App->>AgentLoop: run(user_input)
     loop 直到得到最终答案
-        Loop->>Model: chat(messages, tools)
-        Model-->>Loop: assistant message
+        AgentLoop->>Model: chat(messages, tools)
+        Model-->>AgentLoop: assistant message
         alt 存在 tool_calls
-            Loop->>Tools: execute_batch(tool_calls)
-            Tools-->>Loop: ToolResult[]
-            Loop->>Loop: 追加 tool messages
+            AgentLoop->>Tools: execute_batch(tool_calls)
+            Tools-->>AgentLoop: ToolResult[]
+            AgentLoop->>AgentLoop: 追加 tool messages
         else 无 tool_calls
-            Loop-->>App: 最终文本
+            AgentLoop-->>App: 最终文本
         end
     end
 ```

@@ -432,3 +432,7 @@ flowchart LR
 | 2026-09-27 | MinerU 扩展包 | 新增独立 `handwritten-agent-core-mineru`，并同步扩展包、Core 与外部解析服务调用关系。 |
 | 2026-09-27 | Embedding 扩展包 | 新增 OpenAI、Gemini、Ollama 适配器、执行策略和工厂，并同步检索调用关系。 |
 | 2026-09-27 | Multi-Agent 扩展包 | 新增 Agent 注册、规则/模型路由、handoff、协调存储、租约和恢复，并同步应用与多个 Agent 的调用关系。 |
+| 2026-09-28 | 双 Agent 运行治理接入 | Vanilla 与 LangGraph 应用接入 Callback、Guardrails、Observability、Prompt/Serializer Registry、时间旅行和 Durable Workflow；Core 模块关系未变化。 |
+| 2026-09-28 | 并发观测与失败实例 | Observability 计时改为 `ContextVar` 隔离，Durable runner 可选择返回持久化失败实例；接口仍位于原有模块，无需修改 Mermaid 关系。 |
+| 2026-09-28 | 时间旅行持久化修正 | `TimeTravelCheckpointer` 持久化 rollback 指针并补齐整条 thread 删除协议；模块关系与调用方向未变化，无需修改 Mermaid 图。 |
+| 2026-09-28 | ACP 源码说明与占位审计 | 在 ACP 源码目录补充协议边界、调用时序、应用接入和空方法审计；没有修改公共接口或调用方向，无需修改 Mermaid 图。 |

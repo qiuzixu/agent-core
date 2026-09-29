@@ -403,6 +403,9 @@ class TimeTravelCheckpointer:
         for i, v in enumerate(versions):
             if v.version_id == version_id:
                 self._current_version[thread_id] = i
+                # 当前版本指针也属于时间旅行状态；必须和版本列表一起持久化，
+                # 否则进程重启后会再次指向最新版本。
+                await self._persist_versions(thread_id)
                 logger.info(
                     "Rolled back to version %s for thread %r (index: %d)",
                     version_id,
@@ -454,6 +457,17 @@ class TimeTravelCheckpointer:
                 return True
 
         return False
+
+    async def delete(self, thread_id: str) -> None:
+        """删除一个会话的全部版本，并满足 Agent Loop 的 Checkpointer 协议。"""
+        self._versions.pop(thread_id, None)
+        self._current_version.pop(thread_id, None)
+        file_path = self._get_version_file(thread_id)
+        if file_path is not None:
+            try:
+                file_path.unlink(missing_ok=True)
+            except OSError as exc:
+                raise CheckpointError(f"删除会话 {thread_id!r} 的 checkpoint 失败：{exc}") from exc
 
     async def compare_versions(
         self,

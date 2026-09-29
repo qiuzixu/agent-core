@@ -5,6 +5,12 @@
 
 ## [Unreleased]
 
+### Changed
+
+- `ObservabilityMiddleware` 按异步上下文隔离模型/工具计时，并从当前调用元数据读取 `thread_id`。
+- `DurableWorkflowRunner` 增加 `raise_on_failure`，应用可以读取已持久化的失败执行实例。
+- `TimeTravelCheckpointer` 持久化 rollback 当前版本指针，并实现整条 thread 历史删除协议。
+
 ### Added
 
 - 基于 Material for MkDocs 的中文文档站、使用指南和公共 API 参考。

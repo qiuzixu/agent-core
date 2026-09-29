@@ -144,9 +144,7 @@ class SerializerRegistry:
             try:
                 payload = migration(payload)
             except Exception as exc:
-                raise SerializationError(
-                    f"{envelope.type_id} 从版本 {version} 迁移失败：{exc}"
-                ) from exc
+                raise SerializationError(f"{envelope.type_id} 从版本 {version} 迁移失败：{exc}") from exc
             if not isinstance(payload, dict):
                 raise SerializationError(
                     f"{envelope.type_id} 的 {version} -> {version + 1} 迁移必须返回 dict"

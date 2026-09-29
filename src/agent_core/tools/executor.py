@@ -130,6 +130,8 @@ class ToolExecutor:
         self,
         tool_name: str,
         arguments: dict[str, Any],
+        *,
+        approval_granted: bool | None = None,
     ) -> str:
         """执行单个工具调用。
 
@@ -140,15 +142,25 @@ class ToolExecutor:
         Returns:
             工具执行结果（字符串格式）。
         """
-        result = await self.execute_result(tool_name, arguments)
+        result = await self.execute_result(
+            tool_name,
+            arguments,
+            approval_granted=approval_granted,
+        )
         return result.to_text()
 
     async def execute_result(
         self,
         tool_name: str,
         arguments: dict[str, Any],
+        *,
+        approval_granted: bool | None = None,
     ) -> ToolResult:
-        """执行工具并返回结构化结果，旧的 execute 保留文本兼容层。"""
+        """执行工具并返回结构化结果。
+
+        ``approval_granted`` 用于已经在 API 或工作流边界完成审批的调用。
+        未显式传入时仍使用构造器注入的审批回调，避免普通 Agent Loop 绕过审批。
+        """
         tool_func = self._registry.get_tool(tool_name)
         if tool_func is None:
             error_msg = f"Tool {tool_name!r} not found."
@@ -179,21 +191,31 @@ class ToolExecutor:
                     error_kind="invalid_arguments",
                 )
             if spec.requires_approval:
-                if self._approval_callback is None:
-                    return ToolResult(
-                        tool_name=tool_name,
-                        success=False,
-                        error="未配置审批回调",
-                        error_kind="approval",
-                    )
-                approved = await self._approval_callback(spec, arguments)
-                if not approved:
+                if approval_granted is True:
+                    pass
+                elif approval_granted is False:
                     return ToolResult(
                         tool_name=tool_name,
                         success=False,
                         error="审批拒绝",
                         error_kind="approval",
                     )
+                elif self._approval_callback is None:
+                    return ToolResult(
+                        tool_name=tool_name,
+                        success=False,
+                        error="未配置审批回调",
+                        error_kind="approval",
+                    )
+                else:
+                    approved = await self._approval_callback(spec, arguments)
+                    if not approved:
+                        return ToolResult(
+                            tool_name=tool_name,
+                            success=False,
+                            error="审批拒绝",
+                            error_kind="approval",
+                        )
 
         try:
             logger.debug("Executing tool: %r with args: %s", tool_name, arguments)

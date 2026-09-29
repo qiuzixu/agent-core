@@ -230,9 +230,7 @@ class VectorStoreAdapterTests(unittest.IsolatedAsyncioTestCase):
                 access=alice,
             )
         )
-        hidden = await reopened.search(
-            VectorQuery(vector=(1.0, 0.0), namespace="manual", access=bob)
-        )
+        hidden = await reopened.search(VectorQuery(vector=(1.0, 0.0), namespace="manual", access=bob))
 
         self.assertEqual(results[0].record.document.content, "机场净空规则")
         self.assertAlmostEqual(results[0].score, 1.0)
