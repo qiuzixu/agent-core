@@ -121,10 +121,13 @@ class ChromaVectorStore(VectorStore):
         count = int(await asyncio.to_thread(self._collection.count))
         if count <= 0:
             return []
+        # 没有业务 metadata 过滤时，namespace 和访问范围已下推给 Chroma，
+        # 只需取 limit 条；带任意 metadata 过滤时仍全量读取以保持现有精确语义。
+        n_results = count if query.metadata_filter else min(count, query.limit)
         result = await asyncio.to_thread(
             self._collection.query,
             query_embeddings=[list(query.vector)],
-            n_results=count,
+            n_results=n_results,
             where=self._where(query.namespace, query.access),
             include=["metadatas", "distances", "embeddings"],
         )

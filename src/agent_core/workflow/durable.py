@@ -118,7 +118,7 @@ class DurableWorkflowRunner:
 
         try:
             result = await self._machine.ainvoke_from(
-                execution.result_data or execution.input_data,
+                execution.result_data,
                 start_node=execution.current_step or START,
                 on_step=persist_step,
                 on_node_start=persist_pending,

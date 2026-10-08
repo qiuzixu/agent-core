@@ -60,9 +60,10 @@ stores = {
 - Runtime Store 使用版本/条件更新检测并发冲突；
 - Run Lease Store 用认领、心跳、释放和过期时间保证同一 Run 的 Worker 互斥；
 - `idempotency_key` 用于重复 API 请求命中同一 Run；
-- Context Store 使用版本检测更新冲突；
+- SQLite Context Store 在同一事务内读取、校验归属并更新；PostgreSQL Context Store 在数据库内合并字段并保留原归属；
 - Memory Store 使用 `expected_version` 检测并发覆盖；
-- Workflow Store 在节点执行前保存 pending 事件，完成后保存状态和下一节点；
+- Workflow Store 使用版本/条件更新检测执行实例并发冲突，并在节点执行前保存 pending 事件；
+- Approval Store 使用 `pending -> approved/rejected/expired` 条件状态转换，避免终态互相覆盖；
 - 工作流节点可把 `current_node_execution().idempotency_key` 传给外部写操作。
 
 这些机制只覆盖 Core 数据。调用第三方 API 的业务工具仍需自己的幂等键和事务策略。

@@ -51,9 +51,7 @@ class AgentRegistry:
         if replace:
             self.unregister(agent_id)
         semaphore = (
-            asyncio.Semaphore(descriptor.max_concurrency)
-            if descriptor.max_concurrency is not None
-            else None
+            asyncio.Semaphore(descriptor.max_concurrency) if descriptor.max_concurrency is not None else None
         )
         self._agents[agent_id] = _RegisteredAgent(descriptor, invoker, semaphore)
         self._aliases[agent_id] = agent_id
@@ -81,11 +79,7 @@ class AgentRegistry:
         return registered.descriptor
 
     def descriptors(self, *, access: AccessContext | None = None) -> tuple[AgentDescriptor, ...]:
-        values = [
-            item.descriptor
-            for item in self._agents.values()
-            if item.descriptor.can_invoke(access)
-        ]
+        values = [item.descriptor for item in self._agents.values() if item.descriptor.can_invoke(access)]
         return tuple(sorted(values, key=lambda item: (-item.priority, item.agent_id)))
 
     def candidates(
@@ -137,4 +131,3 @@ class AgentRegistry:
 
 
 __all__ = ["AgentRegistry"]
-

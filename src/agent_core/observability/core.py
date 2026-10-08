@@ -59,12 +59,22 @@ class ThreadStats:
 class AgentStats:
     """进程级统计注册表；生产环境可通过事件 sink 转发到外部系统。"""
 
-    def __init__(self) -> None:
+    def __init__(self, *, max_threads: int = 1000, max_records_per_thread: int = 1000) -> None:
+        if max_threads <= 0 or max_records_per_thread <= 0:
+            raise ValueError("统计容量必须大于 0")
         self._stats: dict[str, ThreadStats] = {}
+        self._max_threads = max_threads
+        self._max_records_per_thread = max_records_per_thread
 
     def get_stats(self, thread_id: str) -> ThreadStats:
         if thread_id not in self._stats:
+            if len(self._stats) >= self._max_threads:
+                oldest_thread = next(iter(self._stats))
+                del self._stats[oldest_thread]
             self._stats[thread_id] = ThreadStats(thread_id=thread_id)
+        else:
+            # dict 保持插入顺序，用重新插入实现轻量 LRU。
+            self._stats[thread_id] = self._stats.pop(thread_id)
         return self._stats[thread_id]
 
     def record_llm_call(
@@ -89,6 +99,8 @@ class AgentStats:
                 finish_reason=finish_reason,
             )
         )
+        if len(stats.llm_records) > self._max_records_per_thread:
+            del stats.llm_records[: len(stats.llm_records) - self._max_records_per_thread]
 
     def record_tool_call(
         self,
@@ -107,6 +119,8 @@ class AgentStats:
                 success=success,
             )
         )
+        if len(stats.tool_records) > self._max_records_per_thread:
+            del stats.tool_records[: len(stats.tool_records) - self._max_records_per_thread]
 
     def all_threads(self) -> list[str]:
         return list(self._stats)
@@ -198,6 +212,20 @@ class ObservabilityMiddleware(Middleware):
         self._model_state.set((0.0, None))
         return MiddlewareResult(action=MiddlewareAction.CONTINUE)
 
+    async def handle_exception(self, exc: Exception, ctx: MiddlewareContext) -> bool:
+        """关闭失败模型调用的 span；观测中间件本身不决定是否重试。"""
+        del ctx
+        call_start, span = self._model_state.get()
+        if span is not None:
+            record_exception = getattr(span, "record_exception", None)
+            if record_exception is not None:
+                record_exception(exc)
+            if call_start:
+                span.set_attribute("latency_ms", (time.perf_counter() - call_start) * 1000)
+            span.end()
+        self._model_state.set((0.0, None))
+        return False
+
     async def before_tool(self, ctx: MiddlewareContext) -> MiddlewareResult:
         self._tool_start.set(time.perf_counter())
         logger.log(self._log_level, "[Obs] Tool call start: %s args=%s", ctx.tool_name, ctx.tool_args)
@@ -210,6 +238,7 @@ class ObservabilityMiddleware(Middleware):
             thread_id=self._context_thread_id(ctx),
             tool_name=ctx.tool_name or "unknown",
             latency_ms=latency_ms,
+            success=bool(ctx.metadata.get("tool_success", True)),
         )
         logger.log(
             self._log_level,

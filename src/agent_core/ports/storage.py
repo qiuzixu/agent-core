@@ -21,6 +21,15 @@ class ApprovalStore(Protocol):
 
     async def load_approval(self, approval_id: str) -> ApprovalRecord | None: ...
 
+    async def transition_approval(
+        self,
+        approval: ApprovalRecord,
+        *,
+        expected_status: str = "pending",
+    ) -> bool:
+        """仅当记录仍处于预期状态时保存新状态。"""
+        ...
+
 
 class RunStore(Protocol):
     """运行实例持久化协议。

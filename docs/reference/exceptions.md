@@ -46,9 +46,14 @@
 
 ## 并发与权限
 
-`RuntimeConcurrencyError` 表示 Run 的版本或状态已被其他执行者修改。重新加载最新 Run 后决定
+`RuntimeConcurrencyError` 表示 Run 的版本或状态已被其他执行者修改，
+`WorkflowConcurrencyError` 表示工作流执行实例发生同类版本冲突。重新加载最新记录后决定
 是否继续，不要直接覆盖。缺少身份或跨租户访问会抛出 `PermissionError`，API 层应映射为适当的
 认证或授权响应，并避免泄露目标记录是否存在。
+
+ACP 层使用 `AcpProtocolError` 表示请求参数不合法，使用 `AcpSessionNotFoundError` 表示服务端没有目标
+会话。`AcpStdioServer` 会分别映射为稳定的 JSON-RPC 错误，不会把 Backend 内部的任意 `KeyError`
+误报成会话不存在。
 
 ## 保留根因
 

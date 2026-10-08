@@ -52,6 +52,7 @@ nav:
       - 公共 API: reference/public-api.md
       - 配置参考: reference/configuration.md
       - 异常体系: reference/exceptions.md
+      - 审查复核与整改: reference/agent-core-review-remediation.md
       - 与 LangChain 对照: reference/langchain-comparison.md
       - Agent 生态对照: reference/ecosystem-comparison.md
   - 维护者:

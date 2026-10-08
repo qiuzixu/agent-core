@@ -138,7 +138,9 @@ class GuardrailsMiddleware(Middleware):
         if not user_text:
             return MiddlewareResult(action=MiddlewareAction.CONTINUE)
         for guard in self._input_guards:
-            passed, reason = guard.check(user_text)
+            passed, reason = (
+                guard.check_input(user_text) if isinstance(guard, LengthGuard) else guard.check(user_text)
+            )
             if not passed:
                 logger.warning("[Guard] 输入被拦截 [%s]: %s", guard.name, reason)
                 return MiddlewareResult(
@@ -159,7 +161,11 @@ class GuardrailsMiddleware(Middleware):
                 ctx.llm_response.content = redacted
                 output_text = redacted
         for guard in self._output_guards:
-            passed, reason = guard.check(output_text)
+            passed, reason = (
+                guard.check_output(output_text)
+                if isinstance(guard, LengthGuard)
+                else guard.check(output_text)
+            )
             if not passed:
                 logger.warning("[Guard] 输出被拦截 [%s]: %s", guard.name, reason)
                 return MiddlewareResult(

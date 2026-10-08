@@ -25,8 +25,9 @@ async def test_observability_uses_per_call_thread_and_timing_state() -> None:
         context.llm_response = assistant_message("完成")
         await middleware.after_model(context)
 
-    await asyncio.gather(invoke(first_thread, 0.01), invoke(second_thread, 0))
+    # Windows 事件循环的时钟粒度可能高于 10ms，使用 50ms 避免短定时器被提前唤醒。
+    await asyncio.gather(invoke(first_thread, 0.05), invoke(second_thread, 0))
 
     assert agent_stats.get_stats(first_thread).total_llm_calls == 1
     assert agent_stats.get_stats(second_thread).total_llm_calls == 1
-    assert agent_stats.get_stats(first_thread).llm_records[0].latency_ms >= 5
+    assert agent_stats.get_stats(first_thread).llm_records[0].latency_ms >= 20

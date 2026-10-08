@@ -120,6 +120,7 @@ class CallbackTests(unittest.IsolatedAsyncioTestCase):
             event.payload["delta"] for event in collector.events if event.event_type == "model_stream_chunk"
         ]
         self.assertEqual(deltas, chunks)
+        self.assertNotIn(collector.events[0].run_id, runtime._event_cursors)
 
     async def test_sqlite_preserves_parent_tags_and_enriched_events(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -161,6 +161,11 @@ class ReActAgent:
         # 恢复执行时沿用已有上下文的会话 ID，避免快照落到默认会话。
         checkpoint_thread = thread_id or runtime_context.thread_id
 
+        if checkpoint.get("phase") == "completed":
+            if last_answer:
+                return last_answer
+            raise ModelOutputValidationError("completed checkpoint 缺少最终回答")
+
         # 4. checkpoint 恢复阶段
         start_iteration = int(checkpoint.get("next_iteration", checkpoint.get("iteration", 0)))
         pending_tool_calls = checkpoint.get("pending_tool_calls")
@@ -261,7 +266,7 @@ class ReActAgent:
                 runtime_context,
                 phase="execute_tools" if response.tool_calls else "completed",
                 pending_tool_calls=response.tool_calls,
-                metadata={"iteration": iteration, "answer_preview": last_answer[:80], **metadata},
+                metadata={**metadata, "iteration": iteration, "answer_preview": last_answer[:80]},
             )
 
             if not response.tool_calls:
@@ -287,7 +292,7 @@ class ReActAgent:
                 runtime_context,
                 phase="model",
                 pending_tool_calls=[],
-                metadata={"iteration": iteration, "answer_preview": last_answer[:80], **metadata},
+                metadata={**metadata, "iteration": iteration, "answer_preview": last_answer[:80]},
             )
 
         else:
@@ -386,6 +391,11 @@ class ReActAgent:
         # 流式执行与普通执行使用同一套会话隔离规则。
         checkpoint_thread = thread_id or runtime_context.thread_id
 
+        if checkpoint.get("phase") == "completed":
+            if last_answer:
+                return
+            raise ModelOutputValidationError("completed checkpoint 缺少最终回答")
+
         start_iteration = int(checkpoint.get("next_iteration", checkpoint.get("iteration", 0)))
         pending_tool_calls = checkpoint.get("pending_tool_calls")
         if checkpoint.get("phase") == "execute_tools" and isinstance(pending_tool_calls, list):
@@ -433,7 +443,7 @@ class ReActAgent:
 
             # 收集流式输出
             text_parts: list[str] = []
-            final_tool_calls: list[dict[str, Any]] = []
+            tool_calls_by_key: dict[str, dict[str, Any]] = {}
 
             try:
                 async for chunk in self._llm.stream_chat(
@@ -446,7 +456,23 @@ class ReActAgent:
                         yield chunk.text
 
                     if chunk.is_tool_call and chunk.tool_calls:
-                        final_tool_calls = chunk.tool_calls
+                        for call_index, tool_call in enumerate(chunk.tool_calls):
+                            key = str(tool_call.get("id") or f"index:{call_index}")
+                            current = tool_calls_by_key.setdefault(key, {})
+                            current.update(
+                                {
+                                    field: value
+                                    for field, value in tool_call.items()
+                                    if field != "args" and value is not None and value != ""
+                                }
+                            )
+                            args = tool_call.get("args")
+                            if isinstance(args, dict):
+                                current_args = current.setdefault("args", {})
+                                if isinstance(current_args, dict):
+                                    current_args.update(args)
+                                else:
+                                    current["args"] = dict(args)
 
             except Exception as exc:
                 if await self._middleware_manager.handle_exception(exc, ctx):
@@ -456,6 +482,7 @@ class ReActAgent:
 
             # 组装 assistant message
             content = "".join(text_parts)
+            final_tool_calls = list(tool_calls_by_key.values())
             response = assistant_message(content, tool_calls=final_tool_calls)
             messages.append(response)
             runtime_context.emit(
@@ -495,7 +522,7 @@ class ReActAgent:
                 runtime_context,
                 phase="execute_tools" if final_tool_calls else "completed",
                 pending_tool_calls=final_tool_calls,
-                metadata={"iteration": iteration, "answer_preview": last_answer[:80], **metadata},
+                metadata={**metadata, "iteration": iteration, "answer_preview": last_answer[:80]},
             )
 
             # 无工具调用 → 结束
@@ -526,7 +553,7 @@ class ReActAgent:
                 runtime_context,
                 phase="model",
                 pending_tool_calls=[],
-                metadata={"iteration": iteration, "answer_preview": last_answer[:80], **metadata},
+                metadata={**metadata, "iteration": iteration, "answer_preview": last_answer[:80]},
             )
 
         else:
@@ -714,10 +741,12 @@ class ReActAgent:
                         success=False,
                         result={"error_kind": "approval", "error": result},
                     )
+                tool_ctx.metadata["tool_success"] = False
             else:
                 # 审批通过后才真正执行副作用工具。
                 structured_result = await self._tool_executor.execute_result(tc["name"], tc.get("args", {}))
                 result = structured_result.to_text()
+                tool_ctx.metadata["tool_success"] = structured_result.success
                 if runtime_context is not None:
                     runtime_context.emit(
                         "tool_finished",
@@ -735,19 +764,94 @@ class ReActAgent:
                 name=tc["name"],
             )
 
-        outcomes = await asyncio.gather(
-            *(execute_one(tool_call) for tool_call in tool_calls),
-            return_exceptions=True,
-        )
-        tool_messages: list[Message] = []
-        for outcome in outcomes:
-            if isinstance(outcome, BaseException):
-                raise outcome
-            tool_messages.append(outcome)
+        async def execute_indexed(index: int, tool_call: dict[str, Any]) -> tuple[int, Message | Exception]:
+            try:
+                return index, await execute_one(tool_call)
+            except Exception as exc:
+                return index, exc
 
-        # gather 的返回顺序与 tool_calls 一致，模型能按原调用 ID 匹配结果。
-        messages.extend(tool_messages)
+        tasks = [
+            asyncio.create_task(execute_indexed(index, tool_call))
+            for index, tool_call in enumerate(tool_calls)
+        ]
+        completed_indices: set[int] = set()
+        progress_messages: list[Message] = []
+        ordered_messages: list[Message | None] = [None] * len(tool_calls)
+        try:
+            for completed in asyncio.as_completed(tasks):
+                index, outcome = await completed
+                tool_call = tool_calls[index]
+                if isinstance(outcome, Exception):
+                    error_text = str(outcome)
+                    logger.exception(
+                        "工具 %s 的执行链异常",
+                        tool_call["name"],
+                        exc_info=(type(outcome), outcome, outcome.__traceback__),
+                    )
+                    content = f"[工具 {tool_call['name']} 执行异常] {error_text}"
+                    outcome = tool_message(
+                        content=content,
+                        tool_call_id=tool_call["id"],
+                        name=tool_call["name"],
+                    )
+                    if runtime_context is not None:
+                        runtime_context.emit(
+                            "tool_finished",
+                            tool_name=tool_call["name"],
+                            success=False,
+                            result={"error_kind": "execution", "error": error_text},
+                        )
+                ordered_messages[index] = outcome
+                completed_indices.add(index)
+                progress_messages.append(outcome)
+                if runtime_context is not None:
+                    pending = [
+                        tool_call
+                        for pending_index, tool_call in enumerate(tool_calls)
+                        if pending_index not in completed_indices
+                    ]
+                    await self._persist_tool_progress(
+                        runtime_context,
+                        [*messages, *progress_messages],
+                        pending,
+                    )
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        # 最终消息按模型原始调用顺序追加；阶段性 checkpoint 允许按完成顺序恢复。
+        messages.extend(message for message in ordered_messages if message is not None)
         return messages
+
+    async def _persist_tool_progress(
+        self,
+        runtime_context: RunContext,
+        messages: list[Message],
+        pending_tool_calls: list[dict[str, Any]],
+    ) -> None:
+        """保存并发工具批次的阶段性进度，恢复时只重放尚未完成的调用。"""
+        state = {
+            **runtime_context.checkpoint,
+            "messages": [message.to_dict() for message in messages],
+            "phase": "execute_tools" if pending_tool_calls else "model",
+            "pending_tool_calls": pending_tool_calls,
+        }
+        if not pending_tool_calls:
+            state["next_iteration"] = int(state.get("iteration", 0)) + 1
+        runtime_context.checkpoint = state
+        callback = runtime_context.checkpoint_callback
+        if callback is not None:
+            result = callback(state)
+            if hasattr(result, "__await__"):
+                await result
+        if self._checkpointer is not None:
+            await self._checkpointer.save(
+                runtime_context.thread_id,
+                {**state, "run_context": runtime_context.to_dict()},
+                metadata={"iteration": int(state.get("iteration", 0)), "phase": state["phase"]},
+            )
 
     # ──────────────────────────────────────────────
     # 时间旅行接口

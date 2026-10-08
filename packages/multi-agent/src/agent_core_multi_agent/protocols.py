@@ -47,4 +47,3 @@ class CoordinationStore(Protocol):
 
 
 __all__ = ["AgentInvoker", "AgentRouter", "CoordinationStore"]
-

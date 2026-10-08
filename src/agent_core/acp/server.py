@@ -19,6 +19,14 @@ class AcpProtocolError(ValueError):
     """客户端发送了不符合 ACP/JSON-RPC 要求的请求。"""
 
 
+class AcpSessionNotFoundError(LookupError):
+    """请求引用了当前 ACP 服务端不存在的会话。"""
+
+    def __init__(self, session_id: str) -> None:
+        super().__init__(session_id)
+        self.session_id = session_id
+
+
 class AcpStdioServer:
     """基于标准输入输出运行的 ACP 双向 JSON-RPC 服务端。"""
 
@@ -104,9 +112,9 @@ class AcpStdioServer:
         except AcpProtocolError as exc:
             if is_request:
                 await self._send_error(request_id, -32602, str(exc))
-        except KeyError as exc:
+        except AcpSessionNotFoundError as exc:
             if is_request:
-                await self._send_error(request_id, -32004, f"会话不存在：{exc.args[0]}")
+                await self._send_error(request_id, -32004, f"会话不存在：{exc.session_id}")
         except NotImplementedError as exc:
             if is_request:
                 await self._send_error(request_id, -32601, str(exc))
@@ -212,6 +220,13 @@ class AcpStdioServer:
                 {"optionId": "approve_once", "name": "批准", "kind": "allow_once"},
                 {"optionId": "reject_once", "name": "拒绝", "kind": "reject_once"},
             ]
+        allowed_option_ids = {
+            option["optionId"]
+            for option in options
+            if isinstance(option, dict) and isinstance(option.get("optionId"), str) and option["optionId"]
+        }
+        if not allowed_option_ids:
+            raise AcpProtocolError("审批选项必须包含非空 optionId")
         result = await self._request_client(
             "session/request_permission",
             {
@@ -223,7 +238,7 @@ class AcpStdioServer:
         for key in ("selectedOptionId", "optionId", "outcome"):
             value = result.get(key)
             if isinstance(value, str) and value:
-                return value
+                return value if value in allowed_option_ids else "reject_once"
         return "reject_once"
 
     async def _request_client(self, method: str, params: JsonObject) -> JsonObject:
@@ -304,7 +319,7 @@ class AcpStdioServer:
     def _session(self, session_id: str) -> AcpSession:
         session = self._sessions.get(session_id)
         if session is None:
-            raise KeyError(session_id)
+            raise AcpSessionNotFoundError(session_id)
         return session
 
     async def _send_result(self, request_id: object, result: JsonObject) -> None:
@@ -328,4 +343,9 @@ async def run_acp_stdio(backend: AcpBackend) -> None:
     await AcpStdioServer(backend).run()
 
 
-__all__ = ["AcpProtocolError", "AcpStdioServer", "run_acp_stdio"]
+__all__ = [
+    "AcpProtocolError",
+    "AcpSessionNotFoundError",
+    "AcpStdioServer",
+    "run_acp_stdio",
+]

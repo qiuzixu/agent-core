@@ -7,6 +7,12 @@
 
 ### Changed
 
+- 修复 Runtime/Workflow 并发覆盖和匿名作用域幂等索引，PostgreSQL Workflow JSONB 恢复兼容字符串返回。
+- HITL 持久化审批 deadline，并以条件状态转换避免超时覆盖批准或拒绝。
+- 文件与时间旅行 Checkpoint 改为原子替换，ReAct 并发工具按完成进度保存可恢复快照。
+- 模型治理按逻辑请求执行限流和并发控制，增加默认调用超时与按 scope 隔离的熔断状态。
+- 统一模型工具参数错误、结构化输出校验、MCP 文本结果回退和工具失败观测语义。
+- 收紧 Context/Prompt/ACP 的归属、损坏文件和审批选项处理，并限制进程内观测记录容量。
 - `ObservabilityMiddleware` 按异步上下文隔离模型/工具计时，并从当前调用元数据读取 `thread_id`。
 - `DurableWorkflowRunner` 增加 `raise_on_failure`，应用可以读取已持久化的失败执行实例。
 - `TimeTravelCheckpointer` 持久化 rollback 当前版本指针，并实现整条 thread 历史删除协议。

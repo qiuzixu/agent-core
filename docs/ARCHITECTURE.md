@@ -276,7 +276,10 @@ sequenceDiagram
             Tools->>MCP: call_tool
             MCP-->>Tools: MCP 结果
         end
-        Tools-->>ReAct: ToolResult
+        loop 每个并发工具任务完成
+            Tools-->>ReAct: ToolResult
+            ReAct->>Store: 保存阶段 Checkpoint 和剩余工具
+        end
         ReAct->>Store: 保存完整 Checkpoint
         ReAct->>Model: 工具结果进入下一轮
         Model-->>ReAct: 最终文本
@@ -436,3 +439,4 @@ flowchart LR
 | 2026-09-28 | 并发观测与失败实例 | Observability 计时改为 `ContextVar` 隔离，Durable runner 可选择返回持久化失败实例；接口仍位于原有模块，无需修改 Mermaid 关系。 |
 | 2026-09-28 | 时间旅行持久化修正 | `TimeTravelCheckpointer` 持久化 rollback 指针并补齐整条 thread 删除协议；模块关系与调用方向未变化，无需修改 Mermaid 图。 |
 | 2026-09-28 | ACP 源码说明与占位审计 | 在 ACP 源码目录补充协议边界、调用时序、应用接入和空方法审计；没有修改公共接口或调用方向，无需修改 Mermaid 图。 |
+| 2026-10-08 | 审查整改 | 审批增加持久化 deadline 和条件状态转换，Run/Workflow 写入增加版本条件，并发工具按完成进度保存 checkpoint；同步更新工具调用时序，模块边界和应用依赖方向不变。 |

@@ -44,7 +44,7 @@ class ModelExecutionPolicy:
     tokens_per_window: int | None = None
     window_seconds: float = 60.0
     queue_timeout_seconds: float | None = 30.0
-    call_timeout_seconds: float | None = None
+    call_timeout_seconds: float | None = 120.0
     failure_threshold: int = 5
     recovery_timeout_seconds: float = 30.0
 
@@ -160,16 +160,16 @@ class GovernedModelAdapter:
         self._rate_limiter = SlidingWindowRateLimiter(self._policy)
         self._concurrency = _ScopedConcurrencyLimiter(self._policy.max_concurrency)
         self._scope_resolver = scope_resolver or _CURRENT_SCOPE.get
-        self._circuits = [_CircuitState() for _ in self._adapters]
+        self._circuits: dict[tuple[int, str], _CircuitState] = {}
         self._circuit_lock = asyncio.Lock()
 
     @staticmethod
     def _estimate_tokens(messages: list[Message]) -> int:
         return max(1, sum(len(message.content) for message in messages) // 4)
 
-    async def _allow(self, index: int) -> bool:
+    async def _allow(self, index: int, scope: str) -> bool:
         async with self._circuit_lock:
-            state = self._circuits[index]
+            state = self._circuits.setdefault((index, scope), _CircuitState())
             if state.opened_at is None:
                 return True
             if time.monotonic() - state.opened_at < self._policy.recovery_timeout_seconds:
@@ -178,13 +178,13 @@ class GovernedModelAdapter:
             state.failures = max(0, self._policy.failure_threshold - 1)
             return True
 
-    async def _success(self, index: int) -> None:
+    async def _success(self, index: int, scope: str) -> None:
         async with self._circuit_lock:
-            self._circuits[index] = _CircuitState()
+            self._circuits[(index, scope)] = _CircuitState()
 
-    async def _failure(self, index: int) -> None:
+    async def _failure(self, index: int, scope: str) -> None:
         async with self._circuit_lock:
-            state = self._circuits[index]
+            state = self._circuits.setdefault((index, scope), _CircuitState())
             state.failures += 1
             if state.failures >= self._policy.failure_threshold:
                 state.opened_at = time.monotonic()
@@ -199,13 +199,14 @@ class GovernedModelAdapter:
     ) -> Message:
         scope = self._scope_resolver().strip() or "default"
         last_error: Exception | None = None
-        for index, adapter in enumerate(self._adapters):
-            if not await self._allow(index):
-                last_error = ModelUnavailableError(f"第 {index + 1} 个模型适配器熔断中")
-                continue
-            try:
-                await self._rate_limiter.acquire(scope, self._estimate_tokens(messages))
-                async with self._concurrency.slot(scope, self._policy.queue_timeout_seconds):
+        # 一个逻辑调用只消耗一次本地限流配额；fallback 属于同一次调用。
+        await self._rate_limiter.acquire(scope, self._estimate_tokens(messages))
+        async with self._concurrency.slot(scope, self._policy.queue_timeout_seconds):
+            for index, adapter in enumerate(self._adapters):
+                if not await self._allow(index, scope):
+                    last_error = ModelUnavailableError(f"第 {index + 1} 个模型适配器熔断中")
+                    continue
+                try:
                     async with asyncio.timeout(self._policy.call_timeout_seconds):
                         result = await adapter.chat(
                             messages,
@@ -213,15 +214,15 @@ class GovernedModelAdapter:
                             temperature=temperature,
                             max_tokens=max_tokens,
                         )
-                await self._success(index)
-                return result
-            except TimeoutError as exc:
-                last_error = ModelTimeoutError("模型调用超时")
-                last_error.__cause__ = exc
-                await self._failure(index)
-            except ModelInvocationError as exc:
-                last_error = exc
-                await self._failure(index)
+                    await self._success(index, scope)
+                    return result
+                except TimeoutError as exc:
+                    last_error = ModelTimeoutError("模型调用超时")
+                    last_error.__cause__ = exc
+                    await self._failure(index, scope)
+                except ModelInvocationError as exc:
+                    last_error = exc
+                    await self._failure(index, scope)
         if last_error is None:
             raise ModelUnavailableError("没有可用的模型适配器")
         raise last_error
@@ -236,14 +237,14 @@ class GovernedModelAdapter:
     ) -> AsyncIterator[StreamChunk]:
         scope = self._scope_resolver().strip() or "default"
         last_error: Exception | None = None
-        for index, adapter in enumerate(self._adapters):
-            emitted = False
-            if not await self._allow(index):
-                last_error = ModelUnavailableError(f"第 {index + 1} 个模型适配器熔断中")
-                continue
-            try:
-                await self._rate_limiter.acquire(scope, self._estimate_tokens(messages))
-                async with self._concurrency.slot(scope, self._policy.queue_timeout_seconds):
+        await self._rate_limiter.acquire(scope, self._estimate_tokens(messages))
+        async with self._concurrency.slot(scope, self._policy.queue_timeout_seconds):
+            for index, adapter in enumerate(self._adapters):
+                emitted = False
+                if not await self._allow(index, scope):
+                    last_error = ModelUnavailableError(f"第 {index + 1} 个模型适配器熔断中")
+                    continue
+                try:
                     async with asyncio.timeout(self._policy.call_timeout_seconds):
                         async for chunk in adapter.stream_chat(
                             messages,
@@ -253,17 +254,17 @@ class GovernedModelAdapter:
                         ):
                             emitted = True
                             yield chunk
-                await self._success(index)
-                return
-            except TimeoutError as exc:
-                last_error = ModelTimeoutError("模型流式调用超时")
-                last_error.__cause__ = exc
-                await self._failure(index)
-            except ModelInvocationError as exc:
-                last_error = exc
-                await self._failure(index)
-            if emitted and last_error is not None:
-                raise last_error
+                    await self._success(index, scope)
+                    return
+                except TimeoutError as exc:
+                    last_error = ModelTimeoutError("模型流式调用超时")
+                    last_error.__cause__ = exc
+                    await self._failure(index, scope)
+                except ModelInvocationError as exc:
+                    last_error = exc
+                    await self._failure(index, scope)
+                if emitted and last_error is not None:
+                    raise last_error
         if last_error is None:
             raise ModelUnavailableError("没有可用的模型适配器")
         raise last_error

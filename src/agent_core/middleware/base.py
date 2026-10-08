@@ -132,12 +132,19 @@ class MiddlewareManager:
         return False
 
     async def _run_chain(self, hook: str, ctx: MiddlewareContext) -> MiddlewareResult:
+        modified_data: dict[str, Any] = {}
         for mw in self._middlewares:
             logger.debug("中间件 %s.%s", mw.name, hook)
             result: MiddlewareResult = await getattr(mw, hook)(ctx)
+            if result.action == MiddlewareAction.MODIFY:
+                # MODIFY 已由中间件写回 ctx；继续执行后续中间件，让组合链完整生效。
+                modified_data.update(result.data)
+                continue
             if result.action != MiddlewareAction.CONTINUE:
                 logger.info("中间件 %s 阻断: action=%s", mw.name, result.action)
                 return result
+        if modified_data:
+            return MiddlewareResult(action=MiddlewareAction.MODIFY, data=modified_data)
         return MiddlewareResult(action=MiddlewareAction.CONTINUE)
 
 

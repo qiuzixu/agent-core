@@ -37,4 +37,3 @@ class CoordinationBusyError(MultiAgentError):
 
 class CoordinationLeaseLostError(MultiAgentError):
     """执行过程中失去协调实例租约。"""
-

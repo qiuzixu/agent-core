@@ -69,12 +69,15 @@ class InMemoryVectorStore(VectorStore):
         access: AccessContext | None = None,
     ) -> int:
         self._check_required_access(access)
+        existing = [self._records[record_id] for record_id in record_ids if record_id in self._records]
+        # 先完成整批权限校验，避免中途失败时前面的记录已经被删除。
+        for record in existing:
+            self._check_record_access(record, access)
         deleted = 0
         for record_id in record_ids:
             record = self._records.get(record_id)
             if record is None:
                 continue
-            self._check_record_access(record, access)
             del self._records[record_id]
             deleted += 1
         return deleted

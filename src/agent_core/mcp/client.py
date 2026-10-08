@@ -7,6 +7,7 @@ Core 提供标准 MCP 会话管理和工具调用，不包含任何 Cesium、航
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from collections.abc import Mapping
 from contextlib import AsyncExitStack
@@ -16,6 +17,19 @@ from typing import Protocol, cast
 from agent_core.mcp.errors import McpConnectionError, McpTimeoutError, McpToolError
 
 JsonObject = dict[str, object]
+_INHERITED_ENV_KEYS = frozenset(
+    {
+        "COMSPEC",
+        "HOME",
+        "LANG",
+        "PATH",
+        "PATHEXT",
+        "SYSTEMROOT",
+        "TEMP",
+        "TMP",
+        "USERPROFILE",
+    }
+)
 
 
 class McpToolCaller(Protocol):
@@ -99,9 +113,18 @@ class McpToolClient:
             message = self._text_content(result.content) or "服务返回 isError=true"
             raise McpToolError(f"MCP 工具 {name} 失败：{message}")
         structured = result.structuredContent
-        if not isinstance(structured, dict):
-            raise McpToolError(f"MCP 工具 {name} 未返回 structuredContent 对象")
-        return cast(JsonObject, structured)
+        if isinstance(structured, dict):
+            return cast(JsonObject, structured)
+        text = self._text_content(result.content)
+        if not text:
+            raise McpToolError(f"MCP 工具 {name} 未返回可读取的内容")
+        try:
+            decoded = json.loads(text)
+        except json.JSONDecodeError:
+            return {"content": text}
+        if isinstance(decoded, dict):
+            return cast(JsonObject, decoded)
+        return {"content": decoded}
 
     async def aclose(self) -> None:
         """关闭 MCP 会话及其 stdio 子进程。"""
@@ -144,7 +167,11 @@ class McpToolClient:
             params = StdioServerParameters(
                 command=self._command,
                 args=[str(self._entrypoint)],
-                env={**os.environ, **self._env},
+                # 只继承启动子进程必需的系统变量，避免把模型密钥等无关秘密透传给 MCP。
+                env={
+                    **{key: value for key, value in os.environ.items() if key.upper() in _INHERITED_ENV_KEYS},
+                    **self._env,
+                },
             )
             async with asyncio.timeout(self._timeout_seconds):
                 read, write = await stack.enter_async_context(stdio_client(params))

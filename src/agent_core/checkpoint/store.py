@@ -11,12 +11,38 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import os
+import tempfile
+import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
 from agent_core.errors import CheckpointError
 
 logger = logging.getLogger(__name__)
+
+
+def _atomic_write_json(file_path: Path, value: Any) -> None:
+    """在目标目录写临时文件并原子替换，避免崩溃留下截断 JSON。"""
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=file_path.parent,
+            prefix=f".{file_path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temporary:
+            temporary_path = Path(temporary.name)
+            json.dump(value, temporary, ensure_ascii=False, indent=2)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+        os.replace(temporary_path, file_path)
+    finally:
+        if temporary_path is not None and temporary_path.exists():
+            temporary_path.unlink(missing_ok=True)
 
 
 class Checkpointer(Protocol):
@@ -78,9 +104,9 @@ class MemoryCheckpointer:
             状态字典，如果不存在则返回 None。
         """
         state = self._storage.get(thread_id)
-        if state:
+        if state is not None:
             logger.debug("Loaded checkpoint for thread %r (keys: %d)", thread_id, len(state))
-        return copy.deepcopy(state) if state else None
+        return copy.deepcopy(state) if state is not None else None
 
     async def delete(self, thread_id: str) -> None:
         """删除会话状态。
@@ -133,8 +159,7 @@ class FileCheckpointer:
         del metadata
         file_path = self._get_file_path(thread_id)
         try:
-            with file_path.open("w", encoding="utf-8") as f:
-                json.dump(state, f, ensure_ascii=False, indent=2)
+            _atomic_write_json(file_path, state)
             logger.debug("Saved checkpoint for thread %r to %s", thread_id, file_path)
         except Exception as exc:
             raise CheckpointError(f"Failed to save checkpoint for thread {thread_id!r}: {exc}") from exc
@@ -281,12 +306,9 @@ class TimeTravelCheckpointer:
         Returns:
             版本 ID。
         """
-        import datetime
-        import uuid
-
         # 创建版本
-        version_id = str(uuid.uuid4())[:8]
-        timestamp = datetime.datetime.now().isoformat()
+        version_id = str(uuid.uuid4())
+        timestamp = datetime.now(UTC).isoformat()
 
         version = CheckpointVersion(
             version_id=version_id,
@@ -299,11 +321,20 @@ class TimeTravelCheckpointer:
         if thread_id not in self._versions:
             self._versions[thread_id] = []
 
+        previous_index = self._current_version.get(thread_id)
         self._versions[thread_id].append(version)
         self._current_version[thread_id] = len(self._versions[thread_id]) - 1
 
         # 持久化到文件
-        await self._persist_versions(thread_id)
+        try:
+            await self._persist_versions(thread_id)
+        except Exception:
+            self._versions[thread_id].pop()
+            if previous_index is None:
+                self._current_version.pop(thread_id, None)
+            else:
+                self._current_version[thread_id] = previous_index
+            raise
 
         logger.info(
             "Saved checkpoint version %s for thread %r (total versions: %d)",
@@ -488,7 +519,7 @@ class TimeTravelCheckpointer:
         state1 = await self.load(thread_id, version_id_1)
         state2 = await self.load(thread_id, version_id_2)
 
-        if not state1 or not state2:
+        if state1 is None or state2 is None:
             return {"error": "One or both versions not found"}
 
         # 简单对比（实际项目可以使用更复杂的 diff 算法）
@@ -519,10 +550,9 @@ class TimeTravelCheckpointer:
         }
 
         try:
-            with file_path.open("w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+            _atomic_write_json(file_path, data)
         except Exception as exc:
-            logger.error("Failed to persist versions: %s", exc)
+            raise CheckpointError(f"持久化会话 {thread_id!r} 的 checkpoint 版本失败：{exc}") from exc
 
     async def _load_versions_from_file(self, thread_id: str) -> None:
         """从文件加载版本列表。"""
@@ -543,4 +573,4 @@ class TimeTravelCheckpointer:
             self._versions[thread_id] = [CheckpointVersion.from_dict(v) for v in data.get("versions", [])]
             self._current_version[thread_id] = data.get("current_version", 0)
         except Exception as exc:
-            logger.error("Failed to load versions from file: %s", exc)
+            raise CheckpointError(f"加载会话 {thread_id!r} 的 checkpoint 版本失败：{exc}") from exc

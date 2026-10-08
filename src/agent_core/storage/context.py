@@ -49,10 +49,10 @@ class ContextStore:
         if self._loaded:
             return
         if self._path and self._path.exists():
-            try:
-                self._data = json.loads(self._path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                self._data = {}
+            loaded = json.loads(self._path.read_text(encoding="utf-8"))
+            if not isinstance(loaded, dict):
+                raise ValueError(f"上下文文件根节点必须是对象：{self._path}")
+            self._data = loaded
         self._loaded = True
 
     # 刷新上下文数据到文件
@@ -103,6 +103,7 @@ class ContextStore:
         *,
         access: AccessContext | None = None,
     ) -> dict[str, Any]:
+        self._validate_values(values)
         async with self._lock:
             await self._ensure_loaded()
             current = self._data.setdefault(thread_id, {})
@@ -112,6 +113,11 @@ class ContextStore:
             current.update(copy.deepcopy(values))
             await self._flush()
             return copy.deepcopy(current)
+
+    @staticmethod
+    def _validate_values(values: dict[str, Any]) -> None:
+        if "_access" in values:
+            raise ValueError("_access 是存储层保留字段，不能通过上下文更新修改")
 
     # 清除上下文数据
     async def clear(
@@ -211,11 +217,18 @@ class SqliteContextStore(ContextStore):
         *,
         access: AccessContext | None = None,
     ) -> dict[str, Any]:
-        current = await self.get(thread_id, access=access)
-        if access and "_access" not in current:
-            current["_access"] = access.to_dict()
-        current.update(copy.deepcopy(values))
+        self._validate_values(values)
         with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT data FROM agent_context WHERE thread_id = ?",
+                (thread_id,),
+            ).fetchone()
+            current = json.loads(row[0]) if row else {}
+            self._check_scope(current, access)
+            if access and "_access" not in current:
+                current["_access"] = access.to_dict()
+            current.update(copy.deepcopy(values))
             conn.execute(
                 """INSERT INTO agent_context(thread_id, data) VALUES (?, ?)
                 ON CONFLICT(thread_id) DO UPDATE SET data=excluded.data,
@@ -302,20 +315,24 @@ class PostgresContextStore(ContextStore):
         access: AccessContext | None = None,
     ) -> dict[str, Any]:
         self._check()
-        current = await self.get(thread_id, access=access)
-        if access and "_access" not in current:
-            values = {"_access": access.to_dict(), **values}
+        self._validate_values(values)
+        candidate = copy.deepcopy(values)
+        if access:
+            candidate = {"_access": access.to_dict(), **candidate}
         async with self._pool.acquire() as conn:
-            # 在数据库内合并顶层字段，避免读取后覆盖其他连接刚写入的字段。
-            row = await conn.fetchrow(
-                """INSERT INTO agent_context(thread_id,data) VALUES ($1,$2::jsonb)
-                ON CONFLICT(thread_id) DO UPDATE SET
-                data=agent_context.data || EXCLUDED.data, updated_at=NOW()
-                RETURNING data""",
-                thread_id,
-                json.dumps(values, ensure_ascii=False),
-            )
-        return json.loads(row["data"]) if isinstance(row["data"], str) else dict(row["data"])
+            async with conn.transaction():
+                # 冲突更新永远保留已有 _access；首次并发认领后再校验返回归属。
+                row = await conn.fetchrow(
+                    """INSERT INTO agent_context(thread_id,data) VALUES ($1,$2::jsonb)
+                    ON CONFLICT(thread_id) DO UPDATE SET
+                    data=agent_context.data || (EXCLUDED.data - '_access'), updated_at=NOW()
+                    RETURNING data""",
+                    thread_id,
+                    json.dumps(candidate, ensure_ascii=False),
+                )
+                result = json.loads(row["data"]) if isinstance(row["data"], str) else dict(row["data"])
+                self._check_scope(result, access)
+        return result
 
     async def clear(
         self,

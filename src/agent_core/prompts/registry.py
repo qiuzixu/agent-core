@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -178,32 +180,51 @@ class PromptRegistry:
             for name, entry in self._entries.items()
         }
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=self._path.parent,
+                prefix=f".{self._path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as temporary:
+                temporary_path = Path(temporary.name)
+                json.dump(data, temporary, ensure_ascii=False, indent=2)
+                temporary.flush()
+                os.fsync(temporary.fileno())
+            os.replace(temporary_path, self._path)
+        finally:
+            if temporary_path is not None and temporary_path.exists():
+                temporary_path.unlink(missing_ok=True)
 
     def _load(self) -> None:
         if not self._path.exists():
             return
-        try:
-            data = json.loads(self._path.read_text(encoding="utf-8"))
-            for name, raw in data.items():
-                versions = [
-                    PromptVersion(
-                        version=item["version"],
-                        content=item["content"],
-                        description=item.get("description", ""),
-                        defaults=dict(item.get("defaults") or {}),
-                        created_at=item.get("created_at", ""),
-                    )
-                    for item in raw["versions"]
-                ]
-                self._entries[name] = PromptEntry(
-                    name=raw.get("name", name),
-                    current_version=raw["current_version"],
-                    versions=versions,
+        data = json.loads(self._path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError(f"提示词注册表根节点必须是对象：{self._path}")
+        loaded: dict[str, PromptEntry] = {}
+        for name, raw in data.items():
+            versions = [
+                PromptVersion(
+                    version=item["version"],
+                    content=item["content"],
+                    description=item.get("description", ""),
+                    defaults=dict(item.get("defaults") or {}),
+                    created_at=item.get("created_at", ""),
                 )
-            logger.info("[Prompt] 从文件加载 %d 个提示词：%s", len(self._entries), self._path)
-        except Exception as exc:
-            logger.error("[Prompt] 加载失败：%s", exc)
+                for item in raw["versions"]
+            ]
+            loaded[name] = PromptEntry(
+                name=raw.get("name", name),
+                current_version=raw["current_version"],
+                versions=versions,
+            )
+        # 全量解析成功后再替换内存状态，损坏文件不会变成“空注册表”。
+        self._entries = loaded
+        logger.info("[Prompt] 从文件加载 %d 个提示词：%s", len(self._entries), self._path)
 
     def _get_entry(self, name: str) -> PromptEntry:
         entry = self._entries.get(name)

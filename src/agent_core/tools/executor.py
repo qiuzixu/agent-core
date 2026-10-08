@@ -208,7 +208,17 @@ class ToolExecutor:
                         error_kind="approval",
                     )
                 else:
-                    approved = await self._approval_callback(spec, arguments)
+                    try:
+                        approved = await self._approval_callback(spec, arguments)
+                    except Exception as exc:
+                        logger.warning("工具 %r 审批回调失败：%s", tool_name, exc, exc_info=True)
+                        return ToolResult(
+                            tool_name=tool_name,
+                            success=False,
+                            error=f"审批回调失败：{exc}",
+                            error_kind="approval",
+                            retryable=True,
+                        )
                     if not approved:
                         return ToolResult(
                             tool_name=tool_name,
@@ -262,6 +272,8 @@ class ToolExecutor:
             return f"缺少必填参数：{', '.join(str(item) for item in missing)}"
         properties = schema.get("properties", {})
         for name, value in arguments.items():
+            if name not in properties and schema.get("additionalProperties") is False:
+                return f"参数 {name} 未在工具 schema 中声明"
             definition = properties.get(name, {})
             expected = definition.get("type")
             if expected == "string" and not isinstance(value, str):
@@ -270,6 +282,12 @@ class ToolExecutor:
                 return f"参数 {name} 必须是数字"
             if expected == "integer" and (not isinstance(value, int) or isinstance(value, bool)):
                 return f"参数 {name} 必须是整数"
+            if expected == "boolean" and not isinstance(value, bool):
+                return f"参数 {name} 必须是布尔值"
+            if expected == "array" and not isinstance(value, list):
+                return f"参数 {name} 必须是数组"
+            if expected == "object" and not isinstance(value, dict):
+                return f"参数 {name} 必须是对象"
         return None
 
     async def execute_batch(

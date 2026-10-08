@@ -48,4 +48,3 @@ print(execution.output)
 具体应用可以用 `RuntimeAgentInvoker` 包装现有 `AgentRuntime`。`WorkflowCoordinationStore` 支持复用
 Core 的内存、SQLite、PostgreSQL Workflow Store；多 Worker 部署时再注入对应的 `RunLeaseStore`。
 每次路由、调用和 handoff 都会落 checkpoint，恢复时使用相同任务 ID 和幂等键。
-

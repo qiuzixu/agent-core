@@ -53,4 +53,3 @@ ignore = ["RUF001", "RUF002", "RUF003"]
 python_version = "3.13"
 strict = true
 files = ["src"]
-

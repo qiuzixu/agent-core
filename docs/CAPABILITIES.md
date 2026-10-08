@@ -16,7 +16,7 @@ Agent Core 是一套零外部平台绑定的手写 Agent 运行时内核。
 | --- | --- | --- |
 | `runtime` | ReAct Agent Loop、同步/流式运行、后台 Run、取消、checkpoint 恢复和 Worker 租约 | `ReActAgent`、`AgentRuntime` |
 | `protocol` | 消息、运行上下文、运行事件、审批、工具结果和能力声明 | `Message`、`RunContext`、`RunEvent`、`ApprovalRecord`、`ToolResult`、`AgentCapabilities` |
-| `model` | 模型协议、Provider 注册表、统一工厂、结构化输出、限流、并发、超时、熔断和 fallback | `ModelAdapter`、`StructuredOutputSpec`、`GovernedModelAdapter` |
+| `model` | 模型协议、Provider 注册表、统一工厂、结构化输出、限流、并发、默认超时、按 scope 熔断和 fallback | `ModelAdapter`、`StructuredOutputSpec`、`GovernedModelAdapter` |
 | `skills` | Skill 清单加载、严格校验、注册、按需激活及 Function/MCP 绑定 | `SkillLoader`、`SkillRegistry`、`SkillSpec`、`SkillActivation` |
 | `tools` | 工具注册、Schema、参数基础校验、超时、单个和批量并发执行 | `ToolRegistry`、`ToolExecutor`、`ToolSpec` |
 | `mcp` | MCP 工具发现和调用、超时及统一错误 | `McpToolClient`、`McpToolCaller` |
@@ -26,8 +26,8 @@ Agent Core 是一套零外部平台绑定的手写 Agent 运行时内核。
 | `retrieval` | 检索协议、内存/Chroma/pgvector 存储及环境工厂 | `Embeddings`、`EmbeddingRetriever`、`create_vector_store` |
 | `serialization` | 显式白名单、类型标识、Schema 版本和迁移函数 | `SerializerRegistry`、`SerializedEnvelope` |
 | `compaction` | Token 估算、历史摘要、消息裁剪、工具结果瘦身、spill 和超长恢复 | `CompactionMiddleware`、`TokenLimitMiddleware`、`SpillStore` |
-| `checkpoint` | 内存/文件 checkpoint、历史版本、回滚和时间旅行 | `MemoryCheckpointer`、`FileCheckpointer`、`TimeTravelCheckpointer` |
-| `hitl` | 人工审批请求、等待、批准、拒绝、超时、跨进程决策同步和中间件接入 | `ApprovalQueue`、`HumanInTheLoopMiddleware` |
+| `checkpoint` | 内存/文件 checkpoint、原子文件替换、历史版本、回滚和时间旅行 | `MemoryCheckpointer`、`FileCheckpointer`、`TimeTravelCheckpointer` |
+| `hitl` | 人工审批请求、持久化 deadline、条件状态转换、超时、跨进程决策同步和中间件接入 | `ApprovalQueue`、`HumanInTheLoopMiddleware` |
 | `workflow` | 异步状态机、节点策略、重试、超时、幂等、pending write、恢复和 Mermaid 导出 | `StateMachine`、`NodeExecutionPolicy`、`DurableWorkflowRunner` |
 | `multi-agent` 扩展 | Agent 注册、权限过滤、规则/模型路由、handoff、父子 Run、预算、租约和恢复 | `AgentRegistry`、`SupervisorAgent`、`RuntimeAgentInvoker` |
 | `storage` | 会话、上下文、长期记忆、Run、审批、模型选择和工作流实例持久化 | 各类 `Memory*`、`Sqlite*`、`Postgres*Store` |
@@ -48,6 +48,7 @@ Agent Core 是一套零外部平台绑定的手写 Agent 运行时内核。
 - 普通运行和逐块流式输出；
 - 最大迭代次数和最大工具调用次数保护；
 - 每轮运行事件、状态和 checkpoint 更新；
+- 并发工具每完成一个就保存阶段进度，恢复时只继续尚未完成的工具；
 - 工具审批、中间件停止和异常状态收敛；
 - 上下文超长后压缩并重试模型调用。
 
@@ -205,7 +206,8 @@ Session Store 在调用方传入 `AccessContext` 时，会在首次写入时绑�
 
 ## 9. Checkpoint 和工作流
 
-Checkpoint 支持内存和文件后端。`TimeTravelCheckpointer` 在基础 Checkpointer 上增加版本历史、
+Checkpoint 支持内存和文件后端。文件后端通过同目录临时文件、`fsync` 和原子替换避免留下截断
+JSON；持久化失败会显式报错。`TimeTravelCheckpointer` 在基础 Checkpointer 上增加版本历史、
 指定版本读取、持久化回滚指针、整条 thread 删除和时间旅行能力。
 
 通用工作流不依赖外部编排框架，支持：
@@ -222,6 +224,7 @@ Checkpoint 支持内存和文件后端。`TimeTravelCheckpointer` 在基础 Chec
 - `WorkflowPause` 主动中断；
 - 节点执行前持久化 `workflow_step_pending`，完成后保存状态和下一节点；
 - `DurableWorkflowRunner` 在节点边界保存状态和下一节点；
+- Workflow Store 使用版本检查和条件更新拒绝并发覆盖；
 - 进程重启后从最后保存的下一节点恢复，避免重复执行已经完成的节点；
 - 默认在失败后重新抛出异常，也可设置 `raise_on_failure=False` 返回已经持久化的失败执行实例；
 - `describe()` 输出结构化图定义，`to_mermaid()` 导出 Mermaid 流程图。
@@ -254,6 +257,8 @@ Core 提供两层审批能力：
 审批状态、请求参数、用户、租户、创建时间和过期时间可写入 Runtime Store。
 等待端会轮询持久化状态，因此另一个进程提交的审批结果也能被当前执行感知；审批服务重启后仍可
 按审批 ID 加载并处理原请求。
+批准、拒绝和过期都通过 `pending -> terminal` 条件状态转换提交；deadline 到期时不会覆盖已经由
+其他进程提交的批准或拒绝结果。
 `ApprovalQueue(require_access=True)` 会要求审批创建时绑定用户和租户，并要求查询、批准和拒绝操作
 携带 `AccessContext`。`DurableWorkflowRunner` 也提供相同的严格模式。
 Web 弹窗、消息通知和审批人选择属于上层应用职责。
@@ -273,6 +278,7 @@ Web 弹窗、消息通知和审批人选择属于上层应用职责。
 
 推荐用途：内存用于单元测试和临时运行，SQLite 用于本地开发，PostgreSQL 用于生产环境。
 Runtime Store 已包含版本号、乐观并发冲突、幂等键、Thread 所属用户/租户和陈旧 Run 标记能力。
+Workflow Store 同样使用版本号和条件更新拒绝执行实例的并发覆盖。
 `RunLeaseStore` 额外提供 Worker 认领、续租、释放和过期扫描；租约与 Run 状态分开保存，便于接入
 独立任务队列或 Worker 服务。
 

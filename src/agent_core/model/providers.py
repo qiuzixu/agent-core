@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import uuid
@@ -252,6 +253,14 @@ class OpenAIProvider:
         # 解析工具调用
         if message.tool_calls:
             for tc in message.tool_calls:  # 遍历工具调用
+                try:
+                    arguments = json.loads(tc.function.arguments)
+                except (json.JSONDecodeError, TypeError) as exc:
+                    raise ModelInvocationError(
+                        f"OpenAI 返回的工具 {tc.function.name!r} 参数不是有效 JSON：{exc}"
+                    ) from exc
+                if not isinstance(arguments, dict):
+                    raise ModelInvocationError(f"OpenAI 返回的工具 {tc.function.name!r} 参数必须是 JSON 对象")
                 tool_calls.append(
                     {
                         "id": tc.id,  # 工具调用 ID
@@ -259,7 +268,7 @@ class OpenAIProvider:
                         # 工具名称
                         "name": tc.function.name,
                         # 工具参数
-                        "args": json.loads(tc.function.arguments),
+                        "args": arguments,
                     }
                 )
 
@@ -475,8 +484,12 @@ class OpenAIProvider:
                 acc = tool_call_accum[idx]
                 try:
                     args = json.loads(acc["args"]) if acc["args"] else {}
-                except json.JSONDecodeError:
-                    args = {}
+                except json.JSONDecodeError as exc:
+                    raise ModelInvocationError(
+                        f"OpenAI 流式工具 {acc['name']!r} 参数不是有效 JSON：{exc}"
+                    ) from exc
+                if not isinstance(args, dict):
+                    raise ModelInvocationError(f"OpenAI 流式工具 {acc['name']!r} 参数必须是 JSON 对象")
                 # 构建工具调用记录
                 tool_calls.append(
                     {
@@ -524,7 +537,8 @@ class OpenAIProvider:
         Raises:
             ModelInvocationError: LLM 调用失败或 JSON 解析失败。
         """
-        enhanced_messages = messages.copy()
+        # Message 是可变对象，浅拷贝会把 JSON 指令永久追加到调用方的 system 消息。
+        enhanced_messages = copy.deepcopy(messages)
         if enhanced_messages and enhanced_messages[0].role == "system":
             enhanced_messages[0].content += "\n\n**重要**：你必须返回有效的 JSON 格式，不要包含任何其他文本。"
 
@@ -549,6 +563,15 @@ class OpenAIProvider:
 
         if not isinstance(result, dict):
             raise ModelInvocationError(f"LLM output is not a JSON object: {type(result)}")
+
+        if schema is not None:
+            from agent_core.errors import ModelOutputValidationError
+            from agent_core.model.structured import validate_json_schema
+
+            try:
+                validate_json_schema(result, schema)
+            except ModelOutputValidationError as exc:
+                raise ModelInvocationError(f"LLM JSON 输出不符合 schema：{exc}") from exc
 
         return {str(key): value for key, value in result.items()}
 
@@ -633,7 +656,7 @@ class AnthropicProvider:
         Returns:
             (system_prompt, messages_list)
         """
-        system_prompt: str | None = None
+        system_parts: list[str] = []
         anthropic_msgs: list[dict[str, Any]] = []
 
         def append_user_content(content: str | list[dict[str, Any]]) -> None:
@@ -652,7 +675,8 @@ class AnthropicProvider:
 
         for msg in messages:
             if msg.role == "system":
-                system_prompt = msg.content
+                if msg.content:
+                    system_parts.append(msg.content)
             elif msg.role == "user":
                 append_user_content(msg.content)
             elif msg.role == "assistant":
@@ -682,7 +706,7 @@ class AnthropicProvider:
                     ]
                 )
 
-        return system_prompt, anthropic_msgs
+        return "\n\n".join(system_parts) or None, anthropic_msgs
 
     # ──────────────────────────────────────────────
     # 转换为 Anthropic API 格式工具定义
@@ -1074,10 +1098,9 @@ class GeminiProvider:
                 if message.content:
                     yield StreamChunk(text=message.content)
                 if message.tool_calls:
-                    for call in message.tool_calls:
-                        # Gemini 流式响应可能拆分同一个函数调用；按名称合并参数，
-                        # 避免上层 ReAct 循环重复执行同一个工具。
-                        key = call["name"] or call["id"]
+                    for call_index, call in enumerate(message.tool_calls):
+                        # 同一轮允许多次调用同名函数，按位置而不是名称归并增量。
+                        key = f"{call_index}:{call['name']}"
                         current = tool_call_map.setdefault(
                             key,
                             {

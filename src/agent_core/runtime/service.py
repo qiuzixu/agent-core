@@ -130,7 +130,7 @@ class AgentRuntime:
                 )
             )
             self._tasks[context.run_id] = task
-            task.add_done_callback(lambda _: self._tasks.pop(context.run_id, None))
+            task.add_done_callback(lambda _: self._cleanup_run(context.run_id))
             return RuntimeRun(context=context, task=task)
 
     async def run(
@@ -205,6 +205,8 @@ class AgentRuntime:
             context = await self.get(thread_id, run_id, access=access)
             if not context.checkpoint:
                 raise ValueError("该 run 没有可恢复的 checkpoint")
+            if context.status in {"completed", "cancelled"}:
+                raise ValueError(f"状态为 {context.status} 的 run 不能恢复")
             self._event_cursors.setdefault(context.run_id, len(context.events))
             await self._claim(context)
             try:
@@ -225,7 +227,7 @@ class AgentRuntime:
                 )
             )
             self._tasks[run_id] = task
-            task.add_done_callback(lambda _: self._tasks.pop(run_id, None))
+            task.add_done_callback(lambda _: self._cleanup_run(run_id))
             return RuntimeRun(context=context, task=task)
 
     async def cancel(
@@ -241,10 +243,7 @@ class AgentRuntime:
         if task is None or task.done():
             return False
         task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+        await asyncio.gather(task, return_exceptions=True)
         context = await self.get(thread_id, run_id, access=access)
         return context.status == "cancelled"
 
@@ -301,6 +300,7 @@ class AgentRuntime:
                 await asyncio.gather(heartbeat, return_exceptions=True)
             await self._release(context)
             await self._persist(context)
+            self._event_cursors.pop(context.run_id, None)
 
     async def recover_expired_runs(self, *, auto_resume: bool = False) -> list[RunContext]:
         """标记租约过期的 Run，并可从 checkpoint 自动恢复。"""
@@ -372,6 +372,9 @@ class AgentRuntime:
                 {execution_task, heartbeat_task},
                 return_when=asyncio.FIRST_COMPLETED,
             )
+            # 两个任务可能在同一轮事件循环同时完成；执行结果优先，避免丢失成功终态。
+            if execution_task in done:
+                return await execution_task
             if heartbeat_task in done:
                 error = heartbeat_task.exception()
                 execution_task.cancel()
@@ -488,3 +491,8 @@ class AgentRuntime:
                     # 事件订阅者故障不能覆盖 Agent 的最终结果。
                     logger.exception("发布 Agent 运行事件失败：%s", event.event_type)
         self._event_cursors[context.run_id] = len(context.events)
+
+    def _cleanup_run(self, run_id: str) -> None:
+        """后台任务完全结束后释放进程内句柄和事件游标。"""
+        self._tasks.pop(run_id, None)
+        self._event_cursors.pop(run_id, None)

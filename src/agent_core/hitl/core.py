@@ -9,6 +9,7 @@ import asyncio
 import logging
 import uuid
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from enum import Enum
 from typing import Any, Literal
 
@@ -45,6 +46,7 @@ class ApprovalRequest:
     tenant_id: str | None = None
     status: ApprovalStatus = ApprovalStatus.PENDING
     reason: str | None = None
+    expires_at: str | None = None
     _event: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
 
     @property
@@ -71,6 +73,7 @@ class ApprovalRequest:
             tenant_id=self.tenant_id,
             status=status_by_request[self.status],
             reason=self.reason,
+            expires_at=self.expires_at,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -84,6 +87,7 @@ class ApprovalRequest:
             "tool_args": self.tool_args,
             "status": self.status.value,
             "reason": self.reason,
+            "expires_at": self.expires_at,
         }
 
     @classmethod
@@ -104,6 +108,7 @@ class ApprovalRequest:
                 "expired": ApprovalStatus.TIMEOUT,
             }.get(record.status, ApprovalStatus.PENDING),
             reason=record.reason,
+            expires_at=record.expires_at,
         )
         if request.status != ApprovalStatus.PENDING:
             request._event.set()
@@ -140,6 +145,7 @@ class ApprovalQueue:
         run_id: str = "",
         user_id: str | None = None,
         tenant_id: str | None = None,
+        timeout_seconds: float | None = None,
     ) -> ApprovalRequest:
         """创建仅驻留当前进程的审批请求。
 
@@ -157,6 +163,7 @@ class ApprovalQueue:
             run_id=run_id,
             user_id=user_id,
             tenant_id=tenant_id,
+            expires_at=self._expires_at(timeout_seconds),
         )
         self._requests[request.request_id] = request
         return request
@@ -170,6 +177,7 @@ class ApprovalQueue:
         run_id: str = "",
         user_id: str | None = None,
         tenant_id: str | None = None,
+        timeout_seconds: float | None = None,
     ) -> ApprovalRequest:
         """创建请求并等待持久化完成，适合生产执行路径。"""
         self._require_owner(user_id, tenant_id)
@@ -181,6 +189,7 @@ class ApprovalQueue:
             run_id=run_id,
             user_id=user_id,
             tenant_id=tenant_id,
+            expires_at=self._expires_at(timeout_seconds),
         )
         self._requests[request.request_id] = request
         if self._approval_store:
@@ -192,8 +201,20 @@ class ApprovalQueue:
         request: ApprovalRequest,
         timeout_seconds: float = 300.0,
     ) -> ApprovalStatus:
+        if timeout_seconds <= 0:
+            raise ValueError("timeout_seconds 必须大于 0")
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout_seconds
+        if request.expires_at is None:
+            request.expires_at = self._expires_at(timeout_seconds)
+        remaining_lifetime = self._remaining_seconds(request.expires_at)
+        deadline = loop.time() + min(timeout_seconds, max(0.0, remaining_lifetime))
+        if self._approval_store is not None:
+            # pending -> pending 也是条件更新，用于持久化 deadline，不能覆盖已经完成的决定。
+            updated = await self._transition(request.to_record())
+            if not updated:
+                stored = await self._approval_store.load_approval(request.request_id)
+                if stored is not None:
+                    self._apply_record(request, stored)
         try:
             while request.status == ApprovalStatus.PENDING:
                 if self._approval_store is not None:
@@ -216,11 +237,23 @@ class ApprovalQueue:
                     continue
             if request.status != ApprovalStatus.PENDING:
                 return request.status
-            request.status = ApprovalStatus.TIMEOUT
+            if self._approval_store is None:
+                request.status = ApprovalStatus.TIMEOUT
+                return request.status
+
+            expired = request.to_record()
+            expired.status = "expired"
+            if await self._transition(expired):
+                request.status = ApprovalStatus.TIMEOUT
+                request._event.set()
+                return request.status
+
+            # 决定可能刚好在 deadline 到达时提交；以持久化终态为准。
+            stored = await self._approval_store.load_approval(request.request_id)
+            if stored is not None:
+                self._apply_record(request, stored)
             return request.status
         finally:
-            if self._approval_store:
-                await self._approval_store.save_approval(request.to_record())
             self._requests.pop(request.request_id, None)
 
     async def approve(
@@ -232,10 +265,13 @@ class ApprovalQueue:
         request = await self.load_request(request_id, access=access)
         if request is None or request.status != ApprovalStatus.PENDING:
             return False
+        if self._approval_store:
+            approved = request.to_record()
+            approved.status = "approved"
+            if not await self._transition(approved):
+                return False
         request.status = ApprovalStatus.APPROVED
         request._event.set()
-        if self._approval_store:
-            await self._approval_store.save_approval(request.to_record())
         return True
 
     async def reject(
@@ -248,11 +284,15 @@ class ApprovalQueue:
         request = await self.load_request(request_id, access=access)
         if request is None or request.status != ApprovalStatus.PENDING:
             return False
+        if self._approval_store:
+            rejected = request.to_record()
+            rejected.status = "rejected"
+            rejected.reason = reason
+            if not await self._transition(rejected):
+                return False
         request.status = ApprovalStatus.REJECTED
         request.reason = reason
         request._event.set()
-        if self._approval_store:
-            await self._approval_store.save_approval(request.to_record())
         return True
 
     def list_pending(
@@ -301,9 +341,67 @@ class ApprovalQueue:
         if record is None:
             return None
         request = ApprovalRequest.from_record(record)
+        if request.status == ApprovalStatus.PENDING and self._record_expired(record):
+            expired = request.to_record()
+            expired.status = "expired"
+            if await self._transition(expired):
+                request.status = ApprovalStatus.TIMEOUT
+                request._event.set()
+            else:
+                latest = await self._approval_store.load_approval(request_id)
+                if latest is not None:
+                    self._apply_record(request, latest)
         self._check_access(request, access)
         self._requests[request_id] = request
         return request
+
+    async def _transition(self, record: ApprovalRecord) -> bool:
+        """执行审批 CAS；兼容尚未升级条件更新接口的外部 Store。"""
+        if self._approval_store is None:
+            return False
+        transition = getattr(self._approval_store, "transition_approval", None)
+        if transition is not None:
+            return bool(await transition(record, expected_status="pending"))
+        current = await self._approval_store.load_approval(record.approval_id)
+        if current is None or current.status != "pending":
+            return False
+        await self._approval_store.save_approval(record)
+        return True
+
+    @staticmethod
+    def _apply_record(request: ApprovalRequest, record: ApprovalRecord) -> None:
+        restored = ApprovalRequest.from_record(record)
+        request.status = restored.status
+        request.reason = restored.reason
+        request.expires_at = restored.expires_at
+        if request.status != ApprovalStatus.PENDING:
+            request._event.set()
+
+    @staticmethod
+    def _record_expired(record: ApprovalRecord) -> bool:
+        if not record.expires_at:
+            return False
+        expires_at = datetime.fromisoformat(record.expires_at.replace("Z", "+00:00"))
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=UTC)
+        return expires_at <= datetime.now(UTC)
+
+    @staticmethod
+    def _expires_at(timeout_seconds: float | None) -> str | None:
+        if timeout_seconds is None:
+            return None
+        if timeout_seconds <= 0:
+            raise ValueError("timeout_seconds 必须大于 0")
+        return (datetime.now(UTC) + timedelta(seconds=timeout_seconds)).isoformat()
+
+    @staticmethod
+    def _remaining_seconds(expires_at: str | None) -> float:
+        if expires_at is None:
+            return float("inf")
+        parsed = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return (parsed - datetime.now(UTC)).total_seconds()
 
     def _check_access(
         self,
@@ -372,6 +470,7 @@ class HumanInTheLoopMiddleware(Middleware):
             run_id=str(ctx.metadata.get("run_id") or ""),
             user_id=ctx.metadata.get("user_id"),
             tenant_id=ctx.metadata.get("tenant_id"),
+            timeout_seconds=self._timeout,
         )
         ctx.metadata["approval_request_id"] = request.request_id
         status = await self._queue.wait_for_decision(request, timeout_seconds=self._timeout)

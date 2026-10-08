@@ -46,6 +46,7 @@ async def approve(tool_name: str, arguments: dict) -> bool:
         tool_args=arguments,
         user_id="user-1",
         tenant_id="tenant-1",
+        timeout_seconds=300,
     )
     decision = await approval_queue.wait_for_decision(request, timeout_seconds=300)
     return decision is ApprovalStatus.APPROVED
@@ -62,7 +63,9 @@ hitl = HumanInTheLoopMiddleware(
 
 `ApprovalQueue` 可接入 `ApprovalStore`。配置存储后必须使用异步
 `create_request_async()`，保证返回时初始记录已经落库。等待方会轮询共享存储，因此批准动作
-可以来自另一个 API 进程。`approve()` 和 `reject()` 接受 `AccessContext` 做归属校验。
+可以来自另一个 API 进程。审批 deadline 会一同持久化；批准、拒绝和过期通过条件状态转换竞争，
+只有第一个 `pending -> terminal` 转换成功，超时不会覆盖已经提交的决定。
+`approve()` 和 `reject()` 接受 `AccessContext` 做归属校验。
 
 没有回调时，`HumanInTheLoopMiddleware` 返回 `STOP` 和 `approval_needed` 数据。上层应用负责
 把 Run 标记为可恢复状态，并在用户决定后触发恢复。

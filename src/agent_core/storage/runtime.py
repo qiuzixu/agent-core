@@ -8,6 +8,7 @@ RunContext 等领域对象不绑定具体数据库。
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
 import sqlite3
@@ -83,6 +84,14 @@ class RuntimeStore(ABC):
     @abstractmethod
     async def load_approval(self, approval_id: str) -> ApprovalRecord | None: ...
 
+    @abstractmethod
+    async def transition_approval(
+        self,
+        approval: ApprovalRecord,
+        *,
+        expected_status: str = "pending",
+    ) -> bool: ...
+
     # ————————————————————————————————————#
     # 运行审批记录加载
     # ————————————————————————————————————#
@@ -127,6 +136,7 @@ class MemoryRuntimeStore(RuntimeStore):
         self._runs: dict[tuple[str, str], dict[str, Any]] = {}
         self._approvals: dict[str, dict[str, Any]] = {}
         self._threads: dict[str, tuple[str, str]] = {}
+        self._lock = asyncio.Lock()
 
     async def save_run(self, context: RunContext) -> None:
         key = (context.thread_id, context.run_id)
@@ -184,10 +194,27 @@ class MemoryRuntimeStore(RuntimeStore):
         return self._threads.get(thread_id)
 
     async def save_approval(self, approval: ApprovalRecord) -> None:
-        self._approvals[approval.approval_id] = copy.deepcopy(approval.to_dict())
+        async with self._lock:
+            current = self._approvals.get(approval.approval_id)
+            if current is not None and current.get("status") != "pending":
+                return
+            self._approvals[approval.approval_id] = copy.deepcopy(approval.to_dict())
 
     async def load_approval(self, approval_id: str) -> ApprovalRecord | None:
         return _approval_from_dict(copy.deepcopy(self._approvals.get(approval_id)))
+
+    async def transition_approval(
+        self,
+        approval: ApprovalRecord,
+        *,
+        expected_status: str = "pending",
+    ) -> bool:
+        async with self._lock:
+            current = self._approvals.get(approval.approval_id)
+            if current is None or current.get("status") != expected_status:
+                return False
+            self._approvals[approval.approval_id] = copy.deepcopy(approval.to_dict())
+            return True
 
 
 # ──────────────────────────────────────────────
@@ -263,9 +290,11 @@ class SqliteRuntimeStore(RuntimeStore):
         for name, definition in {"user_id": "TEXT", "tenant_id": "TEXT"}.items():
             if name not in approval_columns:
                 conn.execute(f"ALTER TABLE agent_approvals ADD COLUMN {name} {definition}")
+        # SQLite 把 NULL 视为互不相等，表达式索引把匿名作用域归一化后才能真正幂等。
+        conn.execute("DROP INDEX IF EXISTS idx_agent_runs_idempotency")
         conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_runs_idempotency "
-            "ON agent_runs(tenant_id, user_id, idempotency_key) "
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_runs_idempotency_scope "
+            "ON agent_runs(COALESCE(tenant_id, ''), COALESCE(user_id, ''), idempotency_key) "
             "WHERE idempotency_key IS NOT NULL"
         )
 
@@ -282,8 +311,8 @@ class SqliteRuntimeStore(RuntimeStore):
             conn.close()
 
     async def save_run(self, context: RunContext) -> None:
-        value = context.to_dict()
         with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
                 "SELECT version FROM agent_runs WHERE thread_id=? AND run_id=?",
                 (context.thread_id, context.run_id),
@@ -291,9 +320,9 @@ class SqliteRuntimeStore(RuntimeStore):
             stored_version = int(row[0]) if row else 0
             if row is not None and stored_version != context.version:
                 raise RuntimeConcurrencyError(f"run {context.run_id} 版本冲突")
-            context.version = stored_version + 1
+            next_version = stored_version + 1
             value = context.to_dict()
-            conn.execute(
+            cursor = conn.execute(
                 """INSERT INTO agent_runs
                 (thread_id, run_id, user_id, tenant_id, parent_run_id, tags,
                  status, version, idempotency_key,
@@ -310,7 +339,8 @@ class SqliteRuntimeStore(RuntimeStore):
                   pending_clarification=excluded.pending_clarification,
                   state=excluded.state, metadata=excluded.metadata,
                   checkpoint=excluded.checkpoint,
-                  events=excluded.events, updated_at=CURRENT_TIMESTAMP""",
+                  events=excluded.events, updated_at=CURRENT_TIMESTAMP
+                WHERE agent_runs.version=?""",
                 (
                     context.thread_id,
                     context.run_id,
@@ -319,7 +349,7 @@ class SqliteRuntimeStore(RuntimeStore):
                     context.parent_run_id,
                     json.dumps(value["tags"], ensure_ascii=False),
                     context.status,
-                    context.version,
+                    next_version,
                     context.idempotency_key,
                     context.iteration,
                     context.tool_calls_used,
@@ -329,8 +359,12 @@ class SqliteRuntimeStore(RuntimeStore):
                     json.dumps(value["metadata"], ensure_ascii=False),
                     json.dumps(value["checkpoint"], ensure_ascii=False),
                     json.dumps(value["events"], ensure_ascii=False),
+                    stored_version,
                 ),
             )
+            if cursor.rowcount != 1:
+                raise RuntimeConcurrencyError(f"run {context.run_id} 保存时发生并发冲突")
+        context.version = next_version
         if context.pending_approval:
             await self.save_approval(context.pending_approval)
 
@@ -445,7 +479,9 @@ class SqliteRuntimeStore(RuntimeStore):
                 (approval_id, thread_id, run_id, user_id, tenant_id, action,
                  arguments, status, reason, created_at, expires_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(approval_id) DO UPDATE SET status=excluded.status, reason=excluded.reason""",
+                ON CONFLICT(approval_id) DO UPDATE SET
+                    status=excluded.status, reason=excluded.reason, expires_at=excluded.expires_at
+                WHERE agent_approvals.status='pending'""",
                 (
                     approval.approval_id,
                     approval.thread_id,
@@ -460,6 +496,27 @@ class SqliteRuntimeStore(RuntimeStore):
                     approval.expires_at,
                 ),
             )
+
+    async def transition_approval(
+        self,
+        approval: ApprovalRecord,
+        *,
+        expected_status: str = "pending",
+    ) -> bool:
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """UPDATE agent_approvals
+                SET status=?, reason=?, expires_at=?
+                WHERE approval_id=? AND status=?""",
+                (
+                    approval.status,
+                    approval.reason,
+                    approval.expires_at,
+                    approval.approval_id,
+                    expected_status,
+                ),
+            )
+        return cursor.rowcount == 1
 
     async def load_approval(self, approval_id: str) -> ApprovalRecord | None:
         with self._connect() as conn:
@@ -545,8 +602,11 @@ class PostgresRuntimeStore(RuntimeStore):
                 ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS checkpoint JSONB NOT NULL DEFAULT '{}'::jsonb;
                 ALTER TABLE agent_approvals ADD COLUMN IF NOT EXISTS user_id TEXT;
                 ALTER TABLE agent_approvals ADD COLUMN IF NOT EXISTS tenant_id TEXT;
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_runs_idempotency
-                ON agent_runs(tenant_id, user_id, idempotency_key)
+                DROP INDEX IF EXISTS idx_agent_runs_idempotency;
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_runs_idempotency_scope
+                ON agent_runs(
+                    COALESCE(tenant_id, ''), COALESCE(user_id, ''), idempotency_key
+                )
                 WHERE idempotency_key IS NOT NULL;
             """)
 
@@ -590,7 +650,7 @@ class PostgresRuntimeStore(RuntimeStore):
                     ):
                         raise RuntimeConcurrencyError(f"幂等键已被 run {duplicate['run_id']} 使用")
 
-                context.version = (stored_version or 0) + 1
+                next_version = (stored_version or 0) + 1
                 value = context.to_dict()
                 command = await conn.execute(
                     """INSERT INTO agent_runs
@@ -617,7 +677,7 @@ class PostgresRuntimeStore(RuntimeStore):
                     context.parent_run_id,
                     json.dumps(value["tags"], ensure_ascii=False),
                     context.status,
-                    context.version,
+                    next_version,
                     context.idempotency_key,
                     context.iteration,
                     context.tool_calls_used,
@@ -632,6 +692,7 @@ class PostgresRuntimeStore(RuntimeStore):
                 expected_command = "INSERT 0 1" if stored_version is None else "UPDATE 1"
                 if command != expected_command:
                     raise RuntimeConcurrencyError(f"run {context.run_id} 保存时发生并发冲突")
+            context.version = next_version
         if context.pending_approval:
             await self.save_approval(context.pending_approval)
 
@@ -719,7 +780,9 @@ class PostgresRuntimeStore(RuntimeStore):
                     arguments,status,reason,created_at,expires_at
                 )
                 VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,$11)
-                ON CONFLICT (approval_id) DO UPDATE SET status=$8, reason=$9""",
+                ON CONFLICT (approval_id) DO UPDATE SET
+                    status=$8, reason=$9, expires_at=$11
+                WHERE agent_approvals.status='pending'""",
                 approval.approval_id,
                 approval.thread_id,
                 approval.run_id,
@@ -732,6 +795,26 @@ class PostgresRuntimeStore(RuntimeStore):
                 approval.created_at,
                 approval.expires_at,
             )
+
+    async def transition_approval(
+        self,
+        approval: ApprovalRecord,
+        *,
+        expected_status: str = "pending",
+    ) -> bool:
+        self._check()
+        async with self._pool.acquire() as conn:
+            command = await conn.execute(
+                """UPDATE agent_approvals
+                SET status=$2, reason=$3, expires_at=$4
+                WHERE approval_id=$1 AND status=$5""",
+                approval.approval_id,
+                approval.status,
+                approval.reason,
+                approval.expires_at,
+                expected_status,
+            )
+        return command == "UPDATE 1"
 
     async def load_approval(self, approval_id: str) -> ApprovalRecord | None:
         self._check()

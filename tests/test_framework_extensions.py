@@ -178,9 +178,7 @@ class TimeTravelCheckpointerTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertIsInstance(first_version, str)
             assert isinstance(first_version, str)
-            self.assertTrue(
-                await TimeTravelCheckpointer(storage_dir).rollback("thread-1", first_version)
-            )
+            self.assertTrue(await TimeTravelCheckpointer(storage_dir).rollback("thread-1", first_version))
 
             restarted: Checkpointer = TimeTravelCheckpointer(storage_dir)
             self.assertEqual(await restarted.load("thread-1"), {"step": 1})
