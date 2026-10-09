@@ -15,10 +15,16 @@ from unittest.mock import patch
 from agent_core.access import AccessContext
 from agent_core.checkpoint import FileCheckpointer
 from agent_core.documents import Document
-from agent_core.errors import CheckpointError, ModelInvocationError
+from agent_core.errors import CheckpointError, ModelInvocationError, ModelOutputValidationError
 from agent_core.guardrails import GuardrailsMiddleware, LengthGuard
 from agent_core.hitl import ApprovalQueue, ApprovalStatus
-from agent_core.middleware import MiddlewareAction, MiddlewareContext
+from agent_core.middleware import (
+    Middleware,
+    MiddlewareAction,
+    MiddlewareContext,
+    MiddlewareManager,
+    MiddlewareResult,
+)
 from agent_core.model import GovernedModelAdapter, ModelExecutionPolicy, OpenAIProvider, StreamChunk
 from agent_core.protocol import Message, RunContext, assistant_message, system_message, user_message
 from agent_core.retrieval import InMemoryVectorStore, VectorQuery, VectorRecord
@@ -318,6 +324,140 @@ class TestReviewRegressions(unittest.IsolatedAsyncioTestCase):
             if state.get("phase") == "execute_tools"
         ]
         self.assertIn(1, pending_sizes)
+
+
+class _AlwaysToolModel:
+    """始终返回同一个工具调用，迫使循环反复进入工具批次。"""
+
+    async def chat(self, messages: list[Message], **kwargs: Any) -> Message:
+        del messages, kwargs
+        return assistant_message(
+            "",
+            tool_calls=[{"id": "call-1", "name": "echo", "args": {"text": "x"}}],
+        )
+
+    async def stream_chat(self, messages: list[Message], **kwargs: Any):
+        response = await self.chat(messages, **kwargs)
+        yield StreamChunk(text=response.content, tool_calls=response.tool_calls, is_tool_call=True)
+
+
+class TestReviewFollowUpFixes(unittest.IsolatedAsyncioTestCase):
+    """整改复核发现的遗留问题的回归测试。"""
+
+    async def test_recovery_backfills_runtime_checkpoint_seed(self) -> None:
+        """直接 API 恢复时，恢复批次的进度快照必须携带完整循环状态。"""
+
+        async def echo(text: str) -> str:
+            return text
+
+        registry = ToolRegistry()
+        registry.register("echo", echo, "echo")
+        agent = ReActAgent(
+            _AlwaysToolModel(),
+            ToolExecutor(registry),
+            system_prompt="test",
+            tool_definitions=registry.build_tool_definitions(),
+            max_iterations=5,
+        )
+        saved: list[dict[str, Any]] = []
+
+        async def callback(state: dict[str, Any]) -> None:
+            saved.append(dict(state))
+
+        context = RunContext(thread_id="t1", run_id="r1")
+        context.checkpoint_callback = callback
+        checkpoint_state = {
+            "messages": [
+                {"role": "system", "content": "test"},
+                {"role": "user", "content": "go"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {"id": "call-1", "type": "function", "name": "echo", "args": {"text": "x"}}
+                    ],
+                },
+            ],
+            "iteration": 3,
+            "next_iteration": 3,
+            "last_answer": "PARTIAL-ANSWER",
+            "tool_calls_used": 10,
+            "phase": "execute_tools",
+            "pending_tool_calls": [{"id": "call-1", "name": "echo", "args": {"text": "x"}}],
+        }
+        with self.assertRaises(ModelOutputValidationError):
+            await agent.run("", run_context=context, checkpoint_state=checkpoint_state)
+        self.assertTrue(saved)
+        first = saved[0]
+        # 恢复批次期间的第一份进度快照必须保留循环状态，二次崩溃后才能正确续跑。
+        self.assertEqual(first["iteration"], 3)
+        self.assertEqual(first["last_answer"], "PARTIAL-ANSWER")
+        self.assertEqual(first["tool_calls_used"], 10)
+        self.assertEqual(first["next_iteration"], 4)
+
+    async def test_middleware_ctx_write_survives_data_merge(self) -> None:
+        """只写回 ctx.messages 的中间件不应被聚合 data 中的旧值覆盖。"""
+
+        class DataOnly(Middleware):
+            async def before_model(self, context: MiddlewareContext) -> MiddlewareResult:
+                return MiddlewareResult(action=MiddlewareAction.MODIFY, data={"messages": ["STALE"]})
+
+        class CtxOnly(Middleware):
+            async def before_model(self, context: MiddlewareContext) -> MiddlewareResult:
+                context.messages = ["FRESH"]
+                return MiddlewareResult(action=MiddlewareAction.MODIFY, data={"note": "ctx"})
+
+        context = MiddlewareContext(messages=["ORIGINAL"])
+        manager = MiddlewareManager([DataOnly(), CtxOnly()])
+        result = await manager.execute_before_model(context)
+        self.assertEqual(result.action, MiddlewareAction.MODIFY)
+        # Agent Loop 读取 data["messages"]，聚合结果必须与 ctx 的最新修改一致。
+        self.assertEqual(result.data["messages"], ["FRESH"])
+        self.assertEqual(context.messages, ["FRESH"])
+
+    async def test_middleware_modify_without_data_is_safe(self) -> None:
+        """MODIFY 结果 data=None 不应导致聚合抛 TypeError。
+
+        未写 ctx 也未携带 data 的空修改等价于放行；写回了 ctx 的修改必须保留。
+        """
+
+        class EmptyModify(Middleware):
+            async def before_model(self, context: MiddlewareContext) -> MiddlewareResult:
+                return MiddlewareResult(action=MiddlewareAction.MODIFY, data=None)  # type: ignore[arg-type]
+
+        context = MiddlewareContext(messages=["ORIGINAL"])
+        manager = MiddlewareManager([EmptyModify()])
+        result = await manager.execute_before_model(context)
+        self.assertEqual(result.action, MiddlewareAction.CONTINUE)
+        self.assertEqual(context.messages, ["ORIGINAL"])
+
+        class CtxWriteOnly(Middleware):
+            async def before_model(self, context: MiddlewareContext) -> MiddlewareResult:
+                context.messages = ["FRESH"]
+                return MiddlewareResult(action=MiddlewareAction.MODIFY, data=None)  # type: ignore[arg-type]
+
+        context = MiddlewareContext(messages=["ORIGINAL"])
+        manager = MiddlewareManager([CtxWriteOnly()])
+        result = await manager.execute_before_model(context)
+        self.assertEqual(result.action, MiddlewareAction.MODIFY)
+        self.assertEqual(result.data["messages"], ["FRESH"])
+
+    async def test_phantom_approval_wait_times_out(self) -> None:
+        """存储记录缺失（幻影请求）时等待超时应返回 TIMEOUT 而不是 PENDING。"""
+        store = MemoryRuntimeStore()
+        queue = ApprovalQueue(store, poll_interval_seconds=0.001)
+        request = await queue.create_request_async("thread", "tool", {}, timeout_seconds=30)
+        # 模拟持久化记录丢失：等待结束后既没有决定可读，也无法做过期 CAS。
+        store._approvals.pop(request.request_id)
+        status = await queue.wait_for_decision(request, timeout_seconds=0.05)
+        self.assertEqual(status, ApprovalStatus.TIMEOUT)
+
+    async def test_expired_approval_hidden_from_list_pending(self) -> None:
+        """已过期的进程内请求不应一直显示在 list_pending 中。"""
+        queue = ApprovalQueue()
+        queue.create_request("thread", "tool", {}, timeout_seconds=0.01)
+        await asyncio.sleep(0.03)
+        self.assertEqual(queue.list_pending(), [])
 
 
 if __name__ == "__main__":

@@ -329,7 +329,12 @@ class TimeTravelCheckpointer:
         try:
             await self._persist_versions(thread_id)
         except Exception:
-            self._versions[thread_id].pop()
+            # 按身份移除本次追加的版本；并发 save_version 时列表末尾可能是其他调用者的版本。
+            versions = self._versions[thread_id]
+            for position in range(len(versions) - 1, -1, -1):
+                if versions[position] is version:
+                    del versions[position]
+                    break
             if previous_index is None:
                 self._current_version.pop(thread_id, None)
             else:

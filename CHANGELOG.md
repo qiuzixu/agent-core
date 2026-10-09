@@ -5,6 +5,18 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- 直接 API 以 checkpoint 恢复 Agent 时回填 RunContext.checkpoint 基底，修复恢复批次进度快照丢失迭代/预算/最终回答的问题。
+- 时间旅行接口 `get_checkpoint_history`/`rollback_to` 增加显式 `thread_id` 参数，避免读到构造时默认会话的版本。
+- Middleware `MODIFY` 聚合与 ctx 写入对账，按注释契约只写回 ctx 的自定义中间件不再被 data 旧值覆盖。
+- 并发工具批次末尾不再重复保存与主循环相同的 phase=model 快照。
+- 幂等唯一索引升级前预检归一化后重复行，SQLite/PostgreSQL 初始化给出可操作的错误而不是建索引失败。
+- HITL 幻影请求（存储记录缺失）等待超时按 TIMEOUT 收口；进程内缓存与 `list_pending` 补齐过期检查。
+- 取消运行时记录任务的业务异常日志，不再无声吞掉。
+- 模型治理在全部候选熔断时直接失败且不消耗限流配额，熔断状态容量可配置并自动淘汰。
+- `TimeTravelCheckpointer` 持久化失败回滚按身份移除版本，避免并发保存时弹掉其他调用者的版本。
+
 ### Changed
 
 - 修复 Runtime/Workflow 并发覆盖和匿名作用域幂等索引，PostgreSQL Workflow JSONB 恢复兼容字符串返回。

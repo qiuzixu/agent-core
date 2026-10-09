@@ -99,6 +99,10 @@ class ReActAgent:
         )
         if run_context is None:
             runtime_context.emit("run_started", input=user_input)
+        # 直接 API 以 checkpoint_state 恢复时回填快照基底；否则恢复批次期间
+        # _persist_tool_progress 会以空 dict 为基底，丢失 iteration/last_answer/tool_calls_used。
+        if checkpoint_state and not runtime_context.checkpoint:
+            runtime_context.checkpoint = checkpoint_state
 
         try:
             answer = await self._run_loop(
@@ -156,6 +160,9 @@ class ReActAgent:
             run_id=str(metadata.get("run_id") or uuid.uuid4()),
             metadata=metadata,
         )
+        # 直接调用 _run_loop 恢复时同样回填快照基底，保持与 run() 一致。
+        if checkpoint_state and not runtime_context.checkpoint:
+            runtime_context.checkpoint = checkpoint_state
         metadata = self._runtime_metadata(runtime_context, metadata)
         runtime_context.status = "running"
         # 恢复执行时沿用已有上下文的会话 ID，避免快照落到默认会话。
@@ -329,6 +336,9 @@ class ReActAgent:
         )
         if run_context is None:
             runtime_context.emit("run_started", input=user_input)
+        # 与 run() 相同的快照基底回填，保证流式恢复路径同样不丢循环状态。
+        if checkpoint_state and not runtime_context.checkpoint:
+            runtime_context.checkpoint = checkpoint_state
 
         try:
             async for chunk in self._stream_loop(
@@ -386,6 +396,9 @@ class ReActAgent:
             run_id=str(metadata.get("run_id") or uuid.uuid4()),
             metadata=metadata,
         )
+        # 直接调用 _stream_loop 恢复时同样回填快照基底，保持与 stream() 一致。
+        if checkpoint_state and not runtime_context.checkpoint:
+            runtime_context.checkpoint = checkpoint_state
         metadata = self._runtime_metadata(runtime_context, metadata)
         runtime_context.status = "running"
         # 流式执行与普通执行使用同一套会话隔离规则。
@@ -810,11 +823,14 @@ class ReActAgent:
                         for pending_index, tool_call in enumerate(tool_calls)
                         if pending_index not in completed_indices
                     ]
-                    await self._persist_tool_progress(
-                        runtime_context,
-                        [*messages, *progress_messages],
-                        pending,
-                    )
+                    if pending:
+                        # 只保存"仍有未完成工具"的阶段快照；批末的 phase=model 快照
+                        # 由主循环统一保存，避免与最后一次进度快照重复全量持久化。
+                        await self._persist_tool_progress(
+                            runtime_context,
+                            [*messages, *progress_messages],
+                            pending,
+                        )
         finally:
             for task in tasks:
                 if not task.done():
@@ -857,8 +873,12 @@ class ReActAgent:
     # 时间旅行接口
     # ──────────────────────────────────────────────
 
-    async def get_checkpoint_history(self) -> list[dict[str, Any]]:
-        """返回当前 thread 的 checkpoint 版本列表（需要 checkpointer）。"""
+    async def get_checkpoint_history(self, thread_id: str | None = None) -> list[dict[str, Any]]:
+        """返回指定 thread 的 checkpoint 版本列表（需要 checkpointer）。
+
+        checkpoint 保存使用的是每次运行传入的 ``thread_id``；当运行时会话与构造
+        Agent 时的默认会话不同（例如经由 AgentRuntime 运行），必须显式传入。
+        """
         if not self._checkpointer:
             return []
         list_versions = getattr(self._checkpointer, "list_versions", None)
@@ -869,10 +889,10 @@ class ReActAgent:
             Callable[[str], Awaitable[list[dict[str, Any]]]],
             list_versions,
         )
-        return await loader(self._thread_id)
+        return await loader(thread_id or self._thread_id)
 
-    async def rollback_to(self, version_id: str) -> bool:
-        """回滚到指定 checkpoint 版本（需要 checkpointer）。"""
+    async def rollback_to(self, version_id: str, *, thread_id: str | None = None) -> bool:
+        """回滚指定 thread 的 checkpoint 版本（需要 checkpointer）。"""
         if not self._checkpointer:
             return False
         rollback = getattr(self._checkpointer, "rollback", None)
@@ -882,4 +902,4 @@ class ReActAgent:
             Callable[[str, str], Awaitable[bool]],
             rollback,
         )
-        return await rollback_version(self._thread_id, version_id)
+        return await rollback_version(thread_id or self._thread_id, version_id)

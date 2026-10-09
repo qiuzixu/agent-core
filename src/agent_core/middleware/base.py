@@ -135,10 +135,16 @@ class MiddlewareManager:
         modified_data: dict[str, Any] = {}
         for mw in self._middlewares:
             logger.debug("中间件 %s.%s", mw.name, hook)
+            previous_messages = ctx.messages
             result: MiddlewareResult = await getattr(mw, hook)(ctx)
             if result.action == MiddlewareAction.MODIFY:
-                # MODIFY 已由中间件写回 ctx；继续执行后续中间件，让组合链完整生效。
-                modified_data.update(result.data)
+                # MODIFY 有两种合法写法：替换 ctx 字段（推荐），或在 data 中携带修改。
+                # 此处对账：本轮替换了 ctx.messages 时以 ctx 为准，防止 data 携带的
+                # 同名旧值把 ctx 的修改覆盖掉（Agent Loop 只读取聚合后的 data）。
+                if result.data:
+                    modified_data.update(result.data)
+                if ctx.messages is not previous_messages:
+                    modified_data["messages"] = ctx.messages
                 continue
             if result.action != MiddlewareAction.CONTINUE:
                 logger.info("中间件 %s 阻断: action=%s", mw.name, result.action)

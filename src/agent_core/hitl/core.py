@@ -252,6 +252,10 @@ class ApprovalQueue:
             stored = await self._approval_store.load_approval(request.request_id)
             if stored is not None:
                 self._apply_record(request, stored)
+                return request.status
+            # 记录不存在（幻影请求）：不可能再有决定提交，按超时收口而不是返回 PENDING。
+            request.status = ApprovalStatus.TIMEOUT
+            request._event.set()
             return request.status
         finally:
             self._requests.pop(request.request_id, None)
@@ -306,6 +310,7 @@ class ApprovalQueue:
             request.to_dict()
             for request in self._requests.values()
             if request.status == ApprovalStatus.PENDING
+            and not (request.expires_at and self._is_past(request.expires_at))
             and (access is None or access.can_access(request.user_id, request.tenant_id))
         ]
 
@@ -331,6 +336,7 @@ class ApprovalQueue:
         """优先读取进程内请求，否则从持久化记录恢复。"""
         request = self._requests.get(request_id)
         if request is not None:
+            await self._expire_if_due(request)
             self._check_access(request, access)
             return request
         if self._require_access and access is None:
@@ -341,22 +347,38 @@ class ApprovalQueue:
         if record is None:
             return None
         request = ApprovalRequest.from_record(record)
-        if request.status == ApprovalStatus.PENDING and self._record_expired(record):
-            expired = request.to_record()
-            expired.status = "expired"
-            if await self._transition(expired):
-                request.status = ApprovalStatus.TIMEOUT
-                request._event.set()
-            else:
-                latest = await self._approval_store.load_approval(request_id)
-                if latest is not None:
-                    self._apply_record(request, latest)
+        await self._expire_if_due(request)
         self._check_access(request, access)
         self._requests[request_id] = request
         return request
 
+    async def _expire_if_due(self, request: ApprovalRequest) -> None:
+        """对已过期的 pending 请求执行过期收口；配置存储时以 CAS 结果为准。"""
+        if request.status is not ApprovalStatus.PENDING or not request.expires_at:
+            return
+        if not self._is_past(request.expires_at):
+            return
+        if self._approval_store is None:
+            request.status = ApprovalStatus.TIMEOUT
+            request._event.set()
+            return
+        expired = request.to_record()
+        expired.status = "expired"
+        if await self._transition(expired):
+            request.status = ApprovalStatus.TIMEOUT
+            request._event.set()
+        else:
+            latest = await self._approval_store.load_approval(request.request_id)
+            if latest is not None:
+                self._apply_record(request, latest)
+
     async def _transition(self, record: ApprovalRecord) -> bool:
-        """执行审批 CAS；兼容尚未升级条件更新接口的外部 Store。"""
+        """执行审批 CAS；兼容尚未升级条件更新接口的外部 Store。
+
+        内置 Memory/SQLite/PostgreSQL Store 的 ``transition_approval`` 是原子条件更新。
+        未实现该接口的外部 Store 会退化为 load→check→save，跨进程并发下存在
+        last-writer-wins 窗口；生产环境应让外部 Store 实现 ``transition_approval``。
+        """
         if self._approval_store is None:
             return False
         transition = getattr(self._approval_store, "transition_approval", None)
@@ -379,12 +401,16 @@ class ApprovalQueue:
 
     @staticmethod
     def _record_expired(record: ApprovalRecord) -> bool:
-        if not record.expires_at:
+        return ApprovalQueue._is_past(record.expires_at)
+
+    @staticmethod
+    def _is_past(expires_at: str | None) -> bool:
+        if not expires_at:
             return False
-        expires_at = datetime.fromisoformat(record.expires_at.replace("Z", "+00:00"))
-        if expires_at.tzinfo is None:
-            expires_at = expires_at.replace(tzinfo=UTC)
-        return expires_at <= datetime.now(UTC)
+        expires = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+        if expires.tzinfo is None:
+            expires = expires.replace(tzinfo=UTC)
+        return expires <= datetime.now(UTC)
 
     @staticmethod
     def _expires_at(timeout_seconds: float | None) -> str | None:

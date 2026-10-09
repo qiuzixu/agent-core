@@ -243,7 +243,11 @@ class AgentRuntime:
         if task is None or task.done():
             return False
         task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
+        gather_result = await asyncio.gather(task, return_exceptions=True)
+        for outcome in gather_result:
+            # 取消方不再吞掉业务异常；这里记录日志，避免取消失败与取消成功不可区分。
+            if isinstance(outcome, BaseException) and not isinstance(outcome, asyncio.CancelledError):
+                logger.warning("被取消的 run %s 在结束前抛出异常", run_id, exc_info=outcome)
         context = await self.get(thread_id, run_id, access=access)
         return context.status == "cancelled"
 

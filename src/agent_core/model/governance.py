@@ -154,6 +154,7 @@ class GovernedModelAdapter:
         fallbacks: list[ModelAdapter] | None = None,
         policy: ModelExecutionPolicy | None = None,
         scope_resolver: Callable[[], str] | None = None,
+        max_circuit_entries: int = 4096, #
     ) -> None:
         self._adapters = [primary, *(fallbacks or [])]
         self._policy = policy or ModelExecutionPolicy()
@@ -162,6 +163,21 @@ class GovernedModelAdapter:
         self._scope_resolver = scope_resolver or _CURRENT_SCOPE.get
         self._circuits: dict[tuple[int, str], _CircuitState] = {}
         self._circuit_lock = asyncio.Lock()
+        if max_circuit_entries <= 0:
+            raise ValueError("max_circuit_entries 必须大于 0")
+        self._max_circuit_entries = max_circuit_entries
+
+    def _evict_circuits_locked(self) -> None:
+        """熔断状态按 (adapter, scope) 累积；容量满时先淘汰干净状态，再按插入序淘汰最旧。"""
+        if len(self._circuits) < self._max_circuit_entries:
+            return
+        for key, state in list(self._circuits.items()):
+            if len(self._circuits) < self._max_circuit_entries:
+                break
+            if state.opened_at is None and state.failures == 0:
+                self._circuits.pop(key, None)
+        while len(self._circuits) >= self._max_circuit_entries:
+            self._circuits.pop(next(iter(self._circuits)))
 
     @staticmethod
     def _estimate_tokens(messages: list[Message]) -> int:
@@ -169,6 +185,7 @@ class GovernedModelAdapter:
 
     async def _allow(self, index: int, scope: str) -> bool:
         async with self._circuit_lock:
+            self._evict_circuits_locked()
             state = self._circuits.setdefault((index, scope), _CircuitState())
             if state.opened_at is None:
                 return True
@@ -184,10 +201,18 @@ class GovernedModelAdapter:
 
     async def _failure(self, index: int, scope: str) -> None:
         async with self._circuit_lock:
+            self._evict_circuits_locked()
             state = self._circuits.setdefault((index, scope), _CircuitState())
             state.failures += 1
             if state.failures >= self._policy.failure_threshold:
                 state.opened_at = time.monotonic()
+
+    async def _any_adapter_available(self, scope: str) -> bool:
+        """是否存在至少一个未处于熔断恢复期的候选；短路探测，无副作用。"""
+        for index in range(len(self._adapters)):
+            if await self._allow(index, scope):
+                return True
+        return False
 
     async def chat(
         self,
@@ -199,6 +224,9 @@ class GovernedModelAdapter:
     ) -> Message:
         scope = self._scope_resolver().strip() or "default"
         last_error: Exception | None = None
+        # 全部候选处于熔断恢复期时直接失败，不消耗本地限流配额。
+        if not await self._any_adapter_available(scope):
+            raise ModelUnavailableError("没有可用的模型适配器（全部处于熔断恢复期）")
         # 一个逻辑调用只消耗一次本地限流配额；fallback 属于同一次调用。
         await self._rate_limiter.acquire(scope, self._estimate_tokens(messages))
         async with self._concurrency.slot(scope, self._policy.queue_timeout_seconds):
@@ -237,6 +265,9 @@ class GovernedModelAdapter:
     ) -> AsyncIterator[StreamChunk]:
         scope = self._scope_resolver().strip() or "default"
         last_error: Exception | None = None
+        # 与 chat() 相同：全部候选熔断时直接失败，不消耗本地限流配额。
+        if not await self._any_adapter_available(scope):
+            raise ModelUnavailableError("没有可用的模型适配器（全部处于熔断恢复期）")
         await self._rate_limiter.acquire(scope, self._estimate_tokens(messages))
         async with self._concurrency.slot(scope, self._policy.queue_timeout_seconds):
             for index, adapter in enumerate(self._adapters):

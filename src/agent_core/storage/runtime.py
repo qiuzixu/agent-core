@@ -292,6 +292,17 @@ class SqliteRuntimeStore(RuntimeStore):
                 conn.execute(f"ALTER TABLE agent_approvals ADD COLUMN {name} {definition}")
         # SQLite 把 NULL 视为互不相等，表达式索引把匿名作用域归一化后才能真正幂等。
         conn.execute("DROP INDEX IF EXISTS idx_agent_runs_idempotency")
+        duplicate = conn.execute(
+            "SELECT COALESCE(tenant_id, ''), COALESCE(user_id, ''), idempotency_key "
+            "FROM agent_runs WHERE idempotency_key IS NOT NULL "
+            "GROUP BY 1, 2, 3 HAVING COUNT(*) > 1 LIMIT 1"
+        ).fetchone()
+        if duplicate:
+            # 旧索引允许 (NULL, NULL, key) 重复；直接建唯一索引会让升级中断且难以定位。
+            raise RuntimeConcurrencyError(
+                f"agent_runs 存在归一化后重复的幂等键 {tuple(duplicate)}，"
+                "无法创建唯一索引；请先清理历史重复行后再初始化"
+            )
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_runs_idempotency_scope "
             "ON agent_runs(COALESCE(tenant_id, ''), COALESCE(user_id, ''), idempotency_key) "
@@ -603,12 +614,23 @@ class PostgresRuntimeStore(RuntimeStore):
                 ALTER TABLE agent_approvals ADD COLUMN IF NOT EXISTS user_id TEXT;
                 ALTER TABLE agent_approvals ADD COLUMN IF NOT EXISTS tenant_id TEXT;
                 DROP INDEX IF EXISTS idx_agent_runs_idempotency;
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_runs_idempotency_scope
-                ON agent_runs(
-                    COALESCE(tenant_id, ''), COALESCE(user_id, ''), idempotency_key
-                )
-                WHERE idempotency_key IS NOT NULL;
             """)
+            # 旧索引允许 (NULL, NULL, key) 重复；先预检归一化后的重复行再建唯一索引。
+            duplicate = await conn.fetchrow(
+                "SELECT COALESCE(tenant_id, ''), COALESCE(user_id, ''), idempotency_key "
+                "FROM agent_runs WHERE idempotency_key IS NOT NULL "
+                "GROUP BY 1, 2, 3 HAVING COUNT(*) > 1 LIMIT 1"
+            )
+            if duplicate:
+                raise RuntimeConcurrencyError(
+                    f"agent_runs 存在归一化后重复的幂等键 {tuple(duplicate)}，"
+                    "无法创建唯一索引；请先清理历史重复行后再初始化"
+                )
+            await conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_runs_idempotency_scope "
+                "ON agent_runs(COALESCE(tenant_id, ''), COALESCE(user_id, ''), idempotency_key) "
+                "WHERE idempotency_key IS NOT NULL"
+            )
 
     async def close(self) -> None:
         if self._pool:
