@@ -5,6 +5,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- `AgentRuntime` 支持可选 `run_executor`（`RunExecutor` 协议）：应用可接管 Agent 调用，
+  Runtime 统一收口运行状态、事件、持久化与租约。
+
 ### Fixed
 
 - 直接 API 以 checkpoint 恢复 Agent 时回填 RunContext.checkpoint 基底，修复恢复批次进度快照丢失迭代/预算/最终回答的问题。

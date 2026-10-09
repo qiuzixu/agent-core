@@ -64,6 +64,8 @@ Agent Core 是一套零外部平台绑定的手写 Agent 运行时内核。
 - `RunEvent` 记录 parent run、组件、tags、metadata、usage、错误和耗时字段；
 - 将用户、租户、输入、状态和 checkpoint 一起保存。
 - 可选 Run Lease，在多 Worker 环境中互斥认领 Run；
+- 可选 `run_executor`（`RunExecutor` 协议）：应用接管 Agent 调用，Runtime 统一收口
+  状态、事件、持久化与租约；
 - 定期 heartbeat 续租，租约丢失时停止本地执行；
 - 扫描过期租约，将异常退出的 Run 标记为中断并选择是否自动恢复。
 - 可选 `require_access=True` 严格模式，创建 Run 时强制绑定用户和租户，查询、恢复和取消时

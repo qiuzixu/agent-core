@@ -11,7 +11,7 @@ import logging
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 from agent_core.access import AccessContext
 from agent_core.callbacks import CallbackHandler, CallbackManager
@@ -23,6 +23,24 @@ from agent_core.storage.lease import RunLeaseStore
 from agent_core.storage.runtime import RuntimeConcurrencyError
 
 logger = logging.getLogger(__name__)
+
+
+class RunExecutor(Protocol):
+    """自定义 Run 执行器：在 Run 生命周期内替代默认的 ``agent.run`` 调用。
+
+    Runtime 会在挂接执行器前完成状态置位、``run_started`` 事件、checkpoint
+    回调绑定和持久化；执行器只需驱动具体的 Agent 实现并返回最终回答。
+    应用可用它接入按模型快照选择 Agent、业务编排分支等自定义执行策略。
+    """
+
+    async def __call__(
+        self,
+        context: RunContext,
+        user_input: str,
+        *,
+        memory_context: str | None = None,
+        checkpoint_state: dict[str, Any] | None = None,
+    ) -> str: ...
 
 
 class MemoryEventSink(EventSink):
@@ -59,6 +77,7 @@ class AgentRuntime:
         lease_seconds: float = 30.0,
         heartbeat_seconds: float = 10.0,
         require_access: bool = False,
+        run_executor: RunExecutor | None = None,
     ) -> None:
         if lease_seconds <= 0:
             raise ValueError("lease_seconds 必须大于 0")
@@ -75,6 +94,7 @@ class AgentRuntime:
         self._lease_seconds = lease_seconds
         self._heartbeat_seconds = heartbeat_seconds
         self._require_access = require_access
+        self._run_executor = run_executor
         self._tasks: dict[str, asyncio.Task[str]] = {}
         self._event_cursors: dict[str, int] = {}
         self._lock = asyncio.Lock()
@@ -461,13 +481,46 @@ class AgentRuntime:
         context.emit("run_started", input=user_input)
         context.checkpoint_callback = self._checkpoint_callback(context)
         await self._persist(context)
-        return await self._agent.run(
-            user_input,
-            memory_context=memory_context,
-            thread_id=context.thread_id,
-            run_context=context,
-            checkpoint_state=checkpoint_state,
-        )
+        try:
+            if self._run_executor is not None:
+                # 自定义执行器：生命周期（状态/事件/持久化/租约）仍由 Runtime 收口。
+                answer = await self._run_executor(
+                    context,
+                    user_input,
+                    memory_context=memory_context,
+                    checkpoint_state=checkpoint_state,
+                )
+            else:
+                answer = await self._agent.run(
+                    user_input,
+                    memory_context=memory_context,
+                    thread_id=context.thread_id,
+                    run_context=context,
+                    checkpoint_state=checkpoint_state,
+                )
+        except asyncio.CancelledError:
+            if context.status == "running":
+                await self._finish_terminal(context, "cancelled", "run_cancelled")
+            raise
+        except Exception as exc:
+            if context.status == "running":
+                await self._finish_terminal(context, "failed", "run_failed", error=str(exc))
+            raise
+        # 内置路径由 Agent Loop 自己收口；执行器路径在此统一落到 completed。
+        if context.status == "running":
+            await self._finish_terminal(context, "completed", "run_completed", answer=answer)
+        return answer
+
+    async def _finish_terminal(
+        self,
+        context: RunContext,
+        status: str,
+        event_type: str,
+        **payload: Any,
+    ) -> None:
+        context.status = status  # type: ignore[assignment]
+        context.emit(event_type, **payload)
+        await self._persist(context)
 
     def _checkpoint_callback(
         self,

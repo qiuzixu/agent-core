@@ -441,3 +441,4 @@ flowchart LR
 | 2026-09-28 | ACP 源码说明与占位审计 | 在 ACP 源码目录补充协议边界、调用时序、应用接入和空方法审计；没有修改公共接口或调用方向，无需修改 Mermaid 图。 |
 | 2026-10-08 | 审查整改 | 审批增加持久化 deadline 和条件状态转换，Run/Workflow 写入增加版本条件，并发工具按完成进度保存 checkpoint；同步更新工具调用时序，模块边界和应用依赖方向不变。 |
 | 2026-10-08 | 整改复核修复 | 恢复期回填 RunContext.checkpoint 基底，时间旅行接口增加显式 thread_id 参数，移除批末冗余进度快照；Middleware MODIFY 聚合与 ctx 写入对账；幂等唯一索引升级前预检重复行；HITL 幻影请求按超时收口并补齐过期检查；取消运行记录被吞异常；治理层全熔断预检并限制熔断状态容量。均为模块内部行为修复，公共接口仅对 `get_checkpoint_history`/`rollback_to` 增加可选参数，模块边界和调用方向不变，无需修改 Mermaid 图。 |
+| 2026-10-08 | AgentRuntime 自定义执行器 | `AgentRuntime` 新增可选 `run_executor`（公共协议 `RunExecutor`），允许应用接管 Agent 调用而由 Runtime 统一收口状态/事件/持久化/租约；执行器路径的终态由 `_execute` 统一落定。Runtime 对上层职责不变，无需修改 Mermaid 图。 |
