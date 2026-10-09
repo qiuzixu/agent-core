@@ -154,7 +154,7 @@ class GovernedModelAdapter:
         fallbacks: list[ModelAdapter] | None = None,
         policy: ModelExecutionPolicy | None = None,
         scope_resolver: Callable[[], str] | None = None,
-        max_circuit_entries: int = 4096, #
+        max_circuit_entries: int = 4096,
     ) -> None:
         self._adapters = [primary, *(fallbacks or [])]
         self._policy = policy or ModelExecutionPolicy()

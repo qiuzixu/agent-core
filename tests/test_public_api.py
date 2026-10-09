@@ -210,17 +210,17 @@ class TestAgentCorePublicApi(unittest.IsolatedAsyncioTestCase):
             MODEL_PROVIDER_REGISTRY.names(),
             ("anthropic", "gemini", "ollama", "openai"),
         )
-        self.assertTrue(
-            all(
-                cls.__module__ == "agent_core.model.providers"
-                for cls in (
-                    OpenAIProvider,
-                    AnthropicProvider,
-                    GeminiProvider,
-                    OllamaProvider,
-                )
-            )
-        )
+        expected_modules = {
+            "OpenAIProvider": "agent_core.model.providers.openai_compatible",
+            "AnthropicProvider": "agent_core.model.providers.anthropic",
+            "GeminiProvider": "agent_core.model.providers.gemini",
+            "OllamaProvider": "agent_core.model.providers.ollama",
+        }
+        actual_modules = {
+            cls.__name__: cls.__module__
+            for cls in (OpenAIProvider, AnthropicProvider, GeminiProvider, OllamaProvider)
+        }
+        self.assertEqual(actual_modules, expected_modules)
 
     async def test_runtime_owns_lifecycle_and_publishes_events(self) -> None:
         model = _FakeModel(responses=[assistant_message("运行完成")])
