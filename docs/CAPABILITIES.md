@@ -210,8 +210,13 @@ Session Store 在调用方传入 `AccessContext` 时，会在首次写入时绑�
 ## 9. Checkpoint 和工作流
 
 Checkpoint 支持内存和文件后端。文件后端通过同目录临时文件、`fsync` 和原子替换避免留下截断
-JSON；持久化失败会显式报错。`TimeTravelCheckpointer` 在基础 Checkpointer 上增加版本历史、
-指定版本读取、持久化回滚指针、整条 thread 删除和时间旅行能力。
+JSON；持久化失败会显式报错。thread_id 映射到文件名时经过白名单严格清洗（单射且可逆，
+Windows 非法字符 `<>:"/\|?*`、`%`、控制符与保留设备名统一转义），含 `/`、`\`、`:`
+的会话不会互相覆盖，`list_threads` 会把文件名反向还原为 thread_id。
+`TimeTravelCheckpointer` 在基础 Checkpointer 上增加版本历史、指定版本读取、持久化回滚
+指针、整条 thread 删除和时间旅行能力，并提供 `max_versions_per_thread`（默认 100）版本
+容量上限：追加超过上限时淘汰最旧版本并同步收缩持久化文件，当前指针指向被淘汰版本时前移到
+其继任版本。
 
 通用工作流不依赖外部编排框架，支持：
 
@@ -281,6 +286,9 @@ Web 弹窗、消息通知和审批人选择属于上层应用职责。
 | Run Worker 租约 | 支持 | 支持 | 支持 |
 
 推荐用途：内存用于单元测试和临时运行，SQLite 用于本地开发，PostgreSQL 用于生产环境。
+SQLite 实现保持"每操作开新连接"的简单模型，但所有 async 方法统一经 `asyncio.to_thread`
+放入线程池执行，连接统一使用 `timeout=30.0` 并开启 WAL（`storage/_sqlite_utils.py` 共享
+连接规范），SQLite 锁等待不会冻结事件循环。
 Runtime Store 已包含版本号、乐观并发冲突、幂等键、Thread 所属用户/租户和陈旧 Run 标记能力。
 Workflow Store 同样使用版本号和条件更新拒绝执行实例的并发覆盖。
 `RunLeaseStore` 额外提供 Worker 认领、续租、释放和过期扫描；租约与 Run 状态分开保存，便于接入

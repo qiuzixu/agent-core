@@ -11,6 +11,8 @@
   Runtime 统一收口运行状态、事件、持久化与租约。
 - 访问校验抽取为 `agent_core.access.enforce_access`：严格模式要求、资源归属完整性与
   身份校验三类判定共享同一实现。
+- `TimeTravelCheckpointer` 新增 `max_versions_per_thread` 版本容量上限（默认 100）：
+  追加超过上限时淘汰最旧版本并同步收缩持久化文件，当前指针语义保持不变。
 
 ### Fixed
 
@@ -23,6 +25,8 @@
 - 取消运行时记录任务的业务异常日志，不再无声吞掉。
 - 模型治理在全部候选熔断时直接失败且不消耗限流配额，熔断状态容量可配置并自动淘汰。
 - `TimeTravelCheckpointer` 持久化失败回滚按身份移除版本，避免并发保存时弹掉其他调用者的版本。
+- 文件与时间旅行 Checkpointer 的 thread 文件名改为白名单严格清洗（单射可逆）：
+  含 `/`、`\`、`:` 等 Windows 非法字符的会话不再互相覆盖，`list_threads` 反向映射同步还原。
 
 ### Changed
 
@@ -33,6 +37,10 @@
   一致性契约测试守护。
 - `AgentRuntime` 与 `DurableWorkflowRunner` 的 `_check_access` 改为委托共享的
   `agent_core.access.enforce_access`，判定顺序与错误文案保持不变。
+- 7 个 SQLite 存储（session/runtime/lease/memory/workflow/context/model_selection）的
+  async 方法统一经 `asyncio.to_thread` 在线程池执行，构造期 DDL/PRAGMA 初始化同样入线程；
+  新增共享连接规范 `storage/_sqlite_utils.py`（`timeout=30.0` + WAL），SQLite 锁等待
+  不再冻结事件循环，方法签名与返回值保持不变。
 - 补齐 compaction 子系统核心单测（region 边界切割、pruner 瘦身与 spill 标记、summarizer 结构
   校验失败、中间件阈值触发与 prune-only 降级）、OpenAI/Anthropic/Gemini 流式 `finish_reason`
   契约测试，以及"恢复时只重放未完成工具"回归断言。

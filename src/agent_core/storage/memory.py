@@ -200,7 +200,7 @@ class SqliteMemoryStore(_MemoryAccessMixin):
     def __init__(self, db_path: str | Path = "./sessions.db", *, require_access: bool = False) -> None:
         super().__init__(require_access=require_access)
         self._db_path = str(Path(db_path).resolve())
-        # 建表 DDL/PRAGMA 初始化同样入线程，避免构造期冻结事件循环。
+        # 建表 DDL/PRAGMA 初始化同样放入工作线程执行，与 async 方法共用同一连接参数规范。
         run_sync_in_thread(self._init_db)
 
     def _init_db(self) -> None:

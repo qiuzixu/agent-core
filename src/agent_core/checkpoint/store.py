@@ -12,6 +12,7 @@ import copy
 import json
 import logging
 import os
+import re
 import tempfile
 import uuid
 from datetime import UTC, datetime
@@ -21,6 +22,59 @@ from typing import Any, Protocol
 from agent_core.errors import CheckpointError
 
 logger = logging.getLogger(__name__)
+
+# 文件名严格清洗：白名单字符原样保留（可读性），其余按 UTF-8 字节转义为 %XX。
+# Windows 非法字符 <>:"/\|?*、``%``（转义前缀，必须一并转义保证可逆）和控制符都要处理。
+_FILENAME_ILLEGAL_CHARS = frozenset('<>:"/\\|?*%')
+_FILENAME_ESCAPE_CHARS = _FILENAME_ILLEGAL_CHARS | {chr(code) for code in range(0x20)}
+# Windows 保留设备名（不区分大小写，且无论后缀如何都保留）：只检查文件名第一个点之前的主干。
+_WINDOWS_RESERVED = re.compile(r"CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9]", re.IGNORECASE)
+_HEX_ESCAPE = re.compile(r"%([0-9A-Fa-f]{2})")
+
+
+def _escape_char(char: str) -> str:
+    """把单个字符转义为 UTF-8 字节的 %XX 序列。"""
+    return "".join(f"%{byte:02X}" for byte in char.encode("utf-8", errors="surrogatepass"))
+
+
+def _sanitize_thread_id(thread_id: str) -> str:
+    """把 thread_id 清洗为跨平台安全且可逆的文件名主干。
+
+    规则：
+    - 白名单（可打印且不属于非法字符集）原样保留，保证可读性；
+    - 其余字符（Windows 非法字符 ``<>:"/\\|?*``、``%``、控制符、孤立代理对等）
+      按 UTF-8 字节转义为 ``%XX``。``%`` 本身也被转义，因此清洗是单射：
+      ``a/b`` 与 ``a_b`` 会得到不同文件名，不再互相覆盖；
+    - 以点/空格结尾或命中 Windows 保留设备名（CON、PRN、COM1 等）时，
+      对首个点之前主干的末字符转义规避系统特殊处理，映射仍然可逆。
+    """
+    sanitized = "".join(
+        char if char.isprintable() and char not in _FILENAME_ESCAPE_CHARS else _escape_char(char)
+        for char in thread_id
+    )
+    if sanitized.endswith((".", " ")):
+        sanitized = sanitized[:-1] + _escape_char(sanitized[-1])
+    base_name = sanitized.split(".", 1)[0]
+    if _WINDOWS_RESERVED.fullmatch(base_name):
+        sanitized = sanitized[:-1] + _escape_char(sanitized[-1])
+    return sanitized
+
+
+def _restore_thread_id(file_stem: str) -> str:
+    """`_sanitize_thread_id` 的逆映射；无法还原的历史文件名原样返回。"""
+    if "%" not in file_stem:
+        return file_stem
+    raw = bytearray()
+    index = 0
+    while index < len(file_stem):
+        match = _HEX_ESCAPE.match(file_stem, index)
+        if match is None:
+            raw.extend(file_stem[index].encode("utf-8", errors="surrogatepass"))
+            index += 1
+        else:
+            raw.append(int(match.group(1), 16))
+            index = match.end()
+    return raw.decode("utf-8", errors="surrogatepass")
 
 
 def _atomic_write_json(file_path: Path, value: Any) -> None:
@@ -138,10 +192,12 @@ class FileCheckpointer:
         self._storage_dir.mkdir(parents=True, exist_ok=True)
 
     def _get_file_path(self, thread_id: str) -> Path:
-        """获取 thread 对应的文件路径。"""
-        # 简单的文件名清洗（实际项目应该更严格）
-        safe_id = thread_id.replace("/", "_").replace("\\", "_")
-        return self._storage_dir / f"{safe_id}.json"
+        """获取 thread 对应的文件路径。
+
+        文件名经 `_sanitize_thread_id` 严格清洗：单射且可逆，含 ``/``、``\\``、
+        ``:`` 等 Windows 非法字符的 thread_id 不会互相覆盖。
+        """
+        return self._storage_dir / f"{_sanitize_thread_id(thread_id)}.json"
 
     async def save(
         self,
@@ -200,13 +256,8 @@ class FileCheckpointer:
             logger.debug("Deleted checkpoint for thread %r at %s", thread_id, file_path)
 
     def list_threads(self) -> list[str]:
-        """列出所有会话 ID（从文件名提取）。"""
-        threads = []
-        for file_path in self._storage_dir.glob("*.json"):
-            # 反向清洗文件名得到 thread_id
-            thread_id = file_path.stem
-            threads.append(thread_id)
-        return threads
+        """列出所有会话 ID（文件名主干经 `_restore_thread_id` 逆映射还原）。"""
+        return [_restore_thread_id(file_path.stem) for file_path in self._storage_dir.glob("*.json")]
 
 
 # ──────────────────────────────────────────────
@@ -265,14 +316,24 @@ class TimeTravelCheckpointer:
     2. 查看历史版本列表
     3. 回滚到任意版本
     4. 对比两个版本
+    5. 每个 thread 的版本数量有上限，超过后淘汰最旧版本，避免无限膨胀
     """
 
-    def __init__(self, storage_dir: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        storage_dir: str | Path | None = None,
+        *,
+        max_versions_per_thread: int = 100,
+    ) -> None:
         """初始化。
 
         Args:
             storage_dir: 存储目录（可选，None 表示仅内存存储）。
+            max_versions_per_thread: 每个 thread 保留的最大版本数，
+                追加超过上限时淘汰最旧版本（默认 100）。
         """
+        if max_versions_per_thread < 1:
+            raise ValueError("max_versions_per_thread 必须大于 0")
         self._storage_dir = Path(storage_dir) if storage_dir else None
         if self._storage_dir:
             self._storage_dir.mkdir(parents=True, exist_ok=True)
@@ -283,11 +344,14 @@ class TimeTravelCheckpointer:
         # 当前版本索引
         self._current_version: dict[str, int] = {}
 
+        # 每个 thread 的版本数量上限
+        self._max_versions_per_thread = max_versions_per_thread
+
     def _get_version_file(self, thread_id: str) -> Path | None:
-        """获取版本文件路径。"""
+        """获取版本文件路径（文件名经 `_sanitize_thread_id` 严格清洗）。"""
         if not self._storage_dir:
             return None
-        safe_id = thread_id.replace("/", "_").replace("\\", "_")
+        safe_id = _sanitize_thread_id(thread_id)
         return self._storage_dir / f"{safe_id}_versions.json"
 
     async def save(
@@ -317,28 +381,31 @@ class TimeTravelCheckpointer:
             metadata=metadata or {},
         )
 
-        # 添加到版本列表
+        # 添加到版本列表（超过容量上限时淘汰最旧版本，指针随淘汰前移）
         if thread_id not in self._versions:
             self._versions[thread_id] = []
+        versions = self._versions[thread_id]
 
+        # 记录保存前的当前指针：持久化失败时按版本身份恢复（淘汰会改变索引）。
         previous_index = self._current_version.get(thread_id)
-        self._versions[thread_id].append(version)
-        self._current_version[thread_id] = len(self._versions[thread_id]) - 1
+        previous_current: CheckpointVersion | None = None
+        if previous_index is not None and 0 <= previous_index < len(versions):
+            previous_current = versions[previous_index]
+
+        versions.append(version)
+        self._trim_versions(thread_id)
+        self._current_version[thread_id] = len(versions) - 1
 
         # 持久化到文件
         try:
             await self._persist_versions(thread_id)
         except Exception:
             # 按身份移除本次追加的版本；并发 save_version 时列表末尾可能是其他调用者的版本。
-            versions = self._versions[thread_id]
             for position in range(len(versions) - 1, -1, -1):
                 if versions[position] is version:
                     del versions[position]
                     break
-            if previous_index is None:
-                self._current_version.pop(thread_id, None)
-            else:
-                self._current_version[thread_id] = previous_index
+            self._restore_current_pointer(thread_id, previous_current)
             raise
 
         logger.info(
@@ -538,6 +605,45 @@ class TimeTravelCheckpointer:
 
         return diff
 
+    def _trim_versions(self, thread_id: str) -> int:
+        """把版本数量收敛到 `_max_versions_per_thread` 内，返回淘汰的最旧版本数。
+
+        淘汰只从列表头部（最旧）进行；当前指针所指版本被淘汰时，指针前移到
+        它的继任版本（最旧存活版本），未被淘汰时指针仍指向同一版本。
+        """
+        versions = self._versions.get(thread_id)
+        if not versions:
+            return 0
+        excess = len(versions) - self._max_versions_per_thread
+        if excess <= 0:
+            return 0
+        del versions[:excess]
+        current = self._current_version.get(thread_id)
+        if current is not None:
+            self._current_version[thread_id] = max(current - excess, 0)
+        logger.info(
+            "Evicted %d oldest checkpoint versions for thread %r (limit: %d)",
+            excess,
+            thread_id,
+            self._max_versions_per_thread,
+        )
+        return excess
+
+    def _restore_current_pointer(self, thread_id: str, previous: CheckpointVersion | None) -> None:
+        """按版本身份恢复保存前的当前指针（容量淘汰会改变索引）。"""
+        versions = self._versions.get(thread_id, [])
+        if previous is None:
+            self._current_version.pop(thread_id, None)
+            return
+        position = next((i for i, item in enumerate(versions) if item is previous), None)
+        if position is not None:
+            self._current_version[thread_id] = position
+        elif versions:
+            # 保存前的指针版本已被容量淘汰：指针前移到最旧存活版本。
+            self._current_version[thread_id] = 0
+        else:
+            self._current_version.pop(thread_id, None)
+
     async def _persist_versions(self, thread_id: str) -> None:
         """持久化版本列表到文件。"""
         if not self._storage_dir:
@@ -577,5 +683,7 @@ class TimeTravelCheckpointer:
 
             self._versions[thread_id] = [CheckpointVersion.from_dict(v) for v in data.get("versions", [])]
             self._current_version[thread_id] = data.get("current_version", 0)
+            # 历史文件中的版本数可能超过当前上限：加载后同样收敛，指针随淘汰前移。
+            self._trim_versions(thread_id)
         except Exception as exc:
             raise CheckpointError(f"加载会话 {thread_id!r} 的 checkpoint 版本失败：{exc}") from exc
