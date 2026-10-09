@@ -1,6 +1,9 @@
 site_name: Agent Core
 site_description: 零外部平台绑定的 Python Agent 运行时内核
 docs_dir: docs
+# 显式声明 site_dir：mkdocs serve 在未配置时会把站点构建到系统临时目录，
+# 在受限环境（重定向的 TEMP 不可清理）下会启动失败。
+site_dir: site
 repo_url: https://github.com/qiuzixu/agent-core
 edit_uri: edit/main/docs/
 

@@ -44,7 +44,16 @@ flowchart LR
 
 ## 安装方式
 
-从源码开发：
+推荐使用 [uv](https://docs.astral.sh/uv/) 从源码开发：
+
+```bash
+git clone https://github.com/qiuzixu/agent-core.git
+cd agent-core
+uv sync --all-extras
+uv run python examples/basic_agent.py
+```
+
+也可以使用标准 venv + pip：
 
 ```bash
 git clone https://github.com/qiuzixu/agent-core.git

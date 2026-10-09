@@ -9,15 +9,27 @@
 
 ## 安装
 
-在 `agent-core` 目录执行：
+推荐使用 [uv](https://docs.astral.sh/uv/)——它会自动创建 `.venv` 并安装项目与
+`dev` 依赖组。在 `agent-core` 目录执行：
 
 ```bash
-python -m venv .venv
+uv sync
+uv run python examples/basic_agent.py
 ```
+
+按需追加模型/存储 extra：
+
+```bash
+uv sync --extra openai
+uv sync --all-extras
+```
+
+不用 uv 时，用标准 venv + pip。
 
 Windows PowerShell：
 
 ```powershell
+python -m venv .venv
 .venv\Scripts\Activate.ps1
 python -m pip install -e ".[dev]"
 ```
@@ -25,16 +37,16 @@ python -m pip install -e ".[dev]"
 Linux 或 macOS：
 
 ```bash
+python -m venv .venv
 source .venv/bin/activate
 python -m pip install -e ".[dev]"
 ```
 
-也可以使用 `uv sync --extra dev`。
-
 ## 运行最小示例
 
 ```bash
-python examples/basic_agent.py
+uv run python examples/basic_agent.py   # uv 用户
+python examples/basic_agent.py          # 已激活 venv 的 pip 用户
 ```
 
 示例完成四件事：

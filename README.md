@@ -33,6 +33,24 @@
 
 ## 快速开始
 
+推荐使用 [uv](https://docs.astral.sh/uv/)（与仓库其它项目一致，自动创建 `.venv`）：
+
+```bash
+cd agent-core
+uv sync --all-extras
+uv run python examples/basic_agent.py
+```
+
+`uv sync` 默认安装项目本体与 `dev` 依赖组；按需追加 extra：
+
+```bash
+uv sync --extra openai            # 单个 extra
+uv sync --extra models,mcp,production
+uv sync --all-extras              # 全部可选依赖
+```
+
+不用 uv 时也可以用标准 venv + pip：
+
 ```bash
 cd agent-core
 python -m venv .venv
@@ -42,7 +60,8 @@ python examples/basic_agent.py
 
 `examples/basic_agent.py` 使用离线演示模型，不需要 API Key 或外部服务。
 
-真实模型按需安装：
+真实模型按需安装（uv 用户把 `pip install` 换成 `uv pip install`，或用上面的
+`uv sync --extra ...`）：
 
 ```bash
 pip install "handwritten-agent-core[openai]"
@@ -78,15 +97,20 @@ agent = ReActAgent(
 answer = await agent.run("查询数据")
 ```
 
-应用可以通过路径依赖使用尚未发布的 Core：
+应用可以通过路径依赖使用尚未发布的 Core。**uv 0.11 起 path 源默认非 editable**，
+不加 `editable = true` 时 site-packages 里是同步时刻的快照，Core 源码更新后应用
+会用到旧代码（症状是新符号 ImportError）：
 
 ```toml
 [project]
 dependencies = ["handwritten-agent-core"]
 
 [tool.uv.sources]
-handwritten-agent-core = { path = "../agent-core" }
+handwritten-agent-core = { path = "../agent-core", editable = true }
 ```
+
+随后在应用目录执行 `uv sync`（多包仓库在 workspace 根执行
+`uv sync --all-packages --all-extras`）完成安装。
 
 ## 文档站
 
@@ -116,6 +140,15 @@ Core 只提供框架通用能力（Agent Loop、模型适配、工具执行、�
 新 Agent 直接依赖 `agent_core`。Core 不感知、也不依赖任何具体业务域。
 
 ## 开发
+
+```bash
+uv run ruff check src tests examples
+uv run pytest
+uv run mkdocs build
+uv build
+```
+
+不使用 uv 时：
 
 ```bash
 python -m pip install build
