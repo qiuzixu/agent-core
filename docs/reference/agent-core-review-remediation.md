@@ -1,5 +1,7 @@
 # Agent Core 审查报告复核与整改评价
 
+> 状态备注：本文记录**第一批**整改（提交 1428e93/1656585）。第二批（复核遗留修复：恢复期状态回填、时间旅行 thread_id、批末冗余快照、MODIFY 对账、索引迁移预检、HITL 幻影/过期收口、cancel 日志、治理预检+容量、TimeTravel 回滚）与第三批（`AgentRuntime.RunExecutor` 可插拔执行器及 vanilla 委托）见仓库根 `agent-core-review.md` 文末"修复状态备注"。
+
 本文复核仓库根目录的 `agent-core-review.md`，并记录 2026-10-08 的整改结果。评价对象是整改前主仓
 `470d44a` 及其后的本次修改。
 
@@ -108,3 +110,12 @@ Chroma 实现失败的证据。合并或发布前仍应在正常 Python 3.13 环
 原报告适合作为风险发现清单，但不适合作为精确缺陷计数或最终生产评级。高价值的确定性问题已经完成一轮
 整改，并增加了对应回归测试；剩余风险主要集中在同步 SQLite、端口层纵深访问控制、不可强杀的同步工具、
 双循环维护成本和真实基础设施验证。下一轮应围绕这些可验证目标推进，而不是继续追求报告问题总数归零。
+
+### 勘误（第三批复核后补充）
+
+- "批准、拒绝、过期使用 pending 条件状态转换"仅对内置 Memory/SQLite/PostgreSQL Store 原子成立；
+  未实现 `transition_approval` 的外部 Store 经 `_transition` 回退为 load→check→save，跨进程仍存在
+  last-writer-wins 窗口（CAPABILITIES.md 已同步声明）。
+- "审批 CAS"回归测试仅覆盖 MemoryRuntimeStore；SQLite/PostgreSQL 的 `transition_approval` 当时无测试。
+- 复核遗留的高危项"时间旅行接口使用构造时 thread_id"当时既未修复也未列入"仍待处理"，已在第二批修复
+  （`get_checkpoint_history`/`rollback_to` 增加显式 `thread_id` 参数）。

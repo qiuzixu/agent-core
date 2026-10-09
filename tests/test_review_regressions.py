@@ -325,6 +325,67 @@ class TestReviewRegressions(unittest.IsolatedAsyncioTestCase):
         ]
         self.assertIn(1, pending_sizes)
 
+    async def test_resume_replays_only_pending_tools(self) -> None:
+        """恢复批次只重放未完成的工具：执行集合 == pending 集合。"""
+
+        async def fast() -> str:
+            return "fast"
+
+        async def slow() -> str:
+            await asyncio.sleep(0.02)
+            return "slow"
+
+        registry = ToolRegistry()
+        registry.register("fast", fast, "fast")
+        registry.register("slow", slow, "slow")
+        checkpointer = _RecordingCheckpointer()
+        agent = ReActAgent(
+            _ToolCallingModel(),
+            ToolExecutor(registry),
+            system_prompt="test",
+            tool_definitions=registry.build_tool_definitions(),
+            checkpointer=checkpointer,
+        )
+        self.assertEqual(await agent.run("go", thread_id="thread"), "完成")
+
+        # 取"仍有未完成工具"的阶段性快照：pending 集合只包含 slow。
+        mid_batch_states = [
+            state
+            for state in checkpointer.states
+            if state.get("phase") == "execute_tools" and state.get("pending_tool_calls")
+        ]
+        self.assertTrue(mid_batch_states)
+        interrupted_state = mid_batch_states[-1]
+        pending_names = {call["name"] for call in interrupted_state["pending_tool_calls"]}
+        self.assertEqual(pending_names, {"slow"})
+
+        # 用计数注册表从该快照恢复：已完成 的 fast 不得再次执行。
+        counting: dict[str, int] = {}
+
+        async def fast_counted() -> str:
+            counting["fast"] = counting.get("fast", 0) + 1
+            return "fast"
+
+        async def slow_counted() -> str:
+            counting["slow"] = counting.get("slow", 0) + 1
+            await asyncio.sleep(0.01)
+            return "slow"
+
+        recovery_registry = ToolRegistry()
+        recovery_registry.register("fast", fast_counted, "fast")
+        recovery_registry.register("slow", slow_counted, "slow")
+        resumed_agent = ReActAgent(
+            _SuccessfulModel(),
+            ToolExecutor(recovery_registry),
+            system_prompt="test",
+            tool_definitions=recovery_registry.build_tool_definitions(),
+        )
+        context = RunContext(thread_id="thread-resume-replay", run_id="run-resume-replay")
+        answer = await resumed_agent.run("", run_context=context, checkpoint_state=interrupted_state)
+        self.assertEqual(answer, "fallback-ok")
+        # 恢复后执行的工具集合 == pending 集合：只重放 slow，不重放 fast。
+        self.assertEqual(counting, {"slow": 1})
+
 
 class _AlwaysToolModel:
     """始终返回同一个工具调用，迫使循环反复进入工具批次。"""

@@ -42,6 +42,11 @@ from agent_core.access import AccessContext
 from agent_core.model import ContextUsage
 from agent_core.protocol.messages import Message, assistant_message, user_message
 from agent_core.protocol.runtime import RunContext
+from agent_core.storage._sqlite_utils import (
+    _run_in_thread,
+    run_sync_in_thread,
+    sqlite_connection,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -289,7 +294,8 @@ class SqliteSessionStore(BaseSessionStore):
     ) -> None:
         self._db_path = str(Path(db_path).resolve())
         self._require_access = require_access
-        self._init_db()
+        # 建表 DDL/PRAGMA 初始化同样入线程，避免构造期冻结事件循环。
+        run_sync_in_thread(self._init_db)
         logger.info("SqliteSessionStore: %s", self._db_path)
 
     def _init_db(self) -> None:
@@ -299,19 +305,9 @@ class SqliteSessionStore(BaseSessionStore):
 
     @contextmanager
     def _connect(self) -> Generator[sqlite3.Connection]:
-        """获取 SQLite 连接（同步，自动提交/回滚）。"""
-        conn = sqlite3.connect(self._db_path)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")  # WAL 模式，提升并发读性能
-        conn.execute("PRAGMA synchronous=NORMAL")  # 平衡安全和性能
-        try:
+        """获取 SQLite 连接（同步，自动提交/回滚；统一 timeout 与 WAL 规范）。"""
+        with sqlite_connection(self._db_path, row_factory=sqlite3.Row) as conn:
             yield conn
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
 
     def _check_access(
         self,
@@ -344,13 +340,16 @@ class SqliteSessionStore(BaseSessionStore):
             raise PermissionError("无权访问该 thread 的会话历史")
 
     async def load(self, thread_id: str, *, access: AccessContext | None = None) -> list[Message]:
-        with self._connect() as conn:
-            self._check_access(conn, thread_id, access, claim=False)
-            rows = conn.execute(
-                "SELECT role, content, name, tool_call_id, tool_calls "
-                "FROM sessions WHERE thread_id = ? ORDER BY id ASC",
-                (thread_id,),
-            ).fetchall()
+        def _op() -> list[tuple[Any, ...] | dict[str, Any]]:
+            with self._connect() as conn:
+                self._check_access(conn, thread_id, access, claim=False)
+                return conn.execute(
+                    "SELECT role, content, name, tool_call_id, tool_calls "
+                    "FROM sessions WHERE thread_id = ? ORDER BY id ASC",
+                    (thread_id,),
+                ).fetchall()
+
+        rows = await _run_in_thread(_op)
         result = [_row_to_msg(dict(row)) for row in rows]
         logger.debug("SQLite load: thread=%r, messages=%d", thread_id, len(result))
         return result
@@ -363,14 +362,18 @@ class SqliteSessionStore(BaseSessionStore):
         access: AccessContext | None = None,
     ) -> None:
         """覆盖保存（先删再插）。"""
-        with self._connect() as conn:
-            self._check_access(conn, thread_id, access, claim=True)
-            conn.execute("DELETE FROM sessions WHERE thread_id = ?", (thread_id,))
-            conn.executemany(
-                "INSERT INTO sessions (thread_id, role, content, name, tool_call_id, tool_calls) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                [(thread_id, *_msg_to_row(m)) for m in messages],
-            )
+
+        def _op() -> None:
+            with self._connect() as conn:
+                self._check_access(conn, thread_id, access, claim=True)
+                conn.execute("DELETE FROM sessions WHERE thread_id = ?", (thread_id,))
+                conn.executemany(
+                    "INSERT INTO sessions (thread_id, role, content, name, tool_call_id, tool_calls) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    [(thread_id, *_msg_to_row(m)) for m in messages],
+                )
+
+        await _run_in_thread(_op)
         logger.debug("SQLite save: thread=%r, messages=%d", thread_id, len(messages))
 
     async def append(
@@ -381,49 +384,64 @@ class SqliteSessionStore(BaseSessionStore):
         access: AccessContext | None = None,
     ) -> None:
         """追加消息（不需要先 load，效率更高）。"""
-        with self._connect() as conn:
-            self._check_access(conn, thread_id, access, claim=True)
-            conn.executemany(
-                "INSERT INTO sessions (thread_id, role, content, name, tool_call_id, tool_calls) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                [(thread_id, *_msg_to_row(m)) for m in messages],
-            )
+
+        def _op() -> None:
+            with self._connect() as conn:
+                self._check_access(conn, thread_id, access, claim=True)
+                conn.executemany(
+                    "INSERT INTO sessions (thread_id, role, content, name, tool_call_id, tool_calls) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    [(thread_id, *_msg_to_row(m)) for m in messages],
+                )
+
+        await _run_in_thread(_op)
         logger.debug("SQLite append: thread=%r, +%d messages", thread_id, len(messages))
 
     async def delete(self, thread_id: str, *, access: AccessContext | None = None) -> None:
-        with self._connect() as conn:
-            self._check_access(conn, thread_id, access, claim=False)
-            conn.execute("DELETE FROM sessions WHERE thread_id = ?", (thread_id,))
-            conn.execute("DELETE FROM session_threads WHERE thread_id = ?", (thread_id,))
+        def _op() -> None:
+            with self._connect() as conn:
+                self._check_access(conn, thread_id, access, claim=False)
+                conn.execute("DELETE FROM sessions WHERE thread_id = ?", (thread_id,))
+                conn.execute("DELETE FROM session_threads WHERE thread_id = ?", (thread_id,))
+
+        await _run_in_thread(_op)
         logger.debug("SQLite delete: thread=%r", thread_id)
 
     async def list_threads(self, *, access: AccessContext | None = None) -> list[str]:
         if self._require_access and access is None:
             raise PermissionError("该 SessionStore 要求提供 AccessContext")
-        with self._connect() as conn:
-            if access is None:
-                rows = conn.execute("SELECT DISTINCT thread_id FROM sessions ORDER BY thread_id").fetchall()
-            elif access.is_admin:
-                rows = conn.execute(
-                    "SELECT thread_id FROM session_threads WHERE tenant_id=? ORDER BY thread_id",
-                    (access.tenant_id,),
-                ).fetchall()
-            else:
-                rows = conn.execute(
+
+        def _op() -> list[sqlite3.Row]:
+            with self._connect() as conn:
+                if access is None:
+                    return conn.execute(
+                        "SELECT DISTINCT thread_id FROM sessions ORDER BY thread_id"
+                    ).fetchall()
+                if access.is_admin:
+                    return conn.execute(
+                        "SELECT thread_id FROM session_threads WHERE tenant_id=? ORDER BY thread_id",
+                        (access.tenant_id,),
+                    ).fetchall()
+                return conn.execute(
                     """SELECT thread_id FROM session_threads
                     WHERE tenant_id=? AND user_id=? ORDER BY thread_id""",
                     (access.tenant_id, access.user_id),
                 ).fetchall()
+
+        rows = await _run_in_thread(_op)
         return [row["thread_id"] for row in rows]
 
     async def count(self, thread_id: str, *, access: AccessContext | None = None) -> int:
-        with self._connect() as conn:
-            self._check_access(conn, thread_id, access, claim=False)
-            row = conn.execute(
-                "SELECT COUNT(*) AS cnt FROM sessions WHERE thread_id = ?",
-                (thread_id,),
-            ).fetchone()
-        return row["cnt"] if row else 0
+        def _op() -> Any:
+            with self._connect() as conn:
+                self._check_access(conn, thread_id, access, claim=False)
+                return conn.execute(
+                    "SELECT COUNT(*) AS cnt FROM sessions WHERE thread_id = ?",
+                    (thread_id,),
+                ).fetchone()
+
+        row = await _run_in_thread(_op)
+        return int(row["cnt"]) if row else 0
 
     def db_path(self) -> str:
         """返回数据库文件路径（调试用）。"""

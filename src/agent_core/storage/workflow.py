@@ -14,6 +14,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from agent_core.storage._sqlite_utils import (
+    _run_in_thread,
+    run_sync_in_thread,
+    sqlite_connection,
+)
+
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
@@ -167,20 +173,18 @@ class SqliteWorkflowExecutionStore(WorkflowExecutionStore):
 
     def __init__(self, db_path: str | Path = "./sessions.db") -> None:
         self._db_path = str(Path(db_path).resolve())
+        # 建表 DDL/PRAGMA 初始化同样入线程，避免构造期冻结事件循环。
+        run_sync_in_thread(self._init_db)
+
+    def _init_db(self) -> None:
         with self._connect() as conn:
             conn.executescript(self.DDL)
 
     @contextmanager
     def _connect(self) -> Generator[sqlite3.Connection]:
-        conn = sqlite3.connect(self._db_path)
-        try:
+        """获取 SQLite 连接（同步，自动提交/回滚；统一 timeout 与 WAL 规范）。"""
+        with sqlite_connection(self._db_path) as conn:
             yield conn
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
 
     @staticmethod
     def _row(row: tuple[Any, ...]) -> WorkflowExecution:
@@ -207,60 +211,67 @@ class SqliteWorkflowExecutionStore(WorkflowExecutionStore):
         return _from_dict(value)
 
     async def save(self, execution: WorkflowExecution) -> None:
-        with self._connect() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            row = conn.execute(
-                "SELECT version FROM workflow_executions WHERE execution_id=?",
-                (execution.execution_id,),
-            ).fetchone()
-            stored_version = int(row[0]) if row else 0
-            if row is not None and stored_version != execution.version:
-                raise WorkflowConcurrencyError(f"工作流 {execution.execution_id} 版本冲突")
-            next_version = stored_version + 1
-            updated_at = _now()
-            value = execution.to_dict()
-            cursor = conn.execute(
-                """INSERT INTO workflow_executions
-                (execution_id,definition_id,execution_type,user_id,tenant_id,status,current_step,
-                 steps_completed,total_steps,input_data,result_data,events,version,created_at,updated_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                ON CONFLICT(execution_id) DO UPDATE SET status=excluded.status,
-                current_step=excluded.current_step, steps_completed=excluded.steps_completed,
-                total_steps=excluded.total_steps, result_data=excluded.result_data,
-                events=excluded.events, version=excluded.version, updated_at=excluded.updated_at
-                WHERE workflow_executions.version=?""",
-                (
-                    execution.execution_id,
-                    execution.definition_id,
-                    execution.execution_type,
-                    execution.user_id,
-                    execution.tenant_id,
-                    execution.status,
-                    execution.current_step,
-                    execution.steps_completed,
-                    execution.total_steps,
-                    json.dumps(value["input_data"], ensure_ascii=False),
-                    json.dumps(value["result_data"], ensure_ascii=False),
-                    json.dumps(value["events"], ensure_ascii=False),
-                    next_version,
-                    execution.created_at,
-                    updated_at,
-                    stored_version,
-                ),
-            )
-            if cursor.rowcount != 1:
-                raise WorkflowConcurrencyError(f"工作流 {execution.execution_id} 保存时发生并发冲突")
+        def _op() -> tuple[int, str]:
+            with self._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    "SELECT version FROM workflow_executions WHERE execution_id=?",
+                    (execution.execution_id,),
+                ).fetchone()
+                stored_version = int(row[0]) if row else 0
+                if row is not None and stored_version != execution.version:
+                    raise WorkflowConcurrencyError(f"工作流 {execution.execution_id} 版本冲突")
+                next_version = stored_version + 1
+                updated_at = _now()
+                value = execution.to_dict()
+                cursor = conn.execute(
+                    """INSERT INTO workflow_executions
+                    (execution_id,definition_id,execution_type,user_id,tenant_id,status,current_step,
+                     steps_completed,total_steps,input_data,result_data,events,version,created_at,updated_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(execution_id) DO UPDATE SET status=excluded.status,
+                    current_step=excluded.current_step, steps_completed=excluded.steps_completed,
+                    total_steps=excluded.total_steps, result_data=excluded.result_data,
+                    events=excluded.events, version=excluded.version, updated_at=excluded.updated_at
+                    WHERE workflow_executions.version=?""",
+                    (
+                        execution.execution_id,
+                        execution.definition_id,
+                        execution.execution_type,
+                        execution.user_id,
+                        execution.tenant_id,
+                        execution.status,
+                        execution.current_step,
+                        execution.steps_completed,
+                        execution.total_steps,
+                        json.dumps(value["input_data"], ensure_ascii=False),
+                        json.dumps(value["result_data"], ensure_ascii=False),
+                        json.dumps(value["events"], ensure_ascii=False),
+                        next_version,
+                        execution.created_at,
+                        updated_at,
+                        stored_version,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise WorkflowConcurrencyError(f"工作流 {execution.execution_id} 保存时发生并发冲突")
+            return next_version, updated_at
+
+        next_version, updated_at = await _run_in_thread(_op)
         execution.version = next_version
         execution.updated_at = updated_at
 
     async def load(self, execution_id: str) -> WorkflowExecution | None:
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT execution_id,definition_id,execution_type,user_id,tenant_id,status,current_step,"
-                "steps_completed,total_steps,input_data,result_data,events,version,created_at,updated_at "
-                "FROM workflow_executions WHERE execution_id=?",
-                (execution_id,),
-            ).fetchone()
+        def _op() -> Any:
+            with self._connect() as conn:
+                return conn.execute(
+                    "SELECT execution_id,definition_id,execution_type,user_id,tenant_id,status,current_step,"
+                    "steps_completed,total_steps,input_data,result_data,events,version,created_at,updated_at "
+                    "FROM workflow_executions WHERE execution_id=?",
+                    (execution_id,),
+                ).fetchone()
+
+        row = await _run_in_thread(_op)
         return self._row(row) if row else None
 
     async def list(self, definition_id: str, tenant_id: str | None = None) -> list[WorkflowExecution]:
@@ -275,8 +286,12 @@ class SqliteWorkflowExecutionStore(WorkflowExecutionStore):
             query += " AND tenant_id=?"
             args.append(tenant_id)
         query += " ORDER BY updated_at DESC"
-        with self._connect() as conn:
-            rows = conn.execute(query, args).fetchall()
+
+        def _op() -> list[Any]:
+            with self._connect() as conn:
+                return conn.execute(query, args).fetchall()
+
+        rows = await _run_in_thread(_op)
         return [self._row(row) for row in rows]
 
 

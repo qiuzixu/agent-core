@@ -16,6 +16,12 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from agent_core.storage._sqlite_utils import (
+    _run_in_thread,
+    run_sync_in_thread,
+    sqlite_connection,
+)
+
 
 def _now() -> datetime:
     return datetime.now(UTC)
@@ -176,20 +182,18 @@ class SqliteRunLeaseStore(RunLeaseStore):
 
     def __init__(self, db_path: str | Path = "./sessions.db") -> None:
         self._db_path = str(Path(db_path).resolve())
+        # 建表 DDL/PRAGMA 初始化同样入线程，避免构造期冻结事件循环。
+        run_sync_in_thread(self._init_db)
+
+    def _init_db(self) -> None:
         with self._connect() as connection:
             connection.executescript(self.DDL)
 
     @contextmanager
     def _connect(self) -> Generator[sqlite3.Connection]:
-        connection = sqlite3.connect(self._db_path, timeout=30.0)
-        try:
+        """获取 SQLite 连接（同步，自动提交/回滚；统一 timeout 与 WAL 规范）。"""
+        with sqlite_connection(self._db_path) as connection:
             yield connection
-            connection.commit()
-        except Exception:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
 
     async def claim(
         self,
@@ -202,25 +206,29 @@ class SqliteRunLeaseStore(RunLeaseStore):
         _validate_ttl(ttl_seconds)
         now = _now()
         expires_at = now + timedelta(seconds=ttl_seconds)
-        with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute(
-                "SELECT worker_id, lease_expires_at FROM agent_run_leases WHERE thread_id=? AND run_id=?",
-                (thread_id, run_id),
-            ).fetchone()
-            if row and row[0] != worker_id and _parse(row[1]) > now:
-                return False
-            connection.execute(
-                """INSERT INTO agent_run_leases
-                (thread_id,run_id,worker_id,lease_expires_at,heartbeat_at)
-                VALUES (?,?,?,?,?)
-                ON CONFLICT(thread_id,run_id) DO UPDATE SET
-                worker_id=excluded.worker_id,
-                lease_expires_at=excluded.lease_expires_at,
-                heartbeat_at=excluded.heartbeat_at""",
-                (thread_id, run_id, worker_id, _iso(expires_at), _iso(now)),
-            )
-        return True
+
+        def _op() -> bool:
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                row = connection.execute(
+                    "SELECT worker_id, lease_expires_at FROM agent_run_leases WHERE thread_id=? AND run_id=?",
+                    (thread_id, run_id),
+                ).fetchone()
+                if row and row[0] != worker_id and _parse(row[1]) > now:
+                    return False
+                connection.execute(
+                    """INSERT INTO agent_run_leases
+                    (thread_id,run_id,worker_id,lease_expires_at,heartbeat_at)
+                    VALUES (?,?,?,?,?)
+                    ON CONFLICT(thread_id,run_id) DO UPDATE SET
+                    worker_id=excluded.worker_id,
+                    lease_expires_at=excluded.lease_expires_at,
+                    heartbeat_at=excluded.heartbeat_at""",
+                    (thread_id, run_id, worker_id, _iso(expires_at), _iso(now)),
+                )
+            return True
+
+        return await _run_in_thread(_op)
 
     async def renew(
         self,
@@ -232,37 +240,47 @@ class SqliteRunLeaseStore(RunLeaseStore):
     ) -> bool:
         _validate_ttl(ttl_seconds)
         now = _now()
-        with self._connect() as connection:
-            cursor = connection.execute(
-                """UPDATE agent_run_leases
-                SET lease_expires_at=?, heartbeat_at=?
-                WHERE thread_id=? AND run_id=? AND worker_id=? AND lease_expires_at>?""",
-                (
-                    _iso(now + timedelta(seconds=ttl_seconds)),
-                    _iso(now),
-                    thread_id,
-                    run_id,
-                    worker_id,
-                    _iso(now),
-                ),
-            )
-        return cursor.rowcount == 1
+
+        def _op() -> int:
+            with self._connect() as connection:
+                cursor = connection.execute(
+                    """UPDATE agent_run_leases
+                    SET lease_expires_at=?, heartbeat_at=?
+                    WHERE thread_id=? AND run_id=? AND worker_id=? AND lease_expires_at>?""",
+                    (
+                        _iso(now + timedelta(seconds=ttl_seconds)),
+                        _iso(now),
+                        thread_id,
+                        run_id,
+                        worker_id,
+                        _iso(now),
+                    ),
+                )
+            return cursor.rowcount
+
+        return await _run_in_thread(_op) == 1
 
     async def release(self, thread_id: str, run_id: str, worker_id: str) -> bool:
-        with self._connect() as connection:
-            cursor = connection.execute(
-                "DELETE FROM agent_run_leases WHERE thread_id=? AND run_id=? AND worker_id=?",
-                (thread_id, run_id, worker_id),
-            )
-        return cursor.rowcount == 1
+        def _op() -> int:
+            with self._connect() as connection:
+                cursor = connection.execute(
+                    "DELETE FROM agent_run_leases WHERE thread_id=? AND run_id=? AND worker_id=?",
+                    (thread_id, run_id, worker_id),
+                )
+            return cursor.rowcount
+
+        return await _run_in_thread(_op) == 1
 
     async def list_expired(self) -> list[RunLease]:
-        with self._connect() as connection:
-            rows = connection.execute(
-                """SELECT thread_id,run_id,worker_id,lease_expires_at,heartbeat_at
-                FROM agent_run_leases WHERE lease_expires_at<=?""",
-                (_iso(_now()),),
-            ).fetchall()
+        def _op() -> list[Any]:
+            with self._connect() as connection:
+                return connection.execute(
+                    """SELECT thread_id,run_id,worker_id,lease_expires_at,heartbeat_at
+                    FROM agent_run_leases WHERE lease_expires_at<=?""",
+                    (_iso(_now()),),
+                ).fetchall()
+
+        rows = await _run_in_thread(_op)
         return [RunLease(*row) for row in rows]
 
 

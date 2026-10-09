@@ -17,6 +17,11 @@ from typing import Any
 from agent_core.access import AccessContext
 from agent_core.errors import MemoryConflictError
 from agent_core.ports.memory import MemoryRecord, MemorySearchResult, MemoryStore, memory_now
+from agent_core.storage._sqlite_utils import (
+    _run_in_thread,
+    run_sync_in_thread,
+    sqlite_connection,
+)
 
 _WORD = re.compile(r"[\w\u4e00-\u9fff]+", re.UNICODE)
 
@@ -195,20 +200,18 @@ class SqliteMemoryStore(_MemoryAccessMixin):
     def __init__(self, db_path: str | Path = "./sessions.db", *, require_access: bool = False) -> None:
         super().__init__(require_access=require_access)
         self._db_path = str(Path(db_path).resolve())
+        # 建表 DDL/PRAGMA 初始化同样入线程，避免构造期冻结事件循环。
+        run_sync_in_thread(self._init_db)
+
+    def _init_db(self) -> None:
         with self._connect() as conn:
             conn.executescript(self.DDL)
 
     @contextmanager
     def _connect(self) -> Generator[sqlite3.Connection]:
-        conn = sqlite3.connect(self._db_path)
-        try:
+        """获取 SQLite 连接（同步，自动提交/回滚；统一 timeout 与 WAL 规范）。"""
+        with sqlite_connection(self._db_path) as conn:
             yield conn
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
 
     @staticmethod
     def _row(row: tuple[Any, ...]) -> MemoryRecord:
@@ -235,54 +238,58 @@ class SqliteMemoryStore(_MemoryAccessMixin):
         access: AccessContext | None = None,
     ) -> MemoryRecord:
         value = self._bind(record, access)
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT memory_id,namespace,memory_key,content,user_id,tenant_id,source,metadata,"
-                "expires_at,version,created_at,updated_at FROM agent_memories WHERE memory_id=?",
-                (value.memory_id,),
-            ).fetchone()
-            current = self._row(row) if row else None
-            if current is not None and not self._can_access(current, access):
-                raise PermissionError("无权更新该记忆")
-            actual = current.version if current else 0
-            if expected_version is not None and expected_version != actual:
-                raise MemoryConflictError(value.memory_id, expected_version, actual)
-            value.version = actual + 1
-            value.created_at = current.created_at if current else value.created_at
-            value.updated_at = memory_now()
-            payload = (
-                value.namespace,
-                value.key,
-                value.content,
-                value.user_id,
-                value.tenant_id,
-                value.source,
-                json.dumps(value.metadata, ensure_ascii=False),
-                value.expires_at,
-                value.version,
-                value.created_at,
-                value.updated_at,
-            )
-            if current is None:
-                try:
-                    conn.execute(
-                        "INSERT INTO agent_memories(memory_id,namespace,memory_key,content,user_id,tenant_id,"
-                        "source,metadata,expires_at,version,created_at,updated_at) "
-                        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                        (value.memory_id, *payload),
-                    )
-                except sqlite3.IntegrityError as exc:
-                    raise MemoryConflictError(value.memory_id, 0, 1) from exc
-            else:
-                changed = conn.execute(
-                    "UPDATE agent_memories SET namespace=?,memory_key=?,content=?,user_id=?,tenant_id=?,"
-                    "source=?,metadata=?,expires_at=?,version=?,created_at=?,updated_at=? "
-                    "WHERE memory_id=? AND version=?",
-                    (*payload, value.memory_id, actual),
-                ).rowcount
-                if changed != 1:
-                    raise MemoryConflictError(value.memory_id, actual, actual + 1)
-        return MemoryRecord.from_dict(value.to_dict())
+
+        def _op() -> MemoryRecord:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT memory_id,namespace,memory_key,content,user_id,tenant_id,source,metadata,"
+                    "expires_at,version,created_at,updated_at FROM agent_memories WHERE memory_id=?",
+                    (value.memory_id,),
+                ).fetchone()
+                current = self._row(row) if row else None
+                if current is not None and not self._can_access(current, access):
+                    raise PermissionError("无权更新该记忆")
+                actual = current.version if current else 0
+                if expected_version is not None and expected_version != actual:
+                    raise MemoryConflictError(value.memory_id, expected_version, actual)
+                value.version = actual + 1
+                value.created_at = current.created_at if current else value.created_at
+                value.updated_at = memory_now()
+                payload = (
+                    value.namespace,
+                    value.key,
+                    value.content,
+                    value.user_id,
+                    value.tenant_id,
+                    value.source,
+                    json.dumps(value.metadata, ensure_ascii=False),
+                    value.expires_at,
+                    value.version,
+                    value.created_at,
+                    value.updated_at,
+                )
+                if current is None:
+                    try:
+                        conn.execute(
+                            "INSERT INTO agent_memories(memory_id,namespace,memory_key,content,"
+                            "user_id,tenant_id,source,metadata,expires_at,version,created_at,updated_at) "
+                            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                            (value.memory_id, *payload),
+                        )
+                    except sqlite3.IntegrityError as exc:
+                        raise MemoryConflictError(value.memory_id, 0, 1) from exc
+                else:
+                    changed = conn.execute(
+                        "UPDATE agent_memories SET namespace=?,memory_key=?,content=?,user_id=?,tenant_id=?,"
+                        "source=?,metadata=?,expires_at=?,version=?,created_at=?,updated_at=? "
+                        "WHERE memory_id=? AND version=?",
+                        (*payload, value.memory_id, actual),
+                    ).rowcount
+                    if changed != 1:
+                        raise MemoryConflictError(value.memory_id, actual, actual + 1)
+            return MemoryRecord.from_dict(value.to_dict())
+
+        return await _run_in_thread(_op)
 
     async def get(
         self,
@@ -291,18 +298,25 @@ class SqliteMemoryStore(_MemoryAccessMixin):
         access: AccessContext | None = None,
     ) -> MemoryRecord | None:
         self._require_access(access)
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT memory_id,namespace,memory_key,content,user_id,tenant_id,source,metadata,"
-                "expires_at,version,created_at,updated_at FROM agent_memories WHERE memory_id=?",
-                (memory_id,),
-            ).fetchone()
-            if row is None:
-                return None
-            value = self._row(row)
-            if value.is_expired():
-                conn.execute("DELETE FROM agent_memories WHERE memory_id=?", (memory_id,))
-                return None
+
+        def _op() -> MemoryRecord | None:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT memory_id,namespace,memory_key,content,user_id,tenant_id,source,metadata,"
+                    "expires_at,version,created_at,updated_at FROM agent_memories WHERE memory_id=?",
+                    (memory_id,),
+                ).fetchone()
+                if row is None:
+                    return None
+                value = self._row(row)
+                if value.is_expired():
+                    conn.execute("DELETE FROM agent_memories WHERE memory_id=?", (memory_id,))
+                    return None
+                return value
+
+        value = await _run_in_thread(_op)
+        if value is None:
+            return None
         if not self._can_access(value, access):
             raise PermissionError("无权访问该记忆")
         return value
@@ -319,11 +333,15 @@ class SqliteMemoryStore(_MemoryAccessMixin):
             return False
         if expected_version is not None and expected_version != current.version:
             raise MemoryConflictError(memory_id, expected_version, current.version)
-        with self._connect() as conn:
-            changed = conn.execute(
-                "DELETE FROM agent_memories WHERE memory_id=? AND version=?",
-                (memory_id, current.version),
-            ).rowcount
+
+        def _op() -> int:
+            with self._connect() as conn:
+                return conn.execute(
+                    "DELETE FROM agent_memories WHERE memory_id=? AND version=?",
+                    (memory_id, current.version),
+                ).rowcount
+
+        changed = await _run_in_thread(_op)
         if changed != 1:
             raise MemoryConflictError(memory_id, current.version, current.version + 1)
         return True
@@ -340,12 +358,16 @@ class SqliteMemoryStore(_MemoryAccessMixin):
         self._require_access(access)
         if limit <= 0:
             return []
-        with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT memory_id,namespace,memory_key,content,user_id,tenant_id,source,metadata,"
-                "expires_at,version,created_at,updated_at FROM agent_memories WHERE namespace=?",
-                (namespace,),
-            ).fetchall()
+
+        def _op() -> list[Any]:
+            with self._connect() as conn:
+                return conn.execute(
+                    "SELECT memory_id,namespace,memory_key,content,user_id,tenant_id,source,metadata,"
+                    "expires_at,version,created_at,updated_at FROM agent_memories WHERE namespace=?",
+                    (namespace,),
+                ).fetchall()
+
+        rows = await _run_in_thread(_op)
         results = []
         for row in rows:
             value = self._row(row)

@@ -18,6 +18,11 @@ from pathlib import Path
 from typing import Any
 
 from agent_core.access import AccessContext
+from agent_core.storage._sqlite_utils import (
+    _run_in_thread,
+    run_sync_in_thread,
+    sqlite_connection,
+)
 
 
 # ──────────────────────────────────────────────
@@ -173,6 +178,10 @@ class SqliteContextStore(ContextStore):
     ) -> None:
         self._db_path = str(Path(db_path).resolve())
         self._strict_access = require_access
+        # 建表 DDL/PRAGMA 初始化同样入线程，避免构造期冻结事件循环。
+        run_sync_in_thread(self._init_db)
+
+    def _init_db(self) -> None:
         with self._connect() as conn:
             conn.execute(
                 """CREATE TABLE IF NOT EXISTS agent_context (
@@ -185,16 +194,9 @@ class SqliteContextStore(ContextStore):
     # 连接 SQLite 数据库
     @contextmanager
     def _connect(self) -> Generator[sqlite3.Connection]:
-        """打开一个自动提交或回滚的 SQLite 连接。"""
-        conn = sqlite3.connect(self._db_path)
-        try:
+        """打开一个自动提交或回滚的 SQLite 连接（统一 timeout 与 WAL 规范）。"""
+        with sqlite_connection(self._db_path) as conn:
             yield conn
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
 
     # 获取上下文数据
     async def get(
@@ -203,8 +205,13 @@ class SqliteContextStore(ContextStore):
         *,
         access: AccessContext | None = None,
     ) -> dict[str, Any]:
-        with self._connect() as conn:
-            row = conn.execute("SELECT data FROM agent_context WHERE thread_id = ?", (thread_id,)).fetchone()
+        def _op() -> Any:
+            with self._connect() as conn:
+                return conn.execute(
+                    "SELECT data FROM agent_context WHERE thread_id = ?", (thread_id,)
+                ).fetchone()
+
+        row = await _run_in_thread(_op)
         value = json.loads(row[0]) if row else {}
         self._check_scope(value, access)
         return value
@@ -218,24 +225,28 @@ class SqliteContextStore(ContextStore):
         access: AccessContext | None = None,
     ) -> dict[str, Any]:
         self._validate_values(values)
-        with self._connect() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            row = conn.execute(
-                "SELECT data FROM agent_context WHERE thread_id = ?",
-                (thread_id,),
-            ).fetchone()
-            current = json.loads(row[0]) if row else {}
-            self._check_scope(current, access)
-            if access and "_access" not in current:
-                current["_access"] = access.to_dict()
-            current.update(copy.deepcopy(values))
-            conn.execute(
-                """INSERT INTO agent_context(thread_id, data) VALUES (?, ?)
-                ON CONFLICT(thread_id) DO UPDATE SET data=excluded.data,
-                updated_at=CURRENT_TIMESTAMP""",
-                (thread_id, json.dumps(current, ensure_ascii=False)),
-            )
-        return copy.deepcopy(current)
+
+        def _op() -> dict[str, Any]:
+            with self._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    "SELECT data FROM agent_context WHERE thread_id = ?",
+                    (thread_id,),
+                ).fetchone()
+                current = json.loads(row[0]) if row else {}
+                self._check_scope(current, access)
+                if access and "_access" not in current:
+                    current["_access"] = access.to_dict()
+                current.update(copy.deepcopy(values))
+                conn.execute(
+                    """INSERT INTO agent_context(thread_id, data) VALUES (?, ?)
+                    ON CONFLICT(thread_id) DO UPDATE SET data=excluded.data,
+                    updated_at=CURRENT_TIMESTAMP""",
+                    (thread_id, json.dumps(current, ensure_ascii=False)),
+                )
+            return copy.deepcopy(current)
+
+        return await _run_in_thread(_op)
 
     # 清除上下文数据
     async def clear(
@@ -245,8 +256,12 @@ class SqliteContextStore(ContextStore):
         access: AccessContext | None = None,
     ) -> None:
         await self.get(thread_id, access=access)
-        with self._connect() as conn:
-            conn.execute("DELETE FROM agent_context WHERE thread_id = ?", (thread_id,))
+
+        def _op() -> None:
+            with self._connect() as conn:
+                conn.execute("DELETE FROM agent_context WHERE thread_id = ?", (thread_id,))
+
+        await _run_in_thread(_op)
 
 
 # ──────────────────────────────────────────────

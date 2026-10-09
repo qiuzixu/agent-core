@@ -34,7 +34,7 @@ Agent Core 是一套零外部平台绑定的手写 Agent 运行时内核。
 | `guardrails` | 关键词、长度、PII 脱敏和输出格式检查 | `GuardrailsMiddleware` |
 | `prompts` | 安全文本/聊天模板、消息占位符、partial、Prompt 版本和历史查询 | `PromptTemplate`、`ChatPromptTemplate`、`PromptRegistry` |
 | `observability` | 并发隔离的模型/工具耗时、调用计数、Thread/Agent 统计和可选 OTel | `ObservabilityMiddleware`、`setup_tracing` |
-| `access` | 用户和租户访问上下文 | `AccessContext` |
+| `access` | 用户和租户访问上下文，共享的严格模式/归属/身份访问校验 | `AccessContext`、`enforce_access` |
 | `ports` | 存储、审批、事件和长期记忆等依赖倒置接口 | `RunStore`、`SessionStore`、`ContextStore`、`MemoryStore`、`EventSink` |
 | `acp` | ACP JSON-RPC/stdio、会话、提示、更新、取消和审批请求 | `AcpStdioServer`、`AcpBackend` |
 

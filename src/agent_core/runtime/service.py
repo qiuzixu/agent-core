@@ -13,7 +13,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Seque
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from agent_core.access import AccessContext
+from agent_core.access import AccessContext, enforce_access
 from agent_core.callbacks import CallbackHandler, CallbackManager
 from agent_core.ports import EventSink, RunStore
 from agent_core.protocol.runtime import RunContext, RunEvent
@@ -448,12 +448,14 @@ class AgentRuntime:
         context: RunContext,
         access: AccessContext | None,
     ) -> None:
-        if self._require_access and access is None:
-            raise PermissionError("该 AgentRuntime 要求提供 AccessContext")
-        if self._require_access and (context.user_id is None or context.tenant_id is None):
-            raise PermissionError("该 run 尚未绑定用户和租户")
-        if access is not None and not access.can_access(context.user_id, context.tenant_id):
-            raise PermissionError("无权访问该 run")
+        enforce_access(
+            strict=self._require_access,
+            accessor="AgentRuntime",
+            subject="run",
+            owner_user_id=context.user_id,
+            owner_tenant_id=context.tenant_id,
+            access=access,
+        )
 
     def _require_owner(
         self,

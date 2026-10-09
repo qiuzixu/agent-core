@@ -20,6 +20,11 @@ from agent_core.ports.model_selection import (
     ModelSelectionScope,
     ModelSelectionStore,
 )
+from agent_core.storage._sqlite_utils import (
+    _run_in_thread,
+    run_sync_in_thread,
+    sqlite_connection,
+)
 
 
 def _now() -> str:
@@ -98,6 +103,10 @@ class SqliteModelSelectionStore:
 
     def __init__(self, db_path: str | Path = "./sessions.db") -> None:
         self._db_path = str(Path(db_path).resolve())
+        # 建表/建索引 DDL 初始化同样入线程，避免构造期冻结事件循环。
+        run_sync_in_thread(self._init_db)
+
+    def _init_db(self) -> None:
         with self._connect() as conn:
             conn.execute(
                 """CREATE TABLE IF NOT EXISTS agent_model_selections (
@@ -118,15 +127,9 @@ class SqliteModelSelectionStore:
 
     @contextmanager
     def _connect(self) -> Generator[sqlite3.Connection]:
-        conn = sqlite3.connect(self._db_path)
-        try:
+        """获取 SQLite 连接（同步，自动提交/回滚；统一 timeout 与 WAL 规范）。"""
+        with sqlite_connection(self._db_path) as conn:
             yield conn
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
 
     @staticmethod
     def _row(row: sqlite3.Row | tuple[Any, ...] | None) -> ModelSelection | None:
@@ -144,24 +147,27 @@ class SqliteModelSelectionStore:
         )
 
     async def resolve(self, *, user_id: str | None, tenant_id: str | None) -> ModelSelection | None:
-        with self._connect() as conn:
-            if user_id and tenant_id:
-                row = conn.execute(
-                    "SELECT scope,user_id,tenant_id,provider,model,version,updated_at "
-                    "FROM agent_model_selections WHERE scope='user' AND user_id=? AND tenant_id=?",
-                    (user_id, tenant_id),
-                ).fetchone()
-                value = self._row(row)
-                if value:
-                    return value
-            if tenant_id:
-                row = conn.execute(
-                    "SELECT scope,user_id,tenant_id,provider,model,version,updated_at "
-                    "FROM agent_model_selections WHERE scope='tenant' AND tenant_id=?",
-                    (tenant_id,),
-                ).fetchone()
-                return self._row(row)
-        return None
+        def _op() -> ModelSelection | None:
+            with self._connect() as conn:
+                if user_id and tenant_id:
+                    row = conn.execute(
+                        "SELECT scope,user_id,tenant_id,provider,model,version,updated_at "
+                        "FROM agent_model_selections WHERE scope='user' AND user_id=? AND tenant_id=?",
+                        (user_id, tenant_id),
+                    ).fetchone()
+                    value = self._row(row)
+                    if value:
+                        return value
+                if tenant_id:
+                    row = conn.execute(
+                        "SELECT scope,user_id,tenant_id,provider,model,version,updated_at "
+                        "FROM agent_model_selections WHERE scope='tenant' AND tenant_id=?",
+                        (tenant_id,),
+                    ).fetchone()
+                    return self._row(row)
+            return None
+
+        return await _run_in_thread(_op)
 
     async def save(
         self,
@@ -174,34 +180,51 @@ class SqliteModelSelectionStore:
     ) -> ModelSelection:
         _validate_scope(scope, user_id, tenant_id)
         key_user = user_id if scope == "user" else ""
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT version FROM agent_model_selections WHERE scope=? AND user_id IS ? AND tenant_id=?",
-                (scope, key_user, tenant_id),
-            ).fetchone()
-            version = int(row[0]) + 1 if row else 1
-            value = ModelSelection(
-                provider.strip().lower(), model.strip(), scope, key_user, tenant_id, version, _now()
-            )
-            conn.execute(
-                """INSERT INTO agent_model_selections(
-                    scope,user_id,tenant_id,provider,model,version,updated_at
+
+        def _op() -> ModelSelection:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT version FROM agent_model_selections "
+                    "WHERE scope=? AND user_id IS ? AND tenant_id=?",
+                    (scope, key_user, tenant_id),
+                ).fetchone()
+                version = int(row[0]) + 1 if row else 1
+                value = ModelSelection(
+                    provider.strip().lower(), model.strip(), scope, key_user, tenant_id, version, _now()
                 )
-                VALUES (?,?,?,?,?,?,?)
-                ON CONFLICT(scope,user_id,tenant_id) DO UPDATE SET
-                provider=excluded.provider, model=excluded.model, version=excluded.version,
-                updated_at=excluded.updated_at""",
-                (scope, key_user, tenant_id, value.provider, value.model, value.version, value.updated_at),
-            )
-            return value
+                conn.execute(
+                    """INSERT INTO agent_model_selections(
+                        scope,user_id,tenant_id,provider,model,version,updated_at
+                    )
+                    VALUES (?,?,?,?,?,?,?)
+                    ON CONFLICT(scope,user_id,tenant_id) DO UPDATE SET
+                    provider=excluded.provider, model=excluded.model, version=excluded.version,
+                    updated_at=excluded.updated_at""",
+                    (
+                        scope,
+                        key_user,
+                        tenant_id,
+                        value.provider,
+                        value.model,
+                        value.version,
+                        value.updated_at,
+                    ),
+                )
+                return value
+
+        return await _run_in_thread(_op)
 
     async def clear(self, *, scope: ModelSelectionScope, user_id: str | None, tenant_id: str | None) -> None:
         _validate_scope(scope, user_id, tenant_id)
-        with self._connect() as conn:
-            conn.execute(
-                "DELETE FROM agent_model_selections WHERE scope=? AND user_id IS ? AND tenant_id=?",
-                (scope, user_id if scope == "user" else "", tenant_id),
-            )
+
+        def _op() -> None:
+            with self._connect() as conn:
+                conn.execute(
+                    "DELETE FROM agent_model_selections WHERE scope=? AND user_id IS ? AND tenant_id=?",
+                    (scope, user_id if scope == "user" else "", tenant_id),
+                )
+
+        await _run_in_thread(_op)
 
 
 class PostgresModelSelectionStore:

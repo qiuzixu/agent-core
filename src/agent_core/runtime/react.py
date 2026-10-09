@@ -11,6 +11,15 @@ stream() 方法的工具调用处理：
 - 模型文本到达时立即逐块 yield
 - 工具调用收集完整后并发执行，工具结果写入消息，再进入下一轮模型调用
 
+共享内核与策略点：
+- ``run`` / ``stream`` 是两个薄包装，只负责 Run 生命周期收口（状态、事件、异常）。
+- 消息构造、checkpoint 恢复、中间件 before/after、工具预算守卫、工具执行和
+  checkpoint 保存只在私有异步生成器 ``_iterate`` 中实现一次。
+- 两条路径的差异点集中在 ``_LoopMode``：非流式一轮调用 ``llm.chat``；
+  流式一轮消费 ``llm.stream_chat``，文本增量经 ``_LoopEvent.text_delta``
+  逐块向上游转发，tool_calls 增量按 ID 归并后组装成 assistant 消息。
+  流式"已发文本不可重试"的守卫也由内核依据 text_delta 是否非空统一执行。
+
 Checkpoint 集成：
 - 提供 checkpointer 参数后，每轮 LLM 调用后自动保存快照
 - 支持时间旅行：可通过 agent.get_history(thread_id) 查看历史版本
@@ -23,6 +32,7 @@ import json
 import logging
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any, cast
 
 from agent_core.checkpoint import Checkpointer
@@ -36,7 +46,7 @@ from agent_core.middleware import (
     MiddlewareContext,
     MiddlewareManager,
 )
-from agent_core.model import ModelAdapter
+from agent_core.model import ModelAdapter, StreamChunk
 from agent_core.protocol.messages import (
     Message,
     assistant_message,
@@ -48,6 +58,59 @@ from agent_core.protocol.runtime import RunContext, RunStatus
 from agent_core.tools import ToolExecutor
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _LoopMode:
+    """run / stream 两条路径的差异点。
+
+    共享内核 ``_iterate`` 只通过该模式对象感知两条路径的区别：
+    - 模型一轮调用的实现方式（``streaming`` 分派到 ``_chat_round`` /
+      ``_stream_round``）；
+    - 用户可见的错误文案与日志标识（``label`` / ``invocation_failure``）。
+    对外行为由 ``run`` / ``stream`` 两个薄包装保持不变。
+    """
+
+    streaming: bool
+    # 日志文案中的路径标识：普通路径为空，流式路径为 "流式"。
+    label: str
+    # 模型调用失败文案中"轮"之后、冒号之前的片段，保持历史措辞逐字不变。
+    invocation_failure: str
+
+    @property
+    def empty_final_error(self) -> str:
+        """最终响应为空（无工具调用也没有文本）的失败文案。"""
+        return f"ReAct agent {self.label}最终响应为空，不能使用上一轮中间文本作为答案。"
+
+    @property
+    def missing_answer_error(self) -> str:
+        """循环结束仍未提取到有效回答的失败文案。"""
+        return f"ReAct agent {self.label}未能提取到有效回答。"
+
+    def invocation_error(self, iteration: int, exc: Exception) -> ModelInvocationError:
+        """构造一轮模型调用的失败异常，保持历史措辞逐字不变。"""
+        return ModelInvocationError(
+            f"ReAct agent 第 {iteration + 1} 轮{self.invocation_failure}：{exc}"
+        )
+
+
+# 普通路径：一轮模型调用 = llm.chat，无文本增量。
+_RUN_MODE = _LoopMode(streaming=False, label="", invocation_failure=" LLM 调用失败")
+# 流式路径：一轮模型调用 = llm.stream_chat，文本增量逐块转发。
+_STREAM_MODE = _LoopMode(streaming=True, label="流式", invocation_failure="流式调用失败")
+
+
+@dataclass(frozen=True)
+class _LoopEvent:
+    """共享内核向薄包装暴露的单个事件。
+
+    Attributes:
+        text_delta: 流式文本增量；普通路径恒为空。
+        answer: Agent Loop 正常结束时的最终回答；循环中不产出。
+    """
+
+    text_delta: str = ""
+    answer: str | None = None
 
 
 class ReActAgent:
@@ -91,28 +154,26 @@ class ReActAgent:
         checkpoint_state: dict[str, Any] | None = None,
     ) -> str:
         """执行完整的 Agent Loop，并统一收口运行状态。"""
-        metadata = dict(run_metadata or {})
-        runtime_context = run_context or RunContext(
-            thread_id=thread_id or self._thread_id,
-            run_id=str(metadata.get("run_id") or uuid.uuid4()),
-            metadata=metadata,
+        runtime_context = self._prepare_context(
+            user_input,
+            thread_id=thread_id,
+            run_metadata=run_metadata,
+            run_context=run_context,
+            checkpoint_state=checkpoint_state,
         )
-        if run_context is None:
-            runtime_context.emit("run_started", input=user_input)
-        # 直接 API 以 checkpoint_state 恢复时回填快照基底；否则恢复批次期间
-        # _persist_tool_progress 会以空 dict 为基底，丢失 iteration/last_answer/tool_calls_used。
-        if checkpoint_state and not runtime_context.checkpoint:
-            runtime_context.checkpoint = checkpoint_state
-
         try:
-            answer = await self._run_loop(
+            answer = ""
+            async for event in self._iterate(
+                _RUN_MODE,
                 user_input,
                 memory_context=memory_context,
                 thread_id=thread_id,
-                run_metadata=metadata,
+                run_metadata=run_metadata,
                 run_context=runtime_context,
                 checkpoint_state=checkpoint_state,
-            )
+            ):
+                if event.answer is not None:
+                    answer = event.answer
         except asyncio.CancelledError:
             await self._finish_run(runtime_context, "cancelled", "run_cancelled")
             raise
@@ -133,7 +194,11 @@ class ReActAgent:
         )
         return answer
 
-    async def _run_loop(
+    # ──────────────────────────────────────────────
+    # 流式执行（完整支持工具调用）
+    # ──────────────────────────────────────────────
+
+    async def stream(
         self,
         user_input: str,
         *,
@@ -142,8 +207,92 @@ class ReActAgent:
         run_metadata: dict[str, Any] | None = None,
         run_context: RunContext | None = None,
         checkpoint_state: dict[str, Any] | None = None,
-    ) -> str:
-        """执行普通 Agent Loop；生命周期状态由 ``run`` 统一管理。"""
+    ) -> AsyncIterator[str]:
+        """逐块流式执行 Agent Loop，并统一收口运行状态。"""
+        runtime_context = self._prepare_context(
+            user_input,
+            thread_id=thread_id,
+            run_metadata=run_metadata,
+            run_context=run_context,
+            checkpoint_state=checkpoint_state,
+        )
+        try:
+            async for event in self._iterate(
+                _STREAM_MODE,
+                user_input,
+                memory_context=memory_context,
+                thread_id=thread_id,
+                run_metadata=run_metadata,
+                run_context=runtime_context,
+                checkpoint_state=checkpoint_state,
+            ):
+                if event.text_delta:
+                    yield event.text_delta
+        except (asyncio.CancelledError, GeneratorExit):
+            await self._finish_run(runtime_context, "cancelled", "run_cancelled")
+            raise
+        except Exception as exc:
+            await self._finish_run(
+                runtime_context,
+                "failed",
+                "run_failed",
+                error=str(exc),
+            )
+            raise
+
+        await self._finish_run(runtime_context, "completed", "run_completed")
+
+    # ──────────────────────────────────────────────
+    # 共享 Agent Loop 内核
+    # ──────────────────────────────────────────────
+
+    def _prepare_context(
+        self,
+        user_input: str,
+        *,
+        thread_id: str | None,
+        run_metadata: dict[str, Any] | None,
+        run_context: RunContext | None,
+        checkpoint_state: dict[str, Any] | None,
+    ) -> RunContext:
+        """构造或复用 RunContext，并回填 checkpoint 快照基底。
+
+        直接 API 以 checkpoint_state 恢复时回填快照基底；否则恢复批次期间
+        ``_persist_tool_progress`` 会以空 dict 为基底，丢失
+        iteration/last_answer/tool_calls_used。
+        """
+        metadata = dict(run_metadata or {})
+        runtime_context = run_context or RunContext(
+            thread_id=thread_id or self._thread_id,
+            run_id=str(metadata.get("run_id") or uuid.uuid4()),
+            metadata=metadata,
+        )
+        if run_context is None:
+            runtime_context.emit("run_started", input=user_input)
+        if checkpoint_state and not runtime_context.checkpoint:
+            runtime_context.checkpoint = checkpoint_state
+        return runtime_context
+
+    async def _iterate(
+        self,
+        mode: _LoopMode,
+        user_input: str,
+        *,
+        memory_context: str | None = None,
+        thread_id: str | None = None,
+        run_metadata: dict[str, Any] | None = None,
+        run_context: RunContext,
+        checkpoint_state: dict[str, Any] | None = None,
+    ) -> AsyncIterator[_LoopEvent]:
+        """run / stream 共享的 Agent Loop 内核。
+
+        生命周期状态由 ``run`` / ``stream`` 统一管理；本方法只驱动循环本身。
+        流式路径每次 yield 一个文本增量事件；循环正常结束时统一产出
+        ``_LoopEvent.answer``（含 completed checkpoint 直接恢复的场景）。
+
+        Yields:
+            ``_LoopEvent``：text_delta 为流式文本增量，answer 为最终回答。
+        """
         checkpoint = checkpoint_state or {}
         messages = (
             self._messages_from_checkpoint(checkpoint)
@@ -152,25 +301,16 @@ class ReActAgent:
         )
         # 3.2 初始化运行变量
         last_answer = str(checkpoint.get("last_answer", ""))
-        metadata = dict(run_metadata or {})
-        tool_calls_used = int(checkpoint.get("tool_calls_used", 0))
-        # 3.3 创建 RunContext
-        runtime_context = run_context or RunContext(
-            thread_id=thread_id or self._thread_id,
-            run_id=str(metadata.get("run_id") or uuid.uuid4()),
-            metadata=metadata,
-        )
-        # 直接调用 _run_loop 恢复时同样回填快照基底，保持与 run() 一致。
-        if checkpoint_state and not runtime_context.checkpoint:
-            runtime_context.checkpoint = checkpoint_state
-        metadata = self._runtime_metadata(runtime_context, metadata)
-        runtime_context.status = "running"
-        # 恢复执行时沿用已有上下文的会话 ID，避免快照落到默认会话。
-        checkpoint_thread = thread_id or runtime_context.thread_id
+        metadata = self._runtime_metadata(run_context, dict(run_metadata or {}))
+        run_context.status = "running"
+        # 恢复执行时沿用已有上下文的会话 ID，避免快照落到默认会话；
+        # 流式与普通执行使用同一套会话隔离规则。
+        checkpoint_thread = thread_id or run_context.thread_id
 
         if checkpoint.get("phase") == "completed":
             if last_answer:
-                return last_answer
+                yield _LoopEvent(answer=last_answer)
+                return
             raise ModelOutputValidationError("completed checkpoint 缺少最终回答")
 
         # 4. checkpoint 恢复阶段
@@ -182,10 +322,10 @@ class ReActAgent:
                 messages=messages,
                 iteration=int(checkpoint.get("iteration", start_iteration)),
                 metadata=metadata,
-                emit=runtime_context.emit,
+                emit=run_context.emit,
             )
-            # 然后补执行之前未完成的工具：
-            messages = await self._execute_tools(pending_tool_calls, messages, restore_ctx, runtime_context)
+            # 然后补执行之前未完成的工具（只重放 pending 集合，已完成的不重放）：
+            messages = await self._execute_tools(pending_tool_calls, messages, restore_ctx, run_context)
             # 工具执行完成后，把阶段改回模型调用：
             start_iteration = int(checkpoint.get("iteration", 0)) + 1
             # 然后保存一次新的 checkpoint
@@ -194,20 +334,22 @@ class ReActAgent:
                 messages,
                 start_iteration - 1,
                 last_answer,
-                tool_calls_used,
-                runtime_context,
+                int(checkpoint.get("tool_calls_used", 0)),
+                run_context,
                 phase="model",
                 pending_tool_calls=[],
             )
+
+        tool_calls_used = int(checkpoint.get("tool_calls_used", 0))
         # 5. Agent 主循环
         for iteration in range(start_iteration, self._max_iterations):
             # 5.1 设置当前轮次
-            runtime_context.iteration = iteration
+            run_context.iteration = iteration
             ctx = MiddlewareContext(
                 messages=messages,
                 iteration=iteration,
                 metadata=metadata,
-                emit=runtime_context.emit,
+                emit=run_context.emit,
             )
 
             # before_model
@@ -219,25 +361,24 @@ class ReActAgent:
             if mw_result.action == MiddlewareAction.MODIFY:
                 messages = mw_result.data.get("messages", messages)
 
-            # LLM 调用
-            while True:
-                try:
-                    response = await self._llm.chat(
-                        messages,
-                        tools=self._tool_definitions or None,
-                    )
-                    break
-                except Exception as exc:
-                    if await self._middleware_manager.handle_exception(exc, ctx):
-                        runtime_context.emit("model_retry", iteration=iteration, error=str(exc))
-                        continue
-                    raise ModelInvocationError(
-                        f"ReAct agent 第 {iteration + 1} 轮 LLM 调用失败：{exc}"
-                    ) from exc
+            # ── 策略点：一轮模型调用 ──────────────────────
+            # 非流式：llm.chat 返回完整响应；流式：消费 stream_chat，
+            # 文本增量逐块转发给调用方，tool_calls 增量按 ID 归并。
+            response: Message | None = None
+            text_parts: list[str] = []
+            async for item in self._model_round(mode, messages, iteration, ctx, run_context):
+                if isinstance(item, Message):
+                    response = item
+                elif item.text:
+                    text_parts.append(item.text)
+                    # 真正逐块向上游发送；调用方可以立即转成 SSE 数据帧。
+                    yield _LoopEvent(text_delta=item.text)
+            assert response is not None
+
             # 7. 保存模型响应
             messages.append(response)
             # 这一步非常关键，因为下一轮调用模型时，模型必须知道自己上一轮说了什么。
-            runtime_context.emit(
+            run_context.emit(
                 "model_finished",
                 iteration=iteration,
                 tool_calls=len(response.tool_calls),
@@ -248,6 +389,9 @@ class ReActAgent:
             mw_result = await self._middleware_manager.execute_after_model(ctx)
             if mw_result.action == MiddlewareAction.RETRY:
                 messages.pop()
+                if text_parts:
+                    # 流式路径特有：文本已经发给上游，无法安全重试当前响应。
+                    raise ModelOutputValidationError("流式文本已经发送，after_model 不能安全重试当前响应。")
                 continue
             if mw_result.action == MiddlewareAction.STOP:
                 raise ModelOutputValidationError(
@@ -270,7 +414,7 @@ class ReActAgent:
                 iteration,
                 last_answer,
                 next_tool_calls_used,
-                runtime_context,
+                run_context,
                 phase="execute_tools" if response.tool_calls else "completed",
                 pending_tool_calls=response.tool_calls,
                 metadata={**metadata, "iteration": iteration, "answer_preview": last_answer[:80]},
@@ -278,17 +422,21 @@ class ReActAgent:
 
             if not response.tool_calls:
                 if not response.content:
-                    raise ModelOutputValidationError(
-                        "ReAct agent 最终响应为空，不能使用上一轮中间文本作为答案。"
-                    )
-                logger.debug("ReAct 第 %d 轮结束（无工具调用）", iteration + 1)
+                    raise ModelOutputValidationError(mode.empty_final_error)
+                logger.debug("ReAct %s第 %d 轮结束（无工具调用）", mode.label, iteration + 1)
                 break
             # 11. 有工具调用：检查数量
             tool_calls_used = next_tool_calls_used
-            runtime_context.tool_calls_used = tool_calls_used
+            run_context.tool_calls_used = tool_calls_used
 
+            if mode.streaming:
+                logger.debug(
+                    "ReAct 流式第 %d 轮执行工具: %s",
+                    iteration + 1,
+                    [tc["name"] for tc in response.tool_calls],
+                )
             # 执行工具调用
-            messages = await self._execute_tools(response.tool_calls, messages, ctx, runtime_context)
+            messages = await self._execute_tools(response.tool_calls, messages, ctx, run_context)
             # 13. 工具执行后再次保存 checkpoint
             await self._save_checkpoint(
                 checkpoint_thread,
@@ -296,168 +444,85 @@ class ReActAgent:
                 iteration,
                 last_answer,
                 tool_calls_used,
-                runtime_context,
+                run_context,
                 phase="model",
                 pending_tool_calls=[],
                 metadata={**metadata, "iteration": iteration, "answer_preview": last_answer[:80]},
             )
 
         else:
-            logger.warning("ReAct 达到最大迭代次数 %d", self._max_iterations)
+            logger.warning("ReAct %s达到最大迭代次数 %d", mode.label, self._max_iterations)
             raise ModelOutputValidationError(
                 f"ReAct agent 达到最大迭代次数（{self._max_iterations}），尚未生成不含工具调用的最终回答。"
             )
 
         if not last_answer:
-            raise ModelOutputValidationError("ReAct agent 未能提取到有效回答。")
+            raise ModelOutputValidationError(mode.missing_answer_error)
 
-        return last_answer
+        yield _LoopEvent(answer=last_answer)
 
-    # ──────────────────────────────────────────────
-    # 流式执行（完整支持工具调用）
-    # ──────────────────────────────────────────────
-
-    async def stream(
+    async def _model_round(
         self,
-        user_input: str,
-        *,
-        memory_context: str | None = None,
-        thread_id: str | None = None,
-        run_metadata: dict[str, Any] | None = None,
-        run_context: RunContext | None = None,
-        checkpoint_state: dict[str, Any] | None = None,
-    ) -> AsyncIterator[str]:
-        """逐块流式执行 Agent Loop，并统一收口运行状态。"""
-        metadata = dict(run_metadata or {})
-        runtime_context = run_context or RunContext(
-            thread_id=thread_id or self._thread_id,
-            run_id=str(metadata.get("run_id") or uuid.uuid4()),
-            metadata=metadata,
-        )
-        if run_context is None:
-            runtime_context.emit("run_started", input=user_input)
-        # 与 run() 相同的快照基底回填，保证流式恢复路径同样不丢循环状态。
-        if checkpoint_state and not runtime_context.checkpoint:
-            runtime_context.checkpoint = checkpoint_state
+        mode: _LoopMode,
+        messages: list[Message],
+        iteration: int,
+        ctx: MiddlewareContext,
+        runtime_context: RunContext,
+    ) -> AsyncIterator[Message | StreamChunk]:
+        """按路径策略执行一轮模型调用。
 
-        try:
-            async for chunk in self._stream_loop(
-                user_input,
-                memory_context=memory_context,
-                thread_id=thread_id,
-                run_metadata=metadata,
-                run_context=runtime_context,
-                checkpoint_state=checkpoint_state,
-            ):
-                yield chunk
-        except (asyncio.CancelledError, GeneratorExit):
-            await self._finish_run(runtime_context, "cancelled", "run_cancelled")
-            raise
-        except Exception as exc:
-            await self._finish_run(
-                runtime_context,
-                "failed",
-                "run_failed",
-                error=str(exc),
-            )
-            raise
-
-        await self._finish_run(runtime_context, "completed", "run_completed")
-
-    async def _stream_loop(
-        self,
-        user_input: str,
-        *,
-        memory_context: str | None = None,
-        thread_id: str | None = None,
-        run_metadata: dict[str, Any] | None = None,
-        run_context: RunContext | None = None,
-        checkpoint_state: dict[str, Any] | None = None,
-    ) -> AsyncIterator[str]:
-        """执行流式循环；生命周期状态由 ``stream`` 统一管理。
-
-        模型文本到达后立即输出；工具调用本身不产生文本块。
-        每次 yield 一个文本片段（str）。
-
-        Yields:
-            文本内容块（增量）。
+        非流式策略产出单个 ``Message``；流式策略把 ``StreamChunk`` 原样
+        转发（文本增量由内核继续向上游 yield），最后产出组装好的
+        assistant ``Message``。异常重试由策略内部闭环。
         """
-        checkpoint = checkpoint_state or {}
-        messages = (
-            self._messages_from_checkpoint(checkpoint)
-            if checkpoint.get("messages")
-            else self._build_initial_messages(user_input, memory_context)
-        )
-        last_answer = str(checkpoint.get("last_answer", ""))
-        metadata = dict(run_metadata or {})
-        tool_calls_used = int(checkpoint.get("tool_calls_used", 0))
-        runtime_context = run_context or RunContext(
-            thread_id=thread_id or self._thread_id,
-            run_id=str(metadata.get("run_id") or uuid.uuid4()),
-            metadata=metadata,
-        )
-        # 直接调用 _stream_loop 恢复时同样回填快照基底，保持与 stream() 一致。
-        if checkpoint_state and not runtime_context.checkpoint:
-            runtime_context.checkpoint = checkpoint_state
-        metadata = self._runtime_metadata(runtime_context, metadata)
-        runtime_context.status = "running"
-        # 流式执行与普通执行使用同一套会话隔离规则。
-        checkpoint_thread = thread_id or runtime_context.thread_id
+        if mode.streaming:
+            async for item in self._stream_round(mode, messages, iteration, ctx, runtime_context):
+                yield item
+        else:
+            async for item in self._chat_round(mode, messages, iteration, ctx, runtime_context):
+                yield item
 
-        if checkpoint.get("phase") == "completed":
-            if last_answer:
-                return
-            raise ModelOutputValidationError("completed checkpoint 缺少最终回答")
-
-        start_iteration = int(checkpoint.get("next_iteration", checkpoint.get("iteration", 0)))
-        pending_tool_calls = checkpoint.get("pending_tool_calls")
-        if checkpoint.get("phase") == "execute_tools" and isinstance(pending_tool_calls, list):
-            restore_ctx = MiddlewareContext(
-                messages=messages,
-                iteration=int(checkpoint.get("iteration", start_iteration)),
-                metadata=metadata,
-                emit=runtime_context.emit,
-            )
-            messages = await self._execute_tools(
-                pending_tool_calls,
-                messages,
-                restore_ctx,
-                runtime_context,
-            )
-            start_iteration = int(checkpoint.get("iteration", 0)) + 1
-            await self._save_checkpoint(
-                checkpoint_thread,
-                messages,
-                start_iteration - 1,
-                last_answer,
-                tool_calls_used,
-                runtime_context,
-                phase="model",
-                pending_tool_calls=[],
-            )
-
-        for iteration in range(start_iteration, self._max_iterations):
-            runtime_context.iteration = iteration
-            ctx = MiddlewareContext(
-                messages=messages,
-                iteration=iteration,
-                metadata=metadata,
-                emit=runtime_context.emit,
-            )
-
-            # before_model
-            mw_result = await self._middleware_manager.execute_before_model(ctx)
-            if mw_result.action == MiddlewareAction.STOP:
-                raise ModelOutputValidationError(
-                    mw_result.error or mw_result.data.get("reason", "模型调用被中间件阻止")
+    async def _chat_round(
+        self,
+        mode: _LoopMode,
+        messages: list[Message],
+        iteration: int,
+        ctx: MiddlewareContext,
+        runtime_context: RunContext,
+    ) -> AsyncIterator[Message]:
+        """非流式策略：一轮 ``llm.chat``，中间件允许时重试后返回完整响应。"""
+        while True:
+            try:
+                yield await self._llm.chat(
+                    messages,
+                    tools=self._tool_definitions or None,
                 )
-            if mw_result.action == MiddlewareAction.MODIFY:
-                messages = mw_result.data.get("messages", messages)
+                return
+            except Exception as exc:
+                if await self._middleware_manager.handle_exception(exc, ctx):
+                    runtime_context.emit("model_retry", iteration=iteration, error=str(exc))
+                    continue
+                raise mode.invocation_error(iteration, exc) from exc
 
-            # 收集流式输出
-            text_parts: list[str] = []
-            tool_calls_by_key: dict[str, dict[str, Any]] = {}
+    async def _stream_round(
+        self,
+        mode: _LoopMode,
+        messages: list[Message],
+        iteration: int,
+        ctx: MiddlewareContext,
+        runtime_context: RunContext,
+    ) -> AsyncIterator[Message | StreamChunk]:
+        """流式策略：消费 ``stream_chat`` 并归并增量。
 
+        文本增量原样转发；工具调用增量按调用 ID（缺省按位置）归并，
+        args 字典逐块合并；重试时文本与工具调用增量都从头重新收集
+        （已转发给上游的文本无法撤回，与历史行为一致）。
+        """
+        text_parts: list[str] = []
+        tool_calls_by_key: dict[str, dict[str, Any]] = {}
+        while True:
+            text_parts.clear()
+            tool_calls_by_key.clear()
             try:
                 async for chunk in self._llm.stream_chat(
                     messages,
@@ -465,8 +530,7 @@ class ReActAgent:
                 ):
                     if chunk.text:
                         text_parts.append(chunk.text)
-                        # 真正逐块向上游发送；调用方可以立即转成 SSE 数据帧。
-                        yield chunk.text
+                        yield chunk
 
                     if chunk.is_tool_call and chunk.tool_calls:
                         for call_index, tool_call in enumerate(chunk.tool_calls):
@@ -491,92 +555,11 @@ class ReActAgent:
                 if await self._middleware_manager.handle_exception(exc, ctx):
                     runtime_context.emit("model_retry", iteration=iteration, error=str(exc))
                     continue
-                raise ModelInvocationError(f"ReAct agent 第 {iteration + 1} 轮流式调用失败：{exc}") from exc
+                raise mode.invocation_error(iteration, exc) from exc
+            break
 
-            # 组装 assistant message
-            content = "".join(text_parts)
-            final_tool_calls = list(tool_calls_by_key.values())
-            response = assistant_message(content, tool_calls=final_tool_calls)
-            messages.append(response)
-            runtime_context.emit(
-                "model_finished",
-                iteration=iteration,
-                tool_calls=len(final_tool_calls),
-            )
-            ctx.llm_response = response
-
-            # after_model
-            mw_result = await self._middleware_manager.execute_after_model(ctx)
-            if mw_result.action == MiddlewareAction.RETRY:
-                messages.pop()
-                if text_parts:
-                    raise ModelOutputValidationError("流式文本已经发送，after_model 不能安全重试当前响应。")
-                continue
-            if mw_result.action == MiddlewareAction.STOP:
-                raise ModelOutputValidationError(
-                    mw_result.error or mw_result.data.get("reason", "模型输出被中间件阻止")
-                )
-
-            if content:
-                last_answer = content
-
-            next_tool_calls_used = tool_calls_used + len(final_tool_calls)
-            if next_tool_calls_used > self._max_tool_calls:
-                raise ModelOutputValidationError(
-                    f"ReAct agent 工具调用次数超过上限（{self._max_tool_calls}）"
-                )
-
-            await self._save_checkpoint(
-                checkpoint_thread,
-                messages,
-                iteration,
-                last_answer,
-                next_tool_calls_used,
-                runtime_context,
-                phase="execute_tools" if final_tool_calls else "completed",
-                pending_tool_calls=final_tool_calls,
-                metadata={**metadata, "iteration": iteration, "answer_preview": last_answer[:80]},
-            )
-
-            # 无工具调用 → 结束
-            if not final_tool_calls:
-                if not content:
-                    raise ModelOutputValidationError(
-                        "ReAct agent 流式最终响应为空，不能使用上一轮中间文本作为答案。"
-                    )
-                logger.debug("ReAct 流式第 %d 轮结束（无工具调用）", iteration + 1)
-                break
-
-            tool_calls_used = next_tool_calls_used
-            runtime_context.tool_calls_used = tool_calls_used
-
-            # 有工具调用：静默执行，然后继续循环（下一轮仍会流式输出）
-            logger.debug(
-                "ReAct 流式第 %d 轮执行工具: %s",
-                iteration + 1,
-                [tc["name"] for tc in final_tool_calls],
-            )
-            messages = await self._execute_tools(final_tool_calls, messages, ctx, runtime_context)
-            await self._save_checkpoint(
-                checkpoint_thread,
-                messages,
-                iteration,
-                last_answer,
-                tool_calls_used,
-                runtime_context,
-                phase="model",
-                pending_tool_calls=[],
-                metadata={**metadata, "iteration": iteration, "answer_preview": last_answer[:80]},
-            )
-
-        else:
-            logger.warning("ReAct 流式达到最大迭代次数 %d", self._max_iterations)
-            raise ModelOutputValidationError(
-                f"ReAct agent 达到最大迭代次数（{self._max_iterations}），尚未生成不含工具调用的最终回答。"
-            )
-
-        if not last_answer:
-            raise ModelOutputValidationError("ReAct agent 流式未能提取到有效回答。")
+        # 组装 assistant message
+        yield assistant_message("".join(text_parts), tool_calls=list(tool_calls_by_key.values()))
 
     # ──────────────────────────────────────────────
     # 内部辅助方法

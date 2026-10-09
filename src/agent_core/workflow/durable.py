@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from agent_core.access import AccessContext
+from agent_core.access import AccessContext, enforce_access
 from agent_core.storage.workflow import WorkflowExecution, WorkflowExecutionStore
 from agent_core.workflow.state_machine import (
     END,
@@ -162,15 +162,14 @@ class DurableWorkflowRunner:
         execution: WorkflowExecution,
         access: AccessContext | None,
     ) -> None:
-        if self._strict_access and access is None:
-            raise PermissionError("该 DurableWorkflowRunner 要求提供 AccessContext")
-        if self._strict_access and (execution.user_id is None or execution.tenant_id is None):
-            raise PermissionError("该工作流执行实例尚未绑定用户和租户")
-        if access is not None and not access.can_access(
-            execution.user_id,
-            execution.tenant_id,
-        ):
-            raise PermissionError("无权访问该工作流执行实例")
+        enforce_access(
+            strict=self._strict_access,
+            accessor="DurableWorkflowRunner",
+            subject="工作流执行实例",
+            owner_user_id=execution.user_id,
+            owner_tenant_id=execution.tenant_id,
+            access=access,
+        )
 
 
 __all__ = ["DurableWorkflowRunner"]

@@ -9,6 +9,8 @@
 
 - `AgentRuntime` 支持可选 `run_executor`（`RunExecutor` 协议）：应用可接管 Agent 调用，
   Runtime 统一收口运行状态、事件、持久化与租约。
+- 访问校验抽取为 `agent_core.access.enforce_access`：严格模式要求、资源归属完整性与
+  身份校验三类判定共享同一实现。
 
 ### Fixed
 
@@ -24,6 +26,16 @@
 
 ### Changed
 
+- `ReActAgent` 的 `run`/`stream` 双循环抽取为共享内核 `_iterate`：消息构造、checkpoint 恢复、
+  中间件 before/after、工具预算守卫、工具执行与快照保存只实现一次；非流式/流式一轮模型调用的
+  差异（`llm.chat` vs `stream_chat` 增量归并、文案与日志标识）集中到 `_LoopMode` 策略对象。
+  对外签名、事件序列、checkpoint 状态字段与错误文案逐字保持不变，并有 run/stream checkpoint
+  一致性契约测试守护。
+- `AgentRuntime` 与 `DurableWorkflowRunner` 的 `_check_access` 改为委托共享的
+  `agent_core.access.enforce_access`，判定顺序与错误文案保持不变。
+- 补齐 compaction 子系统核心单测（region 边界切割、pruner 瘦身与 spill 标记、summarizer 结构
+  校验失败、中间件阈值触发与 prune-only 降级）、OpenAI/Anthropic/Gemini 流式 `finish_reason`
+  契约测试，以及"恢复时只重放未完成工具"回归断言。
 - 修复 Runtime/Workflow 并发覆盖和匿名作用域幂等索引，PostgreSQL Workflow JSONB 恢复兼容字符串返回。
 - HITL 持久化审批 deadline，并以条件状态转换避免超时覆盖批准或拒绝。
 - 文件与时间旅行 Checkpoint 改为原子替换，ReAct 并发工具按完成进度保存可恢复快照。

@@ -75,8 +75,8 @@ class InMemoryVectorStore(VectorStore):
             self._check_record_access(record, access)
         deleted = 0
         for record_id in record_ids:
-            record = self._records.get(record_id)
-            if record is None:
+            target = self._records.get(record_id)
+            if target is None:
                 continue
             del self._records[record_id]
             deleted += 1

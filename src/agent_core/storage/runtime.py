@@ -22,6 +22,11 @@ from agent_core.protocol.runtime import (
     ApprovalRecord,
     RunContext,
 )
+from agent_core.storage._sqlite_utils import (
+    _run_in_thread,
+    run_sync_in_thread,
+    sqlite_connection,
+)
 
 
 # ————————————————————————————————————#
@@ -268,6 +273,10 @@ class SqliteRuntimeStore(RuntimeStore):
 
     def __init__(self, db_path: str | Path = "./sessions.db") -> None:
         self._db_path = str(Path(db_path).resolve())
+        # 建表/补列/幂等索引 DDL 初始化同样入线程，避免构造期冻结事件循环。
+        run_sync_in_thread(self._init_db)
+
+    def _init_db(self) -> None:
         with self._connect() as conn:
             conn.executescript(self.DDL)
             self._ensure_columns(conn)
@@ -311,84 +320,85 @@ class SqliteRuntimeStore(RuntimeStore):
 
     @contextmanager
     def _connect(self) -> Generator[sqlite3.Connection]:
-        conn = sqlite3.connect(self._db_path)
-        try:
+        """获取 SQLite 连接（同步，自动提交/回滚；统一 timeout 与 WAL 规范）。"""
+        with sqlite_connection(self._db_path) as conn:
             yield conn
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
 
     async def save_run(self, context: RunContext) -> None:
-        with self._connect() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            row = conn.execute(
-                "SELECT version FROM agent_runs WHERE thread_id=? AND run_id=?",
-                (context.thread_id, context.run_id),
-            ).fetchone()
-            stored_version = int(row[0]) if row else 0
-            if row is not None and stored_version != context.version:
-                raise RuntimeConcurrencyError(f"run {context.run_id} 版本冲突")
-            next_version = stored_version + 1
-            value = context.to_dict()
-            cursor = conn.execute(
-                """INSERT INTO agent_runs
-                (thread_id, run_id, user_id, tenant_id, parent_run_id, tags,
-                 status, version, idempotency_key,
-                 iteration, tool_calls_used, pending_approval, pending_clarification,
-                 state, metadata, checkpoint, events)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(thread_id, run_id) DO UPDATE SET
-                  user_id=excluded.user_id, tenant_id=excluded.tenant_id,
-                  parent_run_id=excluded.parent_run_id, tags=excluded.tags,
-                  status=excluded.status, version=excluded.version,
-                  idempotency_key=excluded.idempotency_key,
-                  iteration=excluded.iteration, tool_calls_used=excluded.tool_calls_used,
-                  pending_approval=excluded.pending_approval,
-                  pending_clarification=excluded.pending_clarification,
-                  state=excluded.state, metadata=excluded.metadata,
-                  checkpoint=excluded.checkpoint,
-                  events=excluded.events, updated_at=CURRENT_TIMESTAMP
-                WHERE agent_runs.version=?""",
-                (
-                    context.thread_id,
-                    context.run_id,
-                    context.user_id,
-                    context.tenant_id,
-                    context.parent_run_id,
-                    json.dumps(value["tags"], ensure_ascii=False),
-                    context.status,
-                    next_version,
-                    context.idempotency_key,
-                    context.iteration,
-                    context.tool_calls_used,
-                    json.dumps(value["pending_approval"], ensure_ascii=False),
-                    json.dumps(value["pending_clarification"], ensure_ascii=False),
-                    json.dumps(value["state"], ensure_ascii=False),
-                    json.dumps(value["metadata"], ensure_ascii=False),
-                    json.dumps(value["checkpoint"], ensure_ascii=False),
-                    json.dumps(value["events"], ensure_ascii=False),
-                    stored_version,
-                ),
-            )
-            if cursor.rowcount != 1:
-                raise RuntimeConcurrencyError(f"run {context.run_id} 保存时发生并发冲突")
+        def _op() -> int:
+            with self._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    "SELECT version FROM agent_runs WHERE thread_id=? AND run_id=?",
+                    (context.thread_id, context.run_id),
+                ).fetchone()
+                stored_version = int(row[0]) if row else 0
+                if row is not None and stored_version != context.version:
+                    raise RuntimeConcurrencyError(f"run {context.run_id} 版本冲突")
+                next_version = stored_version + 1
+                value = context.to_dict()
+                cursor = conn.execute(
+                    """INSERT INTO agent_runs
+                    (thread_id, run_id, user_id, tenant_id, parent_run_id, tags,
+                     status, version, idempotency_key,
+                     iteration, tool_calls_used, pending_approval, pending_clarification,
+                     state, metadata, checkpoint, events)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(thread_id, run_id) DO UPDATE SET
+                      user_id=excluded.user_id, tenant_id=excluded.tenant_id,
+                      parent_run_id=excluded.parent_run_id, tags=excluded.tags,
+                      status=excluded.status, version=excluded.version,
+                      idempotency_key=excluded.idempotency_key,
+                      iteration=excluded.iteration, tool_calls_used=excluded.tool_calls_used,
+                      pending_approval=excluded.pending_approval,
+                      pending_clarification=excluded.pending_clarification,
+                      state=excluded.state, metadata=excluded.metadata,
+                      checkpoint=excluded.checkpoint,
+                      events=excluded.events, updated_at=CURRENT_TIMESTAMP
+                    WHERE agent_runs.version=?""",
+                    (
+                        context.thread_id,
+                        context.run_id,
+                        context.user_id,
+                        context.tenant_id,
+                        context.parent_run_id,
+                        json.dumps(value["tags"], ensure_ascii=False),
+                        context.status,
+                        next_version,
+                        context.idempotency_key,
+                        context.iteration,
+                        context.tool_calls_used,
+                        json.dumps(value["pending_approval"], ensure_ascii=False),
+                        json.dumps(value["pending_clarification"], ensure_ascii=False),
+                        json.dumps(value["state"], ensure_ascii=False),
+                        json.dumps(value["metadata"], ensure_ascii=False),
+                        json.dumps(value["checkpoint"], ensure_ascii=False),
+                        json.dumps(value["events"], ensure_ascii=False),
+                        stored_version,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise RuntimeConcurrencyError(f"run {context.run_id} 保存时发生并发冲突")
+            return next_version
+
+        next_version = await _run_in_thread(_op)
         context.version = next_version
         if context.pending_approval:
             await self.save_approval(context.pending_approval)
 
     async def load_run(self, thread_id: str, run_id: str) -> RunContext | None:
-        with self._connect() as conn:
-            row = conn.execute(
-                """SELECT thread_id, run_id, user_id, tenant_id, parent_run_id, tags,
-                   status, version,
-                   idempotency_key, iteration, tool_calls_used, pending_approval,
-                   pending_clarification, state, metadata, checkpoint, events
-                   FROM agent_runs WHERE thread_id = ? AND run_id = ?""",
-                (thread_id, run_id),
-            ).fetchone()
+        def _op() -> Any:
+            with self._connect() as conn:
+                return conn.execute(
+                    """SELECT thread_id, run_id, user_id, tenant_id, parent_run_id, tags,
+                       status, version,
+                       idempotency_key, iteration, tool_calls_used, pending_approval,
+                       pending_clarification, state, metadata, checkpoint, events
+                       FROM agent_runs WHERE thread_id = ? AND run_id = ?""",
+                    (thread_id, run_id),
+                ).fetchone()
+
+        row = await _run_in_thread(_op)
         if row is None:
             return None
         # 使用固定列名，避免依赖 sqlite Row 配置。
@@ -425,11 +435,14 @@ class SqliteRuntimeStore(RuntimeStore):
         return _context_from_dict(value)
 
     async def list_runs(self, thread_id: str) -> list[RunContext]:
-        with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT run_id FROM agent_runs WHERE thread_id = ? ORDER BY updated_at DESC",
-                (thread_id,),
-            ).fetchall()
+        def _op() -> list[Any]:
+            with self._connect() as conn:
+                return conn.execute(
+                    "SELECT run_id FROM agent_runs WHERE thread_id = ? ORDER BY updated_at DESC",
+                    (thread_id,),
+                ).fetchall()
+
+        rows = await _run_in_thread(_op)
         result: list[RunContext] = []
         for (run_id,) in rows:
             context = await self.load_run(thread_id, run_id)
@@ -440,19 +453,25 @@ class SqliteRuntimeStore(RuntimeStore):
     async def find_run_by_idempotency(
         self, tenant_id: str | None, user_id: str | None, idempotency_key: str
     ) -> RunContext | None:
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT thread_id, run_id FROM agent_runs "
-                "WHERE tenant_id IS ? AND user_id IS ? AND idempotency_key = ? LIMIT 1",
-                (tenant_id, user_id, idempotency_key),
-            ).fetchone()
+        def _op() -> Any:
+            with self._connect() as conn:
+                return conn.execute(
+                    "SELECT thread_id, run_id FROM agent_runs "
+                    "WHERE tenant_id IS ? AND user_id IS ? AND idempotency_key = ? LIMIT 1",
+                    (tenant_id, user_id, idempotency_key),
+                ).fetchone()
+
+        row = await _run_in_thread(_op)
         return await self.load_run(row[0], row[1]) if row else None
 
     async def mark_stale_runs(self) -> list[RunContext]:
-        with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT thread_id, run_id FROM agent_runs WHERE status IN ('queued', 'running')"
-            ).fetchall()
+        def _op() -> list[Any]:
+            with self._connect() as conn:
+                return conn.execute(
+                    "SELECT thread_id, run_id FROM agent_runs WHERE status IN ('queued', 'running')"
+                ).fetchall()
+
+        rows = await _run_in_thread(_op)
         result: list[RunContext] = []
         for thread_id, run_id in rows:
             context = await self.load_run(thread_id, run_id)
@@ -465,48 +484,57 @@ class SqliteRuntimeStore(RuntimeStore):
         return result
 
     async def save_thread_owner(self, thread_id: str, user_id: str, tenant_id: str) -> None:
-        with self._connect() as conn:
-            existing = conn.execute(
-                "SELECT user_id, tenant_id FROM agent_threads WHERE thread_id=?", (thread_id,)
-            ).fetchone()
-            if existing and tuple(existing) != (user_id, tenant_id):
-                raise RuntimeConcurrencyError("thread 归属冲突")
-            conn.execute(
-                "INSERT OR IGNORE INTO agent_threads(thread_id,user_id,tenant_id) VALUES (?,?,?)",
-                (thread_id, user_id, tenant_id),
-            )
+        def _op() -> None:
+            with self._connect() as conn:
+                existing = conn.execute(
+                    "SELECT user_id, tenant_id FROM agent_threads WHERE thread_id=?", (thread_id,)
+                ).fetchone()
+                if existing and tuple(existing) != (user_id, tenant_id):
+                    raise RuntimeConcurrencyError("thread 归属冲突")
+                conn.execute(
+                    "INSERT OR IGNORE INTO agent_threads(thread_id,user_id,tenant_id) VALUES (?,?,?)",
+                    (thread_id, user_id, tenant_id),
+                )
+
+        await _run_in_thread(_op)
 
     async def get_thread_owner(self, thread_id: str) -> tuple[str, str] | None:
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT user_id, tenant_id FROM agent_threads WHERE thread_id=?", (thread_id,)
-            ).fetchone()
+        def _op() -> Any:
+            with self._connect() as conn:
+                return conn.execute(
+                    "SELECT user_id, tenant_id FROM agent_threads WHERE thread_id=?", (thread_id,)
+                ).fetchone()
+
+        row = await _run_in_thread(_op)
         return tuple(row) if row else None
 
     async def save_approval(self, approval: ApprovalRecord) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                """INSERT INTO agent_approvals
-                (approval_id, thread_id, run_id, user_id, tenant_id, action,
-                 arguments, status, reason, created_at, expires_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(approval_id) DO UPDATE SET
-                    status=excluded.status, reason=excluded.reason, expires_at=excluded.expires_at
-                WHERE agent_approvals.status='pending'""",
-                (
-                    approval.approval_id,
-                    approval.thread_id,
-                    approval.run_id,
-                    approval.user_id,
-                    approval.tenant_id,
-                    approval.action,
-                    json.dumps(approval.arguments, ensure_ascii=False),
-                    approval.status,
-                    approval.reason,
-                    approval.created_at,
-                    approval.expires_at,
-                ),
-            )
+        def _op() -> None:
+            with self._connect() as conn:
+                conn.execute(
+                    """INSERT INTO agent_approvals
+                    (approval_id, thread_id, run_id, user_id, tenant_id, action,
+                     arguments, status, reason, created_at, expires_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(approval_id) DO UPDATE SET
+                        status=excluded.status, reason=excluded.reason, expires_at=excluded.expires_at
+                    WHERE agent_approvals.status='pending'""",
+                    (
+                        approval.approval_id,
+                        approval.thread_id,
+                        approval.run_id,
+                        approval.user_id,
+                        approval.tenant_id,
+                        approval.action,
+                        json.dumps(approval.arguments, ensure_ascii=False),
+                        approval.status,
+                        approval.reason,
+                        approval.created_at,
+                        approval.expires_at,
+                    ),
+                )
+
+        await _run_in_thread(_op)
 
     async def transition_approval(
         self,
@@ -514,29 +542,35 @@ class SqliteRuntimeStore(RuntimeStore):
         *,
         expected_status: str = "pending",
     ) -> bool:
-        with self._connect() as conn:
-            cursor = conn.execute(
-                """UPDATE agent_approvals
-                SET status=?, reason=?, expires_at=?
-                WHERE approval_id=? AND status=?""",
-                (
-                    approval.status,
-                    approval.reason,
-                    approval.expires_at,
-                    approval.approval_id,
-                    expected_status,
-                ),
-            )
-        return cursor.rowcount == 1
+        def _op() -> int:
+            with self._connect() as conn:
+                cursor = conn.execute(
+                    """UPDATE agent_approvals
+                    SET status=?, reason=?, expires_at=?
+                    WHERE approval_id=? AND status=?""",
+                    (
+                        approval.status,
+                        approval.reason,
+                        approval.expires_at,
+                        approval.approval_id,
+                        expected_status,
+                    ),
+                )
+            return cursor.rowcount
+
+        return await _run_in_thread(_op) == 1
 
     async def load_approval(self, approval_id: str) -> ApprovalRecord | None:
-        with self._connect() as conn:
-            row = conn.execute(
-                """SELECT approval_id, thread_id, run_id, user_id, tenant_id,
-                action, arguments, status, reason, created_at, expires_at
-                FROM agent_approvals WHERE approval_id = ?""",
-                (approval_id,),
-            ).fetchone()
+        def _op() -> Any:
+            with self._connect() as conn:
+                return conn.execute(
+                    """SELECT approval_id, thread_id, run_id, user_id, tenant_id,
+                    action, arguments, status, reason, created_at, expires_at
+                    FROM agent_approvals WHERE approval_id = ?""",
+                    (approval_id,),
+                ).fetchone()
+
+        row = await _run_in_thread(_op)
         if row is None:
             return None
         return _approval_from_dict(
@@ -836,7 +870,7 @@ class PostgresRuntimeStore(RuntimeStore):
                 approval.expires_at,
                 expected_status,
             )
-        return command == "UPDATE 1"
+        return bool(command == "UPDATE 1")
 
     async def load_approval(self, approval_id: str) -> ApprovalRecord | None:
         self._check()
