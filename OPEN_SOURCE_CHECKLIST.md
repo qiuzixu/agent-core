@@ -12,17 +12,18 @@
 - [x] 忽略 Python、Node、数据库与文档构建产物。
 - [ ] 对公开仓库执行密钥与敏感数据扫描，并检查完整 Git 历史。
 - [x] 在全新环境安装 wheel，运行最小示例并核对 wheel 内容。
-- [ ] 补充 PostgreSQL 服务集成测试和主要并发场景测试。
+- [x] 主要并发场景测试：租约认领/心跳丢失/过期恢复、三级存储乐观并发与事务冲突、Run 生命周期委托（RunExecutor）、HITL 条件状态转换、模型治理限流/熔断、ReAct 工具阶段 checkpoint 恢复（2026-10-10 补充）。
+- [ ] PostgreSQL 服务集成测试（连接临时 PostgreSQL 实例，覆盖三级存储跨后端契约矩阵与崩溃恢复；当前仅有真实 pgvector 的 round-trip 测试）。
 - [x] Core、MinerU、Embedding 和 Multi-Agent 扩展包通过 strict `mypy`。
 
 ## 发布决策
 
-- [ ] 确认版权主体和 Apache-2.0 许可证选择。
+- [x] 确认版权主体（个人：qiuzixu）和 Apache-2.0 许可证选择；包元数据已补 `authors`。
 - [ ] 确认 Core、MinerU、Embedding 和 Multi-Agent 四个 PyPI 包名可用。
 - [x] 将 `agent-core` 拆成独立仓库并保留相关历史；目录内的 `.github` 工作流在独立仓库生效。
 - [x] 独立仓库地址确定后，更新包元数据、MkDocs 配置和 Issue 模板中的仓库 URL。
-- [ ] 决定是否把 Python 支持范围扩展到 3.11/3.12；当前只声明 Python 3.13。
-- [ ] 决定首个公开版本号、发布候选流程和兼容性承诺。
+- [x] Python 支持范围维持仅 3.13：核心使用 PEP 695 泛型等 3.13 语法，降级需代码改造；待真实需求出现再评估。
+- [x] 首个公开版本号定为 `0.2.0`（`0.1.0` 为内部 Alpha，未发布）；兼容性承诺：0.x 阶段补丁与小版本不破坏公开 API，弃用先警告后移除；发布候选流程沿用"CI 全绿 + tag 构建"。
 - [ ] 决定文档托管平台和正式 `DOCS_BASE`。
 - [ ] 在 `SECURITY.md` 配置专用安全邮箱或私密漏洞报告入口。
 - [ ] 配置 PyPI Trusted Publisher 或最小权限发布令牌。

@@ -9,6 +9,7 @@ description = "零外部平台绑定的 Python Agent 运行时内核"
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
 license = "Apache-2.0"
+authors = [{ name = "qiuzixu" }]
 keywords = ["agent", "llm", "react", "mcp", "acp", "function-calling"]
 classifiers = [
   "Development Status :: 3 - Alpha",
