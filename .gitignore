@@ -13,3 +13,4 @@ site/
 *.db
 *.sqlite
 *.sqlite3
+.venv/*

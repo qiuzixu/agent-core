@@ -58,7 +58,7 @@ mcp = [
 ]
 
 openai = [
-  "openai>=1.0,<2",
+  "openai>=1.0,<3",
   "httpx>=0.28,<1",
 ]
 
@@ -75,7 +75,7 @@ qwen = [
 ]
 
 models = [
-  "openai>=1.0,<2",
+  "openai>=1.0,<3",
   "httpx>=0.28,<1",
   "anthropic>=0.40,<1",
   "google-genai>=1.0,<2",
