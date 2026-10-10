@@ -270,8 +270,12 @@ class AnthropicProvider:
             for acc in tool_call_accum.values():
                 try:
                     args = json.loads(acc.get("args_json", "{}") or "{}")
-                except json.JSONDecodeError:
-                    args = {}
+                except json.JSONDecodeError as exc:
+                    raise ModelInvocationError(
+                        f"Anthropic 流式工具 {acc.get('name')!r} 参数不是有效 JSON：{exc}"
+                    ) from exc
+                if not isinstance(args, dict):
+                    raise ModelInvocationError(f"Anthropic 流式工具 {acc.get('name')!r} 参数必须是 JSON 对象")
                 tool_calls.append(
                     {
                         "id": acc.get("id", ""),

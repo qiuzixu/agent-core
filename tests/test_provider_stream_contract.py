@@ -16,6 +16,7 @@ from collections.abc import AsyncIterator
 from types import SimpleNamespace
 from typing import Any
 
+from agent_core.errors import ModelInvocationError
 from agent_core.model.providers.anthropic import AnthropicProvider
 from agent_core.model.providers.gemini import GeminiProvider
 from agent_core.model.providers.openai_compatible import OpenAIProvider
@@ -183,6 +184,23 @@ class TestAnthropicStreamContract(unittest.IsolatedAsyncioTestCase):
             final.tool_calls,
             [{"id": "tu_1", "type": "function", "name": "lookup", "args": {"query": "机场"}}],
         )
+
+    async def test_malformed_tool_arguments_raise_model_invocation_error(self) -> None:
+        """坏参数契约：流式路径下工具参数 JSON 解析失败必须抛 ModelInvocationError。"""
+        events = [
+            SimpleNamespace(
+                content_block=SimpleNamespace(type="tool_use", id="tu_1", name="lookup"),
+                index=0,
+            ),
+            SimpleNamespace(delta=SimpleNamespace(partial_json='{"query": '), index=0),
+            SimpleNamespace(delta=SimpleNamespace(partial_json='"机场"} trailing'), index=0),
+        ]
+        provider = _anthropic_provider(events)
+
+        with self.assertRaises(ModelInvocationError) as ctx:
+            [chunk async for chunk in provider.stream_chat([user_message("查询")])]
+
+        self.assertIn("参数不是有效 JSON", str(ctx.exception))
 
     async def test_text_only_stream_ends_with_empty_tool_call_chunk(self) -> None:
         events = [
