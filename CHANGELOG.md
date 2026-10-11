@@ -3,6 +3,12 @@
 本项目遵循[语义化版本](https://semver.org/lang/zh-CN/)，变更按
 [Keep a Changelog](https://keepachangelog.com/zh-CN/) 的结构记录。
 
+## [0.2.1] - 2026-10-11
+
+### Changed
+
+- 维护性发布：Core 升到 `0.2.1`，三个扩展包升到 `0.1.2`，并同步版本依赖。
+
 ## [Unreleased]
 
 ### Changed

@@ -8,7 +8,7 @@
 
 一个零外部平台绑定的 Python Agent 运行时内核。项目实现的 Agent Loop、工具调用、MCP、Skill、上下文压缩、持久化恢复、工作流、HITL、多模型适配和 ACP 协议。
 
-> 当前版本：`0.2.0` Alpha，要求 Python 3.13。公开 API 在 `0.x` 阶段仍可能调整。
+> 当前版本：`0.2.1` Alpha，要求 Python 3.13。公开 API 在 `0.x` 阶段仍可能调整。
 
 ## 主要能力
 

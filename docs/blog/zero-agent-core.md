@@ -131,7 +131,7 @@ storage: Memory / SQLite / PostgreSQL
 
 ## 目前状态
 
-项目现在还是 `0.2.0` Alpha，要求 Python 3.13。公开 API 在 `0.x` 阶段可能调整。
+项目现在还是 `0.2.1` Alpha，要求 Python 3.13。公开 API 在 `0.x` 阶段可能调整。
 
 目前也有几个明确限制：
 
