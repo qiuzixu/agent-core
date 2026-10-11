@@ -1,4 +1,4 @@
-﻿name: Publish
+name: Publish
 
 on:
   push:
@@ -38,6 +38,7 @@ jobs:
   publish:
     needs: build
     runs-on: ubuntu-latest
+    environment: pypi
     steps:
       - uses: actions/download-artifact@v4
         with:
