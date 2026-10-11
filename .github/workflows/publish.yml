@@ -1,10 +1,9 @@
-name: Publish
+﻿name: Publish
 
-# 首次发布前置条件（PyPI 侧一次性配置，见 docs/reference 或发布指南）：
-# 在 PyPI 项目尚未存在时使用 "Pending Publisher" 预绑定 Trusted Publisher：
-#   owner = qiuzixu, repository = agent-core, workflow = publish.yml,
-#   environment = pypi（PyPI 侧可留空，GitHub 侧如使用 environment 需一致）。
-# 发布：打 tag（如 v0.2.0）推送到 GitHub，或手动触发 workflow_dispatch。
+# 发布流程：
+# 1. 打 tag（如 v0.2.1）并推送到 GitHub，或手动触发 workflow_dispatch
+# 2. GitHub Actions 自动构建并发布到 PyPI
+# 前置条件：在 GitHub 仓库 Settings -> Secrets and variables -> Actions 中添加 PYPI_API_TOKEN
 
 on:
   push:
@@ -44,10 +43,6 @@ jobs:
   publish:
     needs: build
     runs-on: ubuntu-latest
-    environment: pypi
-    permissions:
-      # Trusted Publisher 要求 id-token: write，不上传任何 PyPI 令牌。
-      id-token: write
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -61,4 +56,6 @@ jobs:
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
+          user: __token__
+          password: ${{ secrets.PYPI_API_TOKEN }}
           packages-dir: upload
