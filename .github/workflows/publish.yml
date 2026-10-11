@@ -1,4 +1,4 @@
-﻿name: Publish
+name: Publish
 
 # 发布流程：
 # 1. 打 tag（如 v0.2.1）并推送到 GitHub，或手动触发 workflow_dispatch
@@ -43,6 +43,7 @@ jobs:
   publish:
     needs: build
     runs-on: ubuntu-latest
+    environment: pypi
     steps:
       - uses: actions/download-artifact@v4
         with:
