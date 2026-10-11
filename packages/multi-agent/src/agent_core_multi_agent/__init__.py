@@ -1,4 +1,4 @@
-"""Handwritten Agent Core 的多 Agent 编排扩展。"""
+"""Zero Agent Core 的多 Agent 编排扩展。"""
 
 from agent_core_multi_agent.adapters import (
     AgentFunction,

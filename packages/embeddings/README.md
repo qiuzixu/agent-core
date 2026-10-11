@@ -1,4 +1,4 @@
-# Handwritten Agent Core Embeddings
+# Zero Agent Core Embeddings
 
 `zero-agent-core-embeddings` 为 Agent Core 的 `Embeddings` 协议提供 OpenAI、Gemini 和
 Ollama 实现。Core 的 Retriever 和 VectorStore 不依赖任何厂商 SDK。

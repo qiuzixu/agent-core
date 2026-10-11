@@ -263,7 +263,7 @@ def _get_tracer() -> Any:
 
 
 def setup_tracing(
-    service_name: str = "handwritten-agent",
+    service_name: str = "zero-agent",
     otlp_endpoint: str | None = None,
     console_export: bool = False,
 ) -> bool:

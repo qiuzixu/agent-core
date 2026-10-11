@@ -1,4 +1,4 @@
-# Handwritten Agent Core MinerU
+# Zero Agent Core MinerU
 
 `zero-agent-core-mineru` 是 Agent Core 的可选文档解析扩展。它调用已经部署好的 MinerU
 自托管 `/file_parse` HTTP 服务，把 Markdown 或 `content_list` 转换成 Core `Document`。

@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "zero-agent-core-multi-agent"
-version = "0.1.0"
-description = "Handwritten Agent Core 的多 Agent 编排扩展"
+version = "0.1.1"
+description = "Zero Agent Core 的多 Agent 编排扩展"
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
 license = "Apache-2.0"
