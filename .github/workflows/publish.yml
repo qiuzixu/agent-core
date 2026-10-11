@@ -1,9 +1,4 @@
-name: Publish
-
-# 发布流程：
-# 1. 打 tag（如 v0.2.1）并推送到 GitHub，或手动触发 workflow_dispatch
-# 2. GitHub Actions 自动构建并发布到 PyPI
-# 前置条件：在 GitHub 仓库 Settings -> Secrets and variables -> Actions 中添加 PYPI_API_TOKEN
+﻿name: Publish
 
 on:
   push:
@@ -43,7 +38,6 @@ jobs:
   publish:
     needs: build
     runs-on: ubuntu-latest
-    environment: pypi
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -54,9 +48,20 @@ jobs:
           mkdir -p upload
           find dist -name "*.whl" -exec mv {} upload/ \;
           find dist -name "*.tar.gz" -exec mv {} upload/ \;
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          user: __token__
-          password: ${{ secrets.PYPI_API_TOKEN }}
-          packages-dir: upload
+      - name: Debug - check secret exists
+        env:
+          PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          if [ -z "$PYPI_API_TOKEN" ]; then
+            echo "ERROR: PYPI_API_TOKEN is NOT SET (empty or missing)"
+            exit 1
+          else
+            echo "OK: PYPI_API_TOKEN is set (length: ${#PYPI_API_TOKEN})"
+          fi
+      - name: Publish to PyPI via twine
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          python -m pip install twine
+          twine upload --verbose upload/*
