@@ -252,14 +252,19 @@ class AnthropicProvider:
 
                     if hasattr(event, "delta"):
                         delta = event.delta
-                        if getattr(delta, "text", None):
-                            yield StreamChunk(text=delta.text)
-                        elif getattr(delta, "partial_json", None) is not None:
+                        # 取值经 getattr 而非属性直访：delta 在不同 SDK 版本下的
+                        # 类型联合不同（mypy 按 union-attr 检查），鸭子类型取值
+                        # 既保持跨版本兼容，也让类型检查可静态通过。
+                        delta_text = getattr(delta, "text", None)
+                        partial_json = getattr(delta, "partial_json", None)
+                        if delta_text:
+                            yield StreamChunk(text=delta_text)
+                        elif partial_json is not None:
                             # 工具调用参数增量
                             block_id = str(getattr(event, "index", len(tool_call_accum)))
                             if block_id not in tool_call_accum:
                                 tool_call_accum[block_id] = {"args_json": ""}
-                            tool_call_accum[block_id]["args_json"] += delta.partial_json
+                            tool_call_accum[block_id]["args_json"] += partial_json
 
         except Exception as exc:
             raise ModelInvocationError(f"Anthropic stream failed: {exc}") from exc

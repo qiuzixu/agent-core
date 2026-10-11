@@ -215,7 +215,7 @@ class TestReviewRegressions(unittest.IsolatedAsyncioTestCase):
             checkpointer = FileCheckpointer(directory)
             await checkpointer.save("thread", {"step": 1})
             with (
-                patch("agent_core.checkpoint.store.os.replace", side_effect=OSError("disk error")),
+                patch("agent_core.checkpoint.naming.os.replace", side_effect=OSError("disk error")),
                 self.assertRaises(CheckpointError),
             ):
                 await checkpointer.save("thread", {"step": 2})

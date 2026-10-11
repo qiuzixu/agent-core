@@ -11,13 +11,9 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from agent_core.checkpoint.store import (
-    CheckpointError,
-    FileCheckpointer,
-    TimeTravelCheckpointer,
-    _restore_thread_id,
-    _sanitize_thread_id,
-)
+from agent_core.checkpoint.naming import _restore_thread_id, _sanitize_thread_id
+from agent_core.checkpoint.store import CheckpointError, FileCheckpointer
+from agent_core.checkpoint.travel import TimeTravelCheckpointer
 
 
 class _NoDirFileCheckpointer(FileCheckpointer):

@@ -2,9 +2,11 @@
 
 from agent_core.checkpoint.store import (
     Checkpointer,
-    CheckpointVersion,
     FileCheckpointer,
     MemoryCheckpointer,
+)
+from agent_core.checkpoint.travel import (
+    CheckpointVersion,
     TimeTravelCheckpointer,
 )
 
