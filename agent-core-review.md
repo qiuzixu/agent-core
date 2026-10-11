@@ -1,6 +1,6 @@
-# handwritten-agent-core 代码评审与分析报告
+# zero-agent-core 代码评审与分析报告
 
-- **评审对象**：`agent-core`（`handwritten-agent-core` v0.1.0 Alpha）
+- **评审对象**：`agent-core`（`zero-agent-core` v0.1.0 Alpha）
 - **评审基线**：`main` @ `731faa8`（feat: 实现并发隔离的观测性、可返回失败实例的持久化工作流和工具审批边界）
 - **评审方式**：4 路并行源码深读（执行引擎 / 模型与工具层 / 协议端口存储层 / 横切链与知识层），全部结论附文件+行号；核心文件（react.py、service.py、middleware/base.py、protocol/runtime.py、tools/executor.py、公共 API）经人工交叉复核；测试套件实测运行。
 - **性质**：只读评审，未修改任何代码，不触发 `docs/ARCHITECTURE.md` 同步义务。

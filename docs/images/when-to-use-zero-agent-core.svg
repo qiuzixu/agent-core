@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="660" viewBox="0 0 1000 660">
+  <rect width="1000" height="660" fill="#f8fafc"/>
+  <text x="500" y="50" text-anchor="middle" font-size="28" font-family="Microsoft YaHei, sans-serif" fill="#0f172a">Agent 框架选型参考</text>
+  <text x="500" y="82" text-anchor="middle" font-size="16" font-family="Microsoft YaHei, sans-serif" fill="#64748b">不是谁更好，而是看当前场景更看重什么</text>
+
+  <rect x="70" y="120" width="260" height="110" rx="16" fill="#e0f2fe" stroke="#0ea5e9"/>
+  <text x="200" y="155" text-anchor="middle" font-size="17" font-family="Microsoft YaHei, sans-serif" fill="#075985">快速 Demo / 验证想法</text>
+  <text x="200" y="185" text-anchor="middle" font-size="14" font-family="Microsoft YaHei, sans-serif" fill="#0369a1">LangChain / LangGraph</text>
+  <text x="200" y="210" text-anchor="middle" font-size="14" font-family="Microsoft YaHei, sans-serif" fill="#0369a1">CrewAI / AG2 / OpenAI Agents SDK</text>
+
+  <rect x="370" y="120" width="260" height="110" rx="16" fill="#dcfce7" stroke="#22c55e"/>
+  <text x="500" y="155" text-anchor="middle" font-size="17" font-family="Microsoft YaHei, sans-serif" fill="#166534">大量现成集成</text>
+  <text x="500" y="185" text-anchor="middle" font-size="14" font-family="Microsoft YaHei, sans-serif" fill="#15803d">LangChain / LangGraph</text>
+  <text x="500" y="210" text-anchor="middle" font-size="13" font-family="Microsoft YaHei, sans-serif" fill="#166534">连接器和示例更多</text>
+
+  <rect x="670" y="120" width="260" height="110" rx="16" fill="#fef9c3" stroke="#eab308"/>
+  <text x="800" y="155" text-anchor="middle" font-size="17" font-family="Microsoft YaHei, sans-serif" fill="#854d0e">角色化协作</text>
+  <text x="800" y="185" text-anchor="middle" font-size="14" font-family="Microsoft YaHei, sans-serif" fill="#a16207">CrewAI</text>
+  <text x="800" y="210" text-anchor="middle" font-size="13" font-family="Microsoft YaHei, sans-serif" fill="#854d0e">角色 / 团队 / 任务抽象</text>
+
+  <rect x="70" y="260" width="260" height="110" rx="16" fill="#ede9fe" stroke="#8b5cf6"/>
+  <text x="200" y="295" text-anchor="middle" font-size="17" font-family="Microsoft YaHei, sans-serif" fill="#5b21b6">对话式求解</text>
+  <text x="200" y="325" text-anchor="middle" font-size="14" font-family="Microsoft YaHei, sans-serif" fill="#7c3aed">AG2</text>
+  <text x="200" y="350" text-anchor="middle" font-size="13" font-family="Microsoft YaHei, sans-serif" fill="#5b21b6">多 Agent 讨论 / 协作</text>
+
+  <rect x="370" y="260" width="260" height="110" rx="16" fill="#fee2e2" stroke="#ef4444"/>
+  <text x="500" y="295" text-anchor="middle" font-size="17" font-family="Microsoft YaHei, sans-serif" fill="#991b1b">OpenAI 平台链路</text>
+  <text x="500" y="325" text-anchor="middle" font-size="14" font-family="Microsoft YaHei, sans-serif" fill="#b91c1c">OpenAI Agents SDK</text>
+  <text x="500" y="350" text-anchor="middle" font-size="13" font-family="Microsoft YaHei, sans-serif" fill="#991b1b">优先看官方集成</text>
+
+  <rect x="670" y="260" width="260" height="110" rx="16" fill="#e2e8f0" stroke="#64748b"/>
+  <text x="800" y="295" text-anchor="middle" font-size="17" font-family="Microsoft YaHei, sans-serif" fill="#334155">复杂流程编排</text>
+  <text x="800" y="325" text-anchor="middle" font-size="14" font-family="Microsoft YaHei, sans-serif" fill="#475569">LangGraph</text>
+  <text x="800" y="350" text-anchor="middle" font-size="13" font-family="Microsoft YaHei, sans-serif" fill="#334155">Graph / State / 平台生态</text>
+
+  <rect x="150" y="410" width="700" height="140" rx="20" fill="#f1f5f9" stroke="#94a3b8"/>
+  <text x="500" y="445" text-anchor="middle" font-size="18" font-family="Microsoft YaHei, sans-serif" fill="#0f172a">特殊场景：需要嵌入式运行时内核</text>
+  <text x="500" y="475" text-anchor="middle" font-size="15" font-family="Microsoft YaHei, sans-serif" fill="#334155">zero-agent-core：Loop / State / Recovery / HITL / Storage</text>
+  <text x="500" y="505" text-anchor="middle" font-size="13" font-family="Microsoft YaHei, sans-serif" fill="#64748b">适合愿意自己补业务层、扩展和生态的团队</text>
+
+  <text x="70" y="595" font-size="14" font-family="Microsoft YaHei, sans-serif" fill="#334155">成熟框架往往更快：生态、连接器、示例和长期社区维护都更完整。</text>
+  <text x="70" y="625" font-size="14" font-family="Microsoft YaHei, sans-serif" fill="#475569">zero-agent-core 不是替代品，只是面向嵌入式运行时边界的轻量选项。</text>
+</svg>
