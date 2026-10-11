@@ -53,7 +53,7 @@ class OllamaEmbeddings(BaseProviderEmbeddings):
         except ImportError as exc:
             raise ImportError(
                 "OllamaEmbeddings 需要 httpx，请安装 "
-                "handwritten-agent-core-embeddings[ollama]"
+                "zero-agent-core-embeddings[ollama]"
             ) from exc
         async with httpx.AsyncClient() as client:
             return await self._post(client, payload=payload, headers=headers)

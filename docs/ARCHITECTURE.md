@@ -1,6 +1,6 @@
 # Agent Core 架构
 
-本文描述 `handwritten-agent-core` 自身的模块边界，以及应用 Agent 如何组装并调用 Core。
+本文描述 `zero-agent-core` 自身的模块边界，以及应用 Agent 如何组装并调用 Core。
 图中“应用层”由具体 Agent 项目实现；“Agent Core”零外部平台绑定，不依赖任何具体业务。
 
 ## 1. Agent Core 内部架构
@@ -166,9 +166,9 @@ flowchart LR
     end
 
     subgraph EXTENSIONS["可选扩展包"]
-        MINERUADAPTER["handwritten-agent-core-mineru<br/>Loader / Parser / Transport"]
-        EMBEDDINGADAPTER["handwritten-agent-core-embeddings<br/>OpenAI / Gemini / Ollama"]
-        MULTIAGENT["handwritten-agent-core-multi-agent<br/>Registry / Router / Supervisor"]
+        MINERUADAPTER["zero-agent-core-mineru<br/>Loader / Parser / Transport"]
+        EMBEDDINGADAPTER["zero-agent-core-embeddings<br/>OpenAI / Gemini / Ollama"]
+        MULTIAGENT["zero-agent-core-multi-agent<br/>Registry / Router / Supervisor"]
     end
 
     subgraph EXTERNAL["外部系统"]
@@ -334,7 +334,7 @@ sequenceDiagram
 
 Core 内置纯文本 Loader、递归字符切分器、内存 VectorStore、Chroma/pgvector 可选适配器和关键词
 Retriever。自托管 MinerU HTTP 和模型 Embedding SDK 分别位于独立
-`handwritten-agent-core-mineru`、`handwritten-agent-core-embeddings` 包；MinerU 服务运行时、
+`zero-agent-core-mineru`、`zero-agent-core-embeddings` 包；MinerU 服务运行时、
 通用 OCR、Qdrant 和 FAISS 不成为 Core 基础依赖。
 
 ## 5. Multi-Agent 协调时序
@@ -428,11 +428,12 @@ flowchart LR
 | 2026-09-26 | Web MCP 动态配置 | Web 端可持久化、测试并重连内置或自定义 MCP 服务；同步浏览器与 Gateway 的连接关系。 |
 | 2026-09-26 | Core 边界治理 | 模型选择值对象和唯一存储端口收口到 `ports`；`storage` 仅保留实现，并修复审批持久化与中间件导入环。 |
 | 2026-09-27 | 文档站迁移 | VitePress 迁移至 Material for MkDocs；清理 node/pnpm 残留；同步记录补录。 |
+| 2026-10-11 | 发行名更名 0.2.0 | 发行名 `handwritten-agent-core`→`zero-agent-core`（仅 pyproject/文档/错误提示字符串/OTel tracer 名），导入名与模块边界、调用链、图形关系均不变，无需改图。 |
 | 2026-09-27 | Core 通用能力扩展 | 新增结构化输出、模型治理、长期记忆、Prompt 模板、节点执行策略、pending write 与 Mermaid 导出，并同步内部和应用调用关系。 |
 | 2026-09-27 | Callback 与 Retrieval Core | 新增统一生命周期回调、文档加载和切分、检索协议、内存向量实现及安全序列化，并同步文档摄取和应用调用关系。 |
 | 2026-09-27 | 严格类型检查修复 | 修正可选依赖边界、持久化数据收窄及动态 checkpoint 调用类型；模块关系和调用方向未变化，无需修改架构图。 |
 | 2026-09-27 | 向量存储分层 | 新增 Chroma 开发适配器、pgvector 生产适配器和环境工厂，并同步检索与存储调用关系。 |
-| 2026-09-27 | MinerU 扩展包 | 新增独立 `handwritten-agent-core-mineru`，并同步扩展包、Core 与外部解析服务调用关系。 |
+| 2026-09-27 | MinerU 扩展包 | 新增独立 `zero-agent-core-mineru`，并同步扩展包、Core 与外部解析服务调用关系。 |
 | 2026-09-27 | Embedding 扩展包 | 新增 OpenAI、Gemini、Ollama 适配器、执行策略和工厂，并同步检索调用关系。 |
 | 2026-09-27 | Multi-Agent 扩展包 | 新增 Agent 注册、规则/模型路由、handoff、协调存储、租约和恢复，并同步应用与多个 Agent 的调用关系。 |
 | 2026-09-28 | 双 Agent 运行治理接入 | Vanilla 与 LangGraph 应用接入 Callback、Guardrails、Observability、Prompt/Serializer Registry、时间旅行和 Durable Workflow；Core 模块关系未变化。 |

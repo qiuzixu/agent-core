@@ -51,7 +51,7 @@ stores = {
 
 ## PostgreSQL 生命周期
 
-安装 `handwritten-agent-core[production,pgvector]`。每个 PostgreSQL Store 需要在服务启动时调用
+安装 `zero-agent-core[production,pgvector]`。每个 PostgreSQL Store 需要在服务启动时调用
 `initialize()` 创建连接池并幂等建表，在关闭时调用 `close()`。应用可以集中管理这些生命周期，
 不要每次请求创建连接池。
 

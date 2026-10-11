@@ -1,12 +1,12 @@
 # Handwritten Agent Core Embeddings
 
-`handwritten-agent-core-embeddings` 为 Agent Core 的 `Embeddings` 协议提供 OpenAI、Gemini 和
+`zero-agent-core-embeddings` 为 Agent Core 的 `Embeddings` 协议提供 OpenAI、Gemini 和
 Ollama 实现。Core 的 Retriever 和 VectorStore 不依赖任何厂商 SDK。
 
 ```bash
-pip install "handwritten-agent-core-embeddings[openai]"
-pip install "handwritten-agent-core-embeddings[gemini]"
-pip install "handwritten-agent-core-embeddings[ollama]"
+pip install "zero-agent-core-embeddings[openai]"
+pip install "zero-agent-core-embeddings[gemini]"
+pip install "zero-agent-core-embeddings[ollama]"
 ```
 
 ```python

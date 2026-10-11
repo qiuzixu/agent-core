@@ -58,7 +58,7 @@ class PgVectorStore(VectorStore):
         try:
             import asyncpg
         except ImportError as exc:
-            raise ImportError("PgVectorStore 需要 asyncpg，请安装 handwritten-agent-core[pgvector]") from exc
+            raise ImportError("PgVectorStore 需要 asyncpg，请安装 zero-agent-core[pgvector]") from exc
         self._pool = await asyncpg.create_pool(self._dsn, min_size=2, max_size=10)
         async with self._pool.acquire() as connection:
             if self._create_extension:

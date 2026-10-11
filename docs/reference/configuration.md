@@ -79,7 +79,7 @@ await memory.initialize()  # PostgreSQL 实现需要初始化连接池和表
 
 ## Embedding Provider 扩展包
 
-`handwritten-agent-core-embeddings` 不读取环境变量，应用可以按以下名称映射配置：
+`zero-agent-core-embeddings` 不读取环境变量，应用可以按以下名称映射配置：
 
 | 配置属性 | 推荐环境变量 | 常用默认值 | 说明 |
 | --- | --- | --- | --- |
@@ -130,7 +130,7 @@ await vectors.initialize()
 
 ## MinerU 扩展包
 
-独立包 `handwritten-agent-core-mineru` 的 `MinerUConfig` 只配置自托管 MinerU `/file_parse`
+独立包 `zero-agent-core-mineru` 的 `MinerUConfig` 只配置自托管 MinerU `/file_parse`
 HTTP 调用。Core 与扩展包都不自动读取环境变量，应用可以按下表映射配置：
 
 | 配置属性 | 推荐环境变量 | 默认值 | 说明 |
@@ -190,12 +190,12 @@ API Key 应由应用从密钥管理系统读取后传入。MinerU 云端异步 A
 文档默认部署在站点根路径。子路径部署时设置 `DOCS_BASE`：
 
 ```bash
-DOCS_BASE=/handwritten-agent-core/ python -m mkdocs build
+DOCS_BASE=/zero-agent-core/ python -m mkdocs build
 ```
 
 Windows PowerShell：
 
 ```powershell
-$env:DOCS_BASE = "/handwritten-agent-core/"
+$env:DOCS_BASE = "/zero-agent-core/"
 python -m mkdocs build
 ```

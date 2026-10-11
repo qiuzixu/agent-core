@@ -88,7 +88,7 @@ answer = await agent.run("计算 20 + 22")
 先安装对应 extra：
 
 ```bash
-pip install "handwritten-agent-core[openai]"
+pip install "zero-agent-core[openai]"
 ```
 
 应用配置可以是 dataclass、Pydantic Settings 或其他有同名属性的对象：

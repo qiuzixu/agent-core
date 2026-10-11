@@ -1,9 +1,17 @@
 # Handwritten Agent Core
 
+<!-- PyPI 徽章（发布到 PyPI 后取消此行注释即生效）：
+[![PyPI version](https://img.shields.io/pypi/v/zero-agent-core)](https://pypi.org/project/zero-agent-core/)
+[![Python versions](https://img.shields.io/pypi/pyversions/zero-agent-core)](https://pypi.org/project/zero-agent-core/)
+-->
+[![Core CI](https://github.com/qiuzixu/agent-core/actions/workflows/ci.yml/badge.svg)](https://github.com/qiuzixu/agent-core/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
+[![Python 3.13](https://img.shields.io/badge/Python-3.13-blue.svg)](https://www.python.org/)
+
 一个零外部平台绑定的 Python Agent 运行时内核。项目从头实现 Agent Loop、
 工具调用、MCP、Skill、上下文压缩、持久化恢复、工作流、HITL、多模型适配和 ACP 协议。
 
-> 当前版本为 `0.1.0` Alpha，要求 Python 3.13。公开 API 在 `0.x` 阶段仍可能调整。
+> 当前版本为 `0.2.0` Alpha，要求 Python 3.13。公开 API 在 `0.x` 阶段仍可能调整。
 
 ## 主要能力
 
@@ -14,9 +22,9 @@
 - Middleware、Guardrails、HITL、调用统计和可选 OpenTelemetry；
 - 生命周期 Callback、统一 RunEvent 和流式增量事件；
 - Document/Blob、文本加载与切分、Embedding/Retriever/VectorStore 协议；
-- 可选 `handwritten-agent-core-mineru` 扩展包解析 PDF、扫描件和复杂版面；
-- 可选 `handwritten-agent-core-embeddings` 扩展包接入 OpenAI、Gemini 和 Ollama；
-- 可选 `handwritten-agent-core-multi-agent` 扩展包编排多个独立 Agent；
+- 可选 `zero-agent-core-mineru` 扩展包解析 PDF、扫描件和复杂版面；
+- 可选 `zero-agent-core-embeddings` 扩展包接入 OpenAI、Gemini 和 Ollama；
+- 可选 `zero-agent-core-multi-agent` 扩展包编排多个独立 Agent；
 - 内存、Chroma、pgvector 向量存储，关键词检索以及用户/租户/namespace 隔离；
 - 带类型白名单、Schema 版本和迁移函数的安全 JSON 序列化；
 - 安全文本/聊天 Prompt 模板、消息占位符、partial 和版本管理；
@@ -33,12 +41,19 @@
 
 ## 快速开始
 
+从 PyPI 安装（导入名是 `agent_core`，不受发行名更名影响）：
+
+```bash
+pip install zero-agent-core
+```
+
 推荐使用 [uv](https://docs.astral.sh/uv/)（与仓库其它项目一致，自动创建 `.venv`）：
 
 ```bash
 cd agent-core
 uv sync --all-extras
-uv run python examples/basic_agent.py
+uv run python examples/starter/starter_agent.py   # 五分钟上手：单文件最小完整示例
+uv run python examples/basic_agent.py             # 更小的最小示例
 ```
 
 `uv sync` 默认安装项目本体与 `dev` 依赖组；按需追加 extra：
@@ -55,26 +70,28 @@ uv sync --all-extras              # 全部可选依赖
 cd agent-core
 python -m venv .venv
 python -m pip install -e ".[dev]"
-python examples/basic_agent.py
+python examples/starter/starter_agent.py
 ```
 
-`examples/basic_agent.py` 使用离线演示模型，不需要 API Key 或外部服务。
+`examples/starter/starter_agent.py` 与 `examples/basic_agent.py` 都使用离线演示模型，
+不需要 API Key 或外部服务。五分钟上手路径（安装 → 运行 → 换真实模型 → 加工具 →
+加工作流）见 [examples/starter/README.md](examples/starter/README.md)。
 
 真实模型按需安装（uv 用户把 `pip install` 换成 `uv pip install`，或用上面的
 `uv sync --extra ...`）：
 
 ```bash
-pip install "handwritten-agent-core[openai]"
-pip install "handwritten-agent-core[anthropic]"
-pip install "handwritten-agent-core[gemini]"
-pip install "handwritten-agent-core[models,mcp,production]"
-pip install "handwritten-agent-core[chroma]"    # 本地持久化向量存储
-pip install "handwritten-agent-core[pgvector]"  # PostgreSQL 向量存储
-pip install handwritten-agent-core-mineru       # 独立 MinerU 文档解析扩展包
-pip install "handwritten-agent-core-embeddings[openai]"
-pip install "handwritten-agent-core-embeddings[gemini]"
-pip install "handwritten-agent-core-embeddings[ollama]"
-pip install handwritten-agent-core-multi-agent  # 独立多 Agent 编排扩展包
+pip install "zero-agent-core[openai]"
+pip install "zero-agent-core[anthropic]"
+pip install "zero-agent-core[gemini]"
+pip install "zero-agent-core[models,mcp,production]"
+pip install "zero-agent-core[chroma]"    # 本地持久化向量存储
+pip install "zero-agent-core[pgvector]"  # PostgreSQL 向量存储
+pip install zero-agent-core-mineru       # 独立 MinerU 文档解析扩展包
+pip install "zero-agent-core-embeddings[openai]"
+pip install "zero-agent-core-embeddings[gemini]"
+pip install "zero-agent-core-embeddings[ollama]"
+pip install zero-agent-core-multi-agent  # 独立多 Agent 编排扩展包
 ```
 
 最小组装方式：
@@ -103,10 +120,10 @@ answer = await agent.run("查询数据")
 
 ```toml
 [project]
-dependencies = ["handwritten-agent-core"]
+dependencies = ["zero-agent-core"]
 
 [tool.uv.sources]
-handwritten-agent-core = { path = "../agent-core", editable = true }
+zero-agent-core = { path = "../agent-core", editable = true }
 ```
 
 随后在应用目录执行 `uv sync`（多包仓库在 workspace 根执行
@@ -122,7 +139,7 @@ python -m mkdocs serve       # 本地预览 http://127.0.0.1:8000
 python -m mkdocs build       # 构建到 site/
 ```
 
-子路径部署时设置 `DOCS_BASE`，例如 `/handwritten-agent-core/`。文档入口为
+子路径部署时设置 `DOCS_BASE`，例如 `/zero-agent-core/`。文档入口为
 [docs/index.md](docs/index.md)，包含快速开始、核心概念、模型、工具、MCP、Skill、存储、
 工作流、ACP 和公共 API 参考。
 

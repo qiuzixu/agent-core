@@ -36,7 +36,7 @@ class GeminiEmbeddings(BaseProviderEmbeddings):
             except ImportError as exc:
                 raise ImportError(
                     "GeminiEmbeddings 需要 google-genai，请安装 "
-                    "handwritten-agent-core-embeddings[gemini]"
+                    "zero-agent-core-embeddings[gemini]"
                 ) from exc
             client = genai.Client(api_key=api_key)
         aio = getattr(client, "aio", None)

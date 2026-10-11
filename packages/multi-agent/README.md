@@ -1,11 +1,11 @@
 # Handwritten Agent Core Multi-Agent
 
-`handwritten-agent-core-multi-agent` 是 Agent Core 的可选多 Agent 编排扩展。它不依赖
+`zero-agent-core-multi-agent` 是 Agent Core 的可选多 Agent 编排扩展。它不依赖
 LangChain、LangGraph、AutoGen 或 CrewAI，直接复用 Core 的运行时、事件、访问上下文、Workflow Store
 和 Run Lease。
 
 ```bash
-pip install handwritten-agent-core-multi-agent
+pip install zero-agent-core-multi-agent
 ```
 
 ```python

@@ -5,6 +5,16 @@
 
 ## [Unreleased]
 
+### Changed
+
+- 发行名由 `handwritten-agent-core` 更名为 `zero-agent-core`（PyPI 发行名与三个扩展包
+  `zero-agent-core-mineru` / `zero-agent-core-embeddings` / `zero-agent-core-multi-agent` 同步更名）。
+  导入名 `agent_core`、`agent_core_mineru`、`agent_core_embeddings`、`agent_core_multi_agent`
+  保持不变，升级后无需修改任何 import 语句；安装命令改为
+  `pip install "zero-agent-core[models,mcp]"` 等对应形式。
+
+## [0.2.0] - 2026-10-11
+
 ### Added
 
 - `AgentRuntime` 支持可选 `run_executor`（`RunExecutor` 协议）：应用可接管 Agent 调用，
@@ -13,6 +23,23 @@
   身份校验三类判定共享同一实现。
 - `TimeTravelCheckpointer` 新增 `max_versions_per_thread` 版本容量上限（默认 100）：
   追加超过上限时淘汰最旧版本并同步收缩持久化文件，当前指针语义保持不变。
+- 基于 Material for MkDocs 的中文文档站、使用指南和公共 API 参考。
+- 开源许可证、贡献指南、社区准则、安全策略、支持说明和发布检查清单。
+- 最小 Agent、自定义模型和持久化工作流示例。
+- Core 检查与文档构建的 CI 配置。
+- JSON Schema 结构化输出、decoder 和校验失败重试。
+- 模型请求/输入 Token 限流、按 scope 并发、超时、熔断和 fallback。
+- 工作流节点级重试、超时、退避、幂等键、pending write 和 Mermaid 导出。
+- 跨会话长期记忆端口及内存、SQLite、PostgreSQL 实现。
+- 安全 Prompt 文本/聊天模板、消息占位符、partial 和默认变量。
+- 生命周期 CallbackManager、增强 RunEvent 和流式增量事件。
+- 文档加载/切分、Embedding/Retriever/VectorStore 协议及轻量内存实现。
+- 独立 `handwritten-agent-core-mineru` 扩展包，支持自托管 `/file_parse`、区块、页码和来源追踪。
+- 独立 `handwritten-agent-core-embeddings` 扩展包，支持 OpenAI、Gemini、Ollama 和统一工厂。
+- 独立 `handwritten-agent-core-multi-agent` 扩展包，支持 Agent 注册、路由、handoff、父子 Run、
+  预算、恢复、租约和顺序/并行协调。
+- Chroma 本地持久化、PostgreSQL pgvector 生产适配器及统一向量存储工厂。
+- 带类型白名单、Schema 版本和迁移函数的安全 JSON 序列化。
 
 ### Fixed
 
@@ -53,26 +80,6 @@
 - `ObservabilityMiddleware` 按异步上下文隔离模型/工具计时，并从当前调用元数据读取 `thread_id`。
 - `DurableWorkflowRunner` 增加 `raise_on_failure`，应用可以读取已持久化的失败执行实例。
 - `TimeTravelCheckpointer` 持久化 rollback 当前版本指针，并实现整条 thread 历史删除协议。
-
-### Added
-
-- 基于 Material for MkDocs 的中文文档站、使用指南和公共 API 参考。
-- 开源许可证、贡献指南、社区准则、安全策略、支持说明和发布检查清单。
-- 最小 Agent、自定义模型和持久化工作流示例。
-- Core 检查与文档构建的 CI 配置。
-- JSON Schema 结构化输出、decoder 和校验失败重试。
-- 模型请求/输入 Token 限流、按 scope 并发、超时、熔断和 fallback。
-- 工作流节点级重试、超时、退避、幂等键、pending write 和 Mermaid 导出。
-- 跨会话长期记忆端口及内存、SQLite、PostgreSQL 实现。
-- 安全 Prompt 文本/聊天模板、消息占位符、partial 和默认变量。
-- 生命周期 CallbackManager、增强 RunEvent 和流式增量事件。
-- 文档加载/切分、Embedding/Retriever/VectorStore 协议及轻量内存实现。
-- 独立 `handwritten-agent-core-mineru` 扩展包，支持自托管 `/file_parse`、区块、页码和来源追踪。
-- 独立 `handwritten-agent-core-embeddings` 扩展包，支持 OpenAI、Gemini、Ollama 和统一工厂。
-- 独立 `handwritten-agent-core-multi-agent` 扩展包，支持 Agent 注册、路由、handoff、父子 Run、
-  预算、恢复、租约和顺序/并行协调。
-- Chroma 本地持久化、PostgreSQL pgvector 生产适配器及统一向量存储工厂。
-- 带类型白名单、Schema 版本和迁移函数的安全 JSON 序列化。
 
 ## [0.1.0] - 2026-09-26
 

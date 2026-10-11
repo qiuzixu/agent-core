@@ -1,6 +1,6 @@
 # Agent Core 已实现能力
 
-本文只记录 `handwritten-agent-core` 已经实现并可被其他 Agent 项目复用的能力。
+本文只记录 `zero-agent-core` 已经实现并可被其他 Agent 项目复用的能力。
 地图控制、业务规则、业务 API、前端页面等应用能力不属于 Agent Core。
 整体模块关系和应用调用链见 [Agent Core 架构](ARCHITECTURE.md)。
 
@@ -167,9 +167,9 @@ AccessContext。Core 不使用 pickle，也不会
 根据输入中的 Python 类路径动态导入代码。
 
 Chroma 和 pgvector 通过 optional extras 安装，基础安装不依赖它们。仓库中的独立
-`handwritten-agent-core-mineru` 扩展包实现 `DocumentLoader` 和 `BlobParser`，调用自托管
+`zero-agent-core-mineru` 扩展包实现 `DocumentLoader` 和 `BlobParser`，调用自托管
 `/file_parse` 并保留页码、block id、区块类型、来源 checksum 和解析器版本。OpenAI/Gemini
-Embedding 由独立 `handwritten-agent-core-embeddings` 扩展包实现，并与 Ollama 共用批处理、并发、
+Embedding 由独立 `zero-agent-core-embeddings` 扩展包实现，并与 Ollama 共用批处理、并发、
 重试、超时和维度校验。Qdrant、FAISS、Milvus 和通用 OCR 尚未提供具体适配器。MinerU 模型、
 OCR 运行时和服务部署不属于 Core。
 
@@ -241,7 +241,7 @@ Windows 非法字符 `<>:"/\|?*`、`%`、控制符与保留设备名统一转义
 
 ### Multi-Agent 扩展包
 
-独立 `handwritten-agent-core-multi-agent` 扩展包实现：
+独立 `zero-agent-core-multi-agent` 扩展包实现：
 
 - `AgentInvoker` 统一子 Agent 调用协议，`RuntimeAgentInvoker` 可直接包装现有 `AgentRuntime`；
 - `AgentRegistry` 管理能力、别名、优先级、角色要求和每个 Agent 的并发上限；

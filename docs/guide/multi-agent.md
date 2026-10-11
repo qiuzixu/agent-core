@@ -1,11 +1,11 @@
 # Multi-Agent 编排
 
-Multi-Agent 能力由独立发行包 `handwritten-agent-core-multi-agent` 提供。Core 继续负责单 Agent 的
+Multi-Agent 能力由独立发行包 `zero-agent-core-multi-agent` 提供。Core 继续负责单 Agent 的
 Loop、模型、工具、会话、审批、Workflow Store、Run Lease 和事件；扩展包只负责多个 Agent 之间的
 发现、路由、调用、handoff 和协调恢复。
 
 ```bash
-pip install handwritten-agent-core-multi-agent
+pip install zero-agent-core-multi-agent
 ```
 
 ## 注册与调用

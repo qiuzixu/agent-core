@@ -256,7 +256,7 @@ def _get_tracer() -> Any:
     try:
         from opentelemetry import trace
 
-        return trace.get_tracer("handwritten-agent-core")
+        return trace.get_tracer("zero-agent-core")
     except ImportError:
         logger.warning("opentelemetry-sdk 未安装，OTel 追踪已禁用")
         return None

@@ -37,7 +37,7 @@ class OpenAIEmbeddings(BaseProviderEmbeddings):
             except ImportError as exc:
                 raise ImportError(
                     "OpenAIEmbeddings 需要 openai，请安装 "
-                    "handwritten-agent-core-embeddings[openai]"
+                    "zero-agent-core-embeddings[openai]"
                 ) from exc
             kwargs: dict[str, Any] = {}
             if api_key is not None:

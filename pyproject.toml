@@ -3,8 +3,8 @@ requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
-name = "handwritten-agent-core"
-version = "0.1.0"
+name = "zero-agent-core"
+version = "0.2.0"
 description = "零外部平台绑定的 Python Agent 运行时内核"
 readme = "README.md"
 requires-python = ">=3.13,<3.14"

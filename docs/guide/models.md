@@ -6,10 +6,10 @@ Agent Core 通过 `ModelAdapter` 隔离模型厂商差异。内置适配器支�
 ## 安装可选依赖
 
 ```bash
-pip install "handwritten-agent-core[openai]"
-pip install "handwritten-agent-core[anthropic]"
-pip install "handwritten-agent-core[gemini]"
-pip install "handwritten-agent-core[models]"
+pip install "zero-agent-core[openai]"
+pip install "zero-agent-core[anthropic]"
+pip install "zero-agent-core[gemini]"
+pip install "zero-agent-core[models]"
 ```
 
 Ollama 使用 OpenAI 兼容客户端，因此安装 `openai` extra。`qwen` extra 提供 DashScope SDK 和

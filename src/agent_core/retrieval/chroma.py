@@ -47,7 +47,7 @@ class ChromaVectorStore(VectorStore):
                 import chromadb
             except ImportError as exc:
                 raise ImportError(
-                    "ChromaVectorStore 需要 chromadb，请安装 handwritten-agent-core[chroma]"
+                    "ChromaVectorStore 需要 chromadb，请安装 zero-agent-core[chroma]"
                 ) from exc
             client = chromadb.PersistentClient(path=str(Path(path).resolve()))
         # Chroma 各版本的 Client/Collection 泛型和重载差异较大，在 SDK 边界收口为 Any。

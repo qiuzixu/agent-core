@@ -53,7 +53,7 @@
 以下按优先级排列：
 
 1. **更高阶 Multi-agent 模式**
-   - `handwritten-agent-core-multi-agent` 已提供 supervisor、显式 handoff、顺序/并行协调和恢复
+   - `zero-agent-core-multi-agent` 已提供 supervisor、显式 handoff、顺序/并行协调和恢复
    - 动态 swarm、群聊、投票/共识和运行时生成 Agent 尚未提供
 
 2. **结果缓存**

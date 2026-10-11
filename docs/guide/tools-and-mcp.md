@@ -43,7 +43,7 @@ Core 不会仅根据 `risk_level` 自动授权。应用必须提供实际的审�
 安装 MCP extra：
 
 ```bash
-pip install "handwritten-agent-core[mcp]"
+pip install "zero-agent-core[mcp]"
 ```
 
 `McpToolClient` 当前提供 stdio 客户端，通过命令和入口文件启动 MCP Server：

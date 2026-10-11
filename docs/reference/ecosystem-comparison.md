@@ -21,7 +21,7 @@
 ```
 
 基础包保持零运行时依赖。Chroma 和 pgvector 适配器通过 optional extras 加载客户端；MinerU 和
-Embedding Provider 分别使用独立 `handwritten-agent-core-mineru`、
-`handwritten-agent-core-embeddings` 包；多 Agent 协调使用独立
-`handwritten-agent-core-multi-agent`。Milvus、Qdrant、通用 OCR 和云文档加载器继续实现 Core
+Embedding Provider 分别使用独立 `zero-agent-core-mineru`、
+`zero-agent-core-embeddings` 包；多 Agent 协调使用独立
+`zero-agent-core-multi-agent`。Milvus、Qdrant、通用 OCR 和云文档加载器继续实现 Core
 协议并独立发布或由应用提供。这样新 Agent 可以共享稳定接口，又不会被某个平台锁定。

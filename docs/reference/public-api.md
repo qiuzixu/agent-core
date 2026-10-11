@@ -1,6 +1,6 @@
 # 公共 API
 
-稳定使用入口是 `agent_core` 顶层包。下面按模块列出当前 `0.1.0` 的主要公共符号。
+稳定使用入口是 `agent_core` 顶层包。下面按模块列出当前 `0.2.0` 的主要公共符号。
 `0.x` 阶段 API 仍可能调整，破坏性变更会记录在 `CHANGELOG.md`。
 
 ## Agent 与运行时
@@ -86,7 +86,7 @@ Callback 只观察事件；需要修改或停止执行时使用 Middleware。`Ag
 
 ### Embedding Provider 扩展包
 
-`handwritten-agent-core-embeddings` 从 `agent_core_embeddings` 导入：
+`zero-agent-core-embeddings` 从 `agent_core_embeddings` 导入：
 
 | API | 作用 |
 | --- | --- |
@@ -100,7 +100,7 @@ Callback 只观察事件；需要修改或停止执行时使用 Middleware。`Ag
 
 ### MinerU 扩展包
 
-`handwritten-agent-core-mineru` 是独立发行包，从 `agent_core_mineru` 导入：
+`zero-agent-core-mineru` 是独立发行包，从 `agent_core_mineru` 导入：
 
 | API | 作用 |
 | --- | --- |
@@ -136,7 +136,7 @@ AccessContext。它不会动态导入输入中的类，也不使用 pickle。
 
 ## Multi-Agent 扩展包
 
-`handwritten-agent-core-multi-agent` 从 `agent_core_multi_agent` 导入：
+`zero-agent-core-multi-agent` 从 `agent_core_multi_agent` 导入：
 
 | API | 作用 |
 | --- | --- |

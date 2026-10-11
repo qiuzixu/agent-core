@@ -1,0 +1,64 @@
+name: Publish
+
+# 首次发布前置条件（PyPI 侧一次性配置，见 docs/reference 或发布指南）：
+# 在 PyPI 项目尚未存在时使用 "Pending Publisher" 预绑定 Trusted Publisher：
+#   owner = qiuzixu, repository = agent-core, workflow = publish.yml,
+#   environment = pypi（PyPI 侧可留空，GitHub 侧如使用 environment 需一致）。
+# 发布：打 tag（如 v0.2.0）推送到 GitHub，或手动触发 workflow_dispatch。
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install build tool
+        run: python -m pip install build twine
+      - name: Build four distributions
+        run: |
+          python -m build
+          python -m build packages/mineru
+          python -m build packages/embeddings
+          python -m build packages/multi-agent
+      - name: Twine check
+        run: python -m twine check dist/* packages/mineru/dist/* packages/embeddings/dist/* packages/multi-agent/dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: distributions
+          path: |
+            dist/*
+            packages/mineru/dist/*
+            packages/embeddings/dist/*
+            packages/multi-agent/dist/*
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      # Trusted Publisher 要求 id-token: write，不上传任何 PyPI 令牌。
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: distributions
+          path: dist
+      - name: Consolidate wheels and sdists
+        run: |
+          mkdir -p upload
+          find dist -name "*.whl" -exec mv {} upload/ \;
+          find dist -name "*.tar.gz" -exec mv {} upload/ \;
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: upload

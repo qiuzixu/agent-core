@@ -41,7 +41,7 @@ checksum 和 `DocumentLocator`。Loader 或解析器应
 应用可以自己实现 `Embeddings`，也可以安装独立 Provider 扩展：
 
 ```bash
-pip install "handwritten-agent-core-embeddings[openai]"
+pip install "zero-agent-core-embeddings[openai]"
 ```
 
 ```python
@@ -91,7 +91,7 @@ results = await retriever.retrieve(
 结果后过滤。索引任务还应保存来源 checksum、切分配置版本和 Embedding 模型版本，避免不同向量
 空间的数据混写。
 
-`handwritten-agent-core-embeddings` 对三个 Provider 统一执行批处理、有限并发、超时、有限重试、
+`zero-agent-core-embeddings` 对三个 Provider 统一执行批处理、有限并发、超时、有限重试、
 NaN/Infinity 检查和维度检查。Gemini 会分别使用 `RETRIEVAL_DOCUMENT` 和 `RETRIEVAL_QUERY`
 task type；Ollama 使用原生 `/api/embed`。扩展包不自动读取 `.env`，密钥仍由应用注入。
 
@@ -148,7 +148,7 @@ Core 不接受类路径动态导入或 pickle。
 安装可选 HTTP 依赖后，可以调用已经部署好的 MinerU 自托管服务：
 
 ```bash
-pip install handwritten-agent-core-mineru
+pip install zero-agent-core-mineru
 ```
 
 ```python
@@ -170,7 +170,7 @@ documents = await loader.load()
 `Document`，并在 `DocumentLocator` 中保留页码和 block id。`output_mode="markdown"` 返回完整
 Markdown，适合先保留版面结构，再交给 `RecursiveCharacterTextSplitter` 切分。
 
-该能力由独立 `handwritten-agent-core-mineru` 包提供，不进入 `agent_core` 顶层 API。适配器面向
+该能力由独立 `zero-agent-core-mineru` 包提供，不进入 `agent_core` 顶层 API。适配器面向
 MinerU 自托管 `/file_parse` multipart 接口，读取常见的 `md_content` 和
 `content_list` 响应。MinerU 云端异步批处理、预签名上传和结果压缩包下载采用不同协议，需要应用
 实现 `MinerUTransport` 后注入。自定义网关、认证和测试替身也使用同一传输端口。

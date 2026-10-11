@@ -3,13 +3,13 @@ requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
-name = "handwritten-agent-core-embeddings"
+name = "zero-agent-core-embeddings"
 version = "0.1.0"
 description = "Handwritten Agent Core 的 Embedding Provider 扩展"
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
 license = "Apache-2.0"
-dependencies = ["handwritten-agent-core>=0.1.0,<0.2"]
+dependencies = ["zero-agent-core>=0.2.0,<0.3"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Operating System :: OS Independent",
@@ -42,7 +42,7 @@ dev = [
 packages = ["src/agent_core_embeddings"]
 
 [tool.uv.sources]
-handwritten-agent-core = { path = "../..", editable = true }
+zero-agent-core = { path = "../..", editable = true }
 
 [tool.pytest.ini_options]
 addopts = "-ra"

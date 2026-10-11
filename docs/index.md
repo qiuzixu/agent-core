@@ -65,9 +65,9 @@ python examples/basic_agent.py
 发布到 PyPI 后，可按需安装：
 
 ```bash
-pip install handwritten-agent-core
-pip install "handwritten-agent-core[openai,mcp,production]"
-pip install handwritten-agent-core-multi-agent
+pip install zero-agent-core
+pip install "zero-agent-core[openai,mcp,production]"
+pip install zero-agent-core-multi-agent
 ```
 
 模型、MCP 和 PostgreSQL SDK 都是可选依赖，未启用时不会影响基础包导入。
