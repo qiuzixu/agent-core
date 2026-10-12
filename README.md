@@ -81,7 +81,7 @@ uv run python examples/starter/starter_agent.py
 uv run python examples/basic_agent.py
 ```
 
-这两个示例都使用离线演示模型，不需要 API Key 或外部服务。
+这两个示例都使用离线演示模型，不需要 API Key 或外部服务。DemoModel 内部用简单的关键词匹配模拟 LLM 的意图识别（如输入含「记录」则调用 save_note），仅用于演示框架流程；换成真实模型后由 LLM 自主决策调用哪个工具。
 
 ## 最小示例
 
