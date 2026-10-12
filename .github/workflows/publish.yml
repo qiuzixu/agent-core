@@ -51,18 +51,18 @@ jobs:
           find dist -name "*.tar.gz" -exec mv {} upload/ \;
       - name: Debug - check secret exists
         env:
-          JUSKUE: ${{ secrets.JUSKUE }}
+          PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
         run: |
-          if [ -z "$JUSKUE" ]; then
-            echo "ERROR: JUSKUE is NOT SET (empty or missing)"
+          if [ -z "$PYPI_API_TOKEN" ]; then
+            echo "ERROR: PYPI_API_TOKEN is NOT SET (empty or missing)"
             exit 1
           else
-            echo "OK: JUSKUE is set (length: ${#JUSKUE})"
+            echo "OK: PYPI_API_TOKEN is set (length: ${#PYPI_API_TOKEN})"
           fi
       - name: Publish to PyPI via twine
         env:
           TWINE_USERNAME: __token__
-          TWINE_PASSWORD: ${{ secrets.JUSKUE }}
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
         run: |
           python -m pip install twine
           twine upload --verbose upload/*
