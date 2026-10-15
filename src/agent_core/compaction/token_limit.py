@@ -50,21 +50,21 @@ class TokenLimitMiddleware(Middleware):
             start -= 1
         return system_messages + other_messages[start:]
 
-    async def before_model(self, ctx: MiddlewareContext) -> MiddlewareResult:
-        estimated = self._estimate_tokens(ctx.messages)
+    async def before_model(self, context: MiddlewareContext) -> MiddlewareResult:
+        estimated = self._estimate_tokens(context.messages)
         if estimated <= self._max_tokens:
             return MiddlewareResult(action=MiddlewareAction.CONTINUE)
 
-        trimmed = self._trim_messages(ctx.messages)
+        trimmed = self._trim_messages(context.messages)
         new_estimated = self._estimate_tokens(trimmed)
         logger.warning(
             "[TokenLimit] 消息历史过长 (%d tokens)，裁剪：%d → %d 条，重新估算 %d tokens",
             estimated,
-            len(ctx.messages),
+            len(context.messages),
             len(trimmed),
             new_estimated,
         )
-        ctx.messages = trimmed
+        context.messages = trimmed
         return MiddlewareResult(
             action=MiddlewareAction.MODIFY,
             data={"messages": trimmed, "trimmed_tokens": estimated - new_estimated},

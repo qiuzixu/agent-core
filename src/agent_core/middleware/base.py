@@ -162,12 +162,12 @@ class MiddlewareManager:
 class LoggingMiddleware(Middleware):
     """记录所有 LLM / 工具调用的日志。"""
 
-    async def before_model(self, ctx: MiddlewareContext) -> MiddlewareResult:
-        logger.info("[Log] before_model: iter=%d, msgs=%d", ctx.iteration, len(ctx.messages))
+    async def before_model(self, context: MiddlewareContext) -> MiddlewareResult:
+        logger.info("[Log] before_model: iter=%d, msgs=%d", context.iteration, len(context.messages))
         return MiddlewareResult(action=MiddlewareAction.CONTINUE)
 
-    async def after_model(self, ctx: MiddlewareContext) -> MiddlewareResult:
-        r = ctx.llm_response
+    async def after_model(self, context: MiddlewareContext) -> MiddlewareResult:
+        r = context.llm_response
         logger.info(
             "[Log] after_model: content_len=%d, tool_calls=%d",
             len(r.content) if r else 0,
@@ -175,15 +175,15 @@ class LoggingMiddleware(Middleware):
         )
         return MiddlewareResult(action=MiddlewareAction.CONTINUE)
 
-    async def before_tool(self, ctx: MiddlewareContext) -> MiddlewareResult:
-        logger.info("[Log] before_tool: %s args=%s", ctx.tool_name, ctx.tool_args)
+    async def before_tool(self, context: MiddlewareContext) -> MiddlewareResult:
+        logger.info("[Log] before_tool: %s args=%s", context.tool_name, context.tool_args)
         return MiddlewareResult(action=MiddlewareAction.CONTINUE)
 
-    async def after_tool(self, ctx: MiddlewareContext) -> MiddlewareResult:
+    async def after_tool(self, context: MiddlewareContext) -> MiddlewareResult:
         logger.info(
             "[Log] after_tool: %s result_len=%d",
-            ctx.tool_name,
-            len(ctx.tool_result) if ctx.tool_result else 0,
+            context.tool_name,
+            len(context.tool_result) if context.tool_result else 0,
         )
         return MiddlewareResult(action=MiddlewareAction.CONTINUE)
 
@@ -222,9 +222,9 @@ class RetryMiddleware(Middleware):
             (ModelRateLimitError, ModelTimeoutError, ModelUnavailableError),
         ) or bool(getattr(exc, "retryable", False))
 
-    async def after_model(self, ctx: MiddlewareContext) -> MiddlewareResult:
-        r = ctx.llm_response
-        retry_count = ctx.metadata.get("retry_count", 0)
+    async def after_model(self, context: MiddlewareContext) -> MiddlewareResult:
+        r = context.llm_response
+        retry_count = context.metadata.get("retry_count", 0)
 
         if retry_count >= self._max_retries:
             return MiddlewareResult(action=MiddlewareAction.CONTINUE)
@@ -242,7 +242,7 @@ class RetryMiddleware(Middleware):
                 wait,
             )
             await asyncio.sleep(wait)
-            ctx.metadata["retry_count"] = retry_count + 1
+            context.metadata["retry_count"] = retry_count + 1
             return MiddlewareResult(
                 action=MiddlewareAction.RETRY,
                 data={"retry_count": retry_count + 1},

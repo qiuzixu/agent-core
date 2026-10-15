@@ -46,6 +46,7 @@ class RuntimeStore(ABC):
     # 运行状态存储
     # ————————————————————————————————————#
     @abstractmethod
+    # TODO(debug): breakpoint suggestion #7 - save_run: RunContext persistence (this script uses MemoryRuntimeStore demo).
     async def save_run(self, context: RunContext) -> None: ...
 
     # ————————————————————————————————————#

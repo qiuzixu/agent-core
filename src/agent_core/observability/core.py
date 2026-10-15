@@ -165,42 +165,42 @@ class ObservabilityMiddleware(Middleware):
     def _context_thread_id(self, ctx: MiddlewareContext) -> str:
         return str(ctx.metadata.get("thread_id") or self._thread_id)
 
-    async def before_model(self, ctx: MiddlewareContext) -> MiddlewareResult:
+    async def before_model(self, context: MiddlewareContext) -> MiddlewareResult:
         call_start = time.perf_counter()
         span = None
         if self._tracer:
-            span = self._tracer.start_span(f"llm.call.iter{ctx.iteration}")
-            span.set_attribute("iteration", ctx.iteration)
-            span.set_attribute("message_count", len(ctx.messages))
+            span = self._tracer.start_span(f"llm.call.iter{context.iteration}")
+            span.set_attribute("iteration", context.iteration)
+            span.set_attribute("message_count", len(context.messages))
         self._model_state.set((call_start, span))
-        thread_id = self._context_thread_id(ctx)
+        thread_id = self._context_thread_id(context)
         logger.log(
             self._log_level,
             "[Obs] LLM call start: thread=%s iter=%d msgs=%d",
             thread_id,
-            ctx.iteration,
-            len(ctx.messages),
+            context.iteration,
+            len(context.messages),
         )
         return MiddlewareResult(action=MiddlewareAction.CONTINUE)
 
-    async def after_model(self, ctx: MiddlewareContext) -> MiddlewareResult:
+    async def after_model(self, context: MiddlewareContext) -> MiddlewareResult:
         call_start, span = self._model_state.get()
         latency_ms = (time.perf_counter() - call_start) * 1000 if call_start else 0.0
-        response = ctx.llm_response
+        response = context.llm_response
         tool_calls = len(response.tool_calls) if response else 0
-        thread_id = self._context_thread_id(ctx)
+        thread_id = self._context_thread_id(context)
         agent_stats.record_llm_call(
             thread_id=thread_id,
-            iteration=ctx.iteration,
+            iteration=context.iteration,
             latency_ms=latency_ms,
-            input_messages=len(ctx.messages),
+            input_messages=len(context.messages),
             tool_calls=tool_calls,
         )
         logger.log(
             self._log_level,
             "[Obs] LLM call done: thread=%s iter=%d latency=%.0fms content=%d tool_calls=%d",
             thread_id,
-            ctx.iteration,
+            context.iteration,
             latency_ms,
             len(response.content) if response else 0,
             tool_calls,
@@ -226,26 +226,26 @@ class ObservabilityMiddleware(Middleware):
         self._model_state.set((0.0, None))
         return False
 
-    async def before_tool(self, ctx: MiddlewareContext) -> MiddlewareResult:
+    async def before_tool(self, context: MiddlewareContext) -> MiddlewareResult:
         self._tool_start.set(time.perf_counter())
-        logger.log(self._log_level, "[Obs] Tool call start: %s args=%s", ctx.tool_name, ctx.tool_args)
+        logger.log(self._log_level, "[Obs] Tool call start: %s args=%s", context.tool_name, context.tool_args)
         return MiddlewareResult(action=MiddlewareAction.CONTINUE)
 
-    async def after_tool(self, ctx: MiddlewareContext) -> MiddlewareResult:
+    async def after_tool(self, context: MiddlewareContext) -> MiddlewareResult:
         tool_start = self._tool_start.get()
         latency_ms = (time.perf_counter() - tool_start) * 1000 if tool_start else 0.0
         agent_stats.record_tool_call(
-            thread_id=self._context_thread_id(ctx),
-            tool_name=ctx.tool_name or "unknown",
+            thread_id=self._context_thread_id(context),
+            tool_name=context.tool_name or "unknown",
             latency_ms=latency_ms,
-            success=bool(ctx.metadata.get("tool_success", True)),
+            success=bool(context.metadata.get("tool_success", True)),
         )
         logger.log(
             self._log_level,
             "[Obs] Tool call done: %s latency=%.0fms result_len=%d",
-            ctx.tool_name,
+            context.tool_name,
             latency_ms,
-            len(ctx.tool_result) if ctx.tool_result else 0,
+            len(context.tool_result) if context.tool_result else 0,
         )
         self._tool_start.set(0.0)
         return MiddlewareResult(action=MiddlewareAction.CONTINUE)

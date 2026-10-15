@@ -521,5 +521,33 @@ class TestReviewFollowUpFixes(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(queue.list_pending(), [])
 
 
+class TestToolLoopGuard(unittest.IsolatedAsyncioTestCase):
+    """同一工具同一参数连续调用应被精确阻断。"""
+
+    async def test_repeated_same_tool_args_stops_before_third_execution(self) -> None:
+        calls: dict[str, int] = {}
+
+        async def echo(text: str) -> str:
+            calls[text] = calls.get(text, 0) + 1
+            return text
+
+        registry = ToolRegistry()
+        registry.register("echo", echo, "echo")
+        agent = ReActAgent(
+            _AlwaysToolModel(),
+            ToolExecutor(registry),
+            system_prompt="test",
+            tool_definitions=registry.build_tool_definitions(),
+            max_iterations=5,
+            max_tool_calls=20,
+            max_repeated_tool_calls=3,
+        )
+        with self.assertRaises(ModelOutputValidationError):
+            await agent.run("go", thread_id="t-loop-guard")
+        # 前两次已执行，第三次在副作用发生前被拦截。
+        self.assertEqual(calls, {"x": 2})
+
+
+
 if __name__ == "__main__":
     unittest.main()

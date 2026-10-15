@@ -130,9 +130,9 @@ class GuardrailsMiddleware(Middleware):
         self._pii_redact = pii_redact
         self._pii_guard = PIIRedactionGuard() if pii_redact else None
 
-    async def before_model(self, ctx: MiddlewareContext) -> MiddlewareResult:
+    async def before_model(self, context: MiddlewareContext) -> MiddlewareResult:
         user_text = next(
-            (message.content for message in reversed(ctx.messages) if message.role == "user"),
+            (message.content for message in reversed(context.messages) if message.role == "user"),
             "",
         )
         if not user_text:
@@ -150,15 +150,15 @@ class GuardrailsMiddleware(Middleware):
                 )
         return MiddlewareResult(action=MiddlewareAction.CONTINUE)
 
-    async def after_model(self, ctx: MiddlewareContext) -> MiddlewareResult:
-        if ctx.llm_response is None:
+    async def after_model(self, context: MiddlewareContext) -> MiddlewareResult:
+        if context.llm_response is None:
             return MiddlewareResult(action=MiddlewareAction.CONTINUE)
-        output_text = ctx.llm_response.content
+        output_text = context.llm_response.content
         if self._pii_redact and self._pii_guard and output_text:
             redacted = self._pii_guard.redact(output_text)
             if redacted != output_text:
                 logger.info("[Guard] 输出 PII 已脱敏")
-                ctx.llm_response.content = redacted
+                context.llm_response.content = redacted
                 output_text = redacted
         for guard in self._output_guards:
             passed, reason = (

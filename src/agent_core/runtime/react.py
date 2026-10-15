@@ -128,6 +128,7 @@ class ReActAgent:
         middleware: list[Middleware] | None = None,
         checkpointer: Checkpointer | None = None,
         thread_id: str = "default",
+        max_repeated_tool_calls: int = 3,
     ) -> None:
         self._llm = llm
         self._tool_executor = tool_executor
@@ -135,6 +136,7 @@ class ReActAgent:
         self._tool_definitions = tool_definitions
         self._max_iterations = max_iterations
         self._max_tool_calls = max_tool_calls
+        self._max_repeated_tool_calls = max(0, int(max_repeated_tool_calls))
         self._middleware_manager = MiddlewareManager(middleware)
         self._checkpointer = checkpointer
         self._thread_id = thread_id
@@ -273,6 +275,7 @@ class ReActAgent:
             runtime_context.checkpoint = checkpoint_state
         return runtime_context
 
+    # TODO(debug): breakpoint suggestion #5 - _iterate: ReAct per-iteration loop (msg build -> middleware -> LLM -> tool exec -> checkpoint).
     async def _iterate(
         self,
         mode: _LoopMode,
@@ -428,6 +431,9 @@ class ReActAgent:
             # 11. 有工具调用：检查数量
             tool_calls_used = next_tool_calls_used
             run_context.tool_calls_used = tool_calls_used
+
+            # 死循环守卫：必须放在工具真正执行前，避免继续产生副作用。
+            self._assert_no_tool_loop(messages, run_context)
 
             if mode.streaming:
                 logger.debug(
@@ -669,6 +675,47 @@ class ReActAgent:
                 thread_id,
                 {**state, "run_context": runtime_context.to_dict()},
                 metadata=metadata or {"iteration": iteration},
+            )
+
+    @staticmethod
+    def _tool_call_signature(call: dict[str, Any]) -> str:
+        """归一化工具签名，防止模型用等价 JSON 绕过死循环检测。"""
+        name = str(call.get("name", ""))
+        args = call.get("args", {})
+        try:
+            args_text = json.dumps(args, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+        except Exception:
+            args_text = repr(args)
+        return f"{name}:{args_text}"
+
+    @staticmethod
+    def _tool_call_signatures(messages: list[Message]) -> list[str]:
+        """按消息顺序提取完整工具调用签名序列。"""
+        return [
+            ReActAgent._tool_call_signature(call)
+            for message in messages
+            for call in message.tool_calls
+        ]
+
+    def _assert_no_tool_loop(self, messages: list[Message], runtime_context: RunContext) -> None:
+        """同一工具同一参数连续调用超过阈值时，直接终止本轮 Agent Loop。"""
+        if self._max_repeated_tool_calls <= 0:
+            return
+        signatures = self._tool_call_signatures(messages)
+        tail = signatures[-self._max_repeated_tool_calls :]
+        if len(tail) == self._max_repeated_tool_calls and len(set(tail)) == 1:
+            last_call = next(
+                (call for message in reversed(messages) for call in reversed(message.tool_calls)),
+                None,
+            )
+            tool_name = str(last_call.get("name", "")) if last_call else ""
+            runtime_context.emit(
+                "loop_detected",
+                tool_name=tool_name,
+                repeat_count=len(tail),
+            )
+            raise ModelOutputValidationError(
+                f"ReAct agent 检测到同一工具同一参数连续调用 {self._max_repeated_tool_calls} 次，已强制终止。"
             )
 
     async def _finish_run(

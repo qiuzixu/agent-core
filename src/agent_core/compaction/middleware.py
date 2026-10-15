@@ -130,12 +130,12 @@ class CompactionMiddleware(Middleware):
     # 入口
     # ──────────────────────────────────────────────
 
-    async def before_model(self, ctx: MiddlewareContext) -> MiddlewareResult:
+    async def before_model(self, context: MiddlewareContext) -> MiddlewareResult:
         config = self._config
-        if not config.enabled or not ctx.messages:
+        if not config.enabled or not context.messages:
             return MiddlewareResult(action=MiddlewareAction.CONTINUE)
 
-        usage = await self._safe_measure(ctx.messages)
+        usage = await self._safe_measure(context.messages)
         if usage is None or not usage.input_tokens or not usage.context_window_tokens:
             # 没有真实占用/窗口信息就无法判断压力，交给兜底中间件
             return MiddlewareResult(action=MiddlewareAction.CONTINUE)
@@ -148,7 +148,7 @@ class CompactionMiddleware(Middleware):
             return MiddlewareResult(action=MiddlewareAction.CONTINUE)
 
         self._emit(
-            ctx,
+            context,
             "compaction_started",
             before_tokens=before_tokens,
             window=window,
@@ -156,23 +156,23 @@ class CompactionMiddleware(Middleware):
         )
 
         try:
-            result = await self._compact(ctx.messages, window=window, before_tokens=before_tokens)
+            result = await self._compact(context.messages, window=window, before_tokens=before_tokens)
         except Exception as exc:
             logger.warning("[Compaction] 压缩失败，降级到硬截断：%s", exc)
-            self._emit(ctx, "compaction_failed", reason=str(exc))
-            self._emit(ctx, "compaction_fallback", strategy="trim")
+            self._emit(context, "compaction_failed", reason=str(exc))
+            self._emit(context, "compaction_fallback", strategy="trim")
             return MiddlewareResult(action=MiddlewareAction.CONTINUE)
 
         if not result.compacted:
             logger.info("[Compaction] 本次未压缩：%s", result.reason)
-            self._emit(ctx, "compaction_failed", reason=result.reason)
-            self._emit(ctx, "compaction_fallback", strategy="trim")
+            self._emit(context, "compaction_failed", reason=result.reason)
+            self._emit(context, "compaction_fallback", strategy="trim")
             return MiddlewareResult(action=MiddlewareAction.CONTINUE)
 
         logger.info(
             "[Compaction] 压缩完成：%d → %d 条消息，压入摘要 %d 条，"
             "窗口占用 %d → %d tokens（%.0f%%），reason=%s",
-            len(ctx.messages),
+            len(context.messages),
             len(result.messages),
             result.cut,
             result.before_tokens,
@@ -181,7 +181,7 @@ class CompactionMiddleware(Middleware):
             result.reason,
         )
         self._emit(
-            ctx,
+            context,
             "compaction_succeeded",
             before_tokens=result.before_tokens,
             after_tokens=result.after_tokens,
@@ -189,7 +189,7 @@ class CompactionMiddleware(Middleware):
             ratio=round(result.after_tokens / window, 4),
         )
 
-        ctx.messages = result.messages
+        context.messages = result.messages
         return MiddlewareResult(
             action=MiddlewareAction.MODIFY,
             data={"messages": result.messages, "compaction": result},

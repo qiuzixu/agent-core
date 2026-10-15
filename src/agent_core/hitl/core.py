@@ -469,43 +469,43 @@ class HumanInTheLoopMiddleware(Middleware):
         self._callback = approval_callback
         self._timeout = timeout_seconds
 
-    async def before_tool(self, ctx: MiddlewareContext) -> MiddlewareResult:
-        if ctx.tool_name not in self._needed or self._auto:
+    async def before_tool(self, context: MiddlewareContext) -> MiddlewareResult:
+        if context.tool_name not in self._needed or self._auto:
             return MiddlewareResult(action=MiddlewareAction.CONTINUE)
         if self._callback is not None:
             try:
                 approved = await asyncio.wait_for(
-                    self._callback(ctx.tool_name, ctx.tool_args),
+                    self._callback(context.tool_name, context.tool_args),
                     timeout=self._timeout,
                 )
             except TimeoutError:
                 return MiddlewareResult(
                     action=MiddlewareAction.STOP,
-                    data={"reason": "approval_timeout", "tool": ctx.tool_name},
+                    data={"reason": "approval_timeout", "tool": context.tool_name},
                 )
             if approved:
                 return MiddlewareResult(action=MiddlewareAction.CONTINUE)
             return MiddlewareResult(
                 action=MiddlewareAction.STOP,
-                data={"reason": "approval_denied", "tool": ctx.tool_name},
+                data={"reason": "approval_denied", "tool": context.tool_name},
             )
         request = await self._queue.create_request_async(
-            thread_id=str(ctx.metadata.get("thread_id") or self._thread),
-            tool_name=ctx.tool_name or "unknown",
-            tool_args=dict(ctx.tool_args),
-            run_id=str(ctx.metadata.get("run_id") or ""),
-            user_id=ctx.metadata.get("user_id"),
-            tenant_id=ctx.metadata.get("tenant_id"),
+            thread_id=str(context.metadata.get("thread_id") or self._thread),
+            tool_name=context.tool_name or "unknown",
+            tool_args=dict(context.tool_args),
+            run_id=str(context.metadata.get("run_id") or ""),
+            user_id=context.metadata.get("user_id"),
+            tenant_id=context.metadata.get("tenant_id"),
             timeout_seconds=self._timeout,
         )
-        ctx.metadata["approval_request_id"] = request.request_id
+        context.metadata["approval_request_id"] = request.request_id
         status = await self._queue.wait_for_decision(request, timeout_seconds=self._timeout)
         if status == ApprovalStatus.APPROVED:
             return MiddlewareResult(action=MiddlewareAction.CONTINUE)
         reason = request.reason or status.value
         return MiddlewareResult(
             action=MiddlewareAction.STOP,
-            data={"reason": reason, "tool": ctx.tool_name, "status": status.value},
+            data={"reason": reason, "tool": context.tool_name, "status": status.value},
         )
 
 

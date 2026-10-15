@@ -53,6 +53,7 @@ class ChromaVectorStore(VectorStore):
         # Chroma 各版本的 Client/Collection 泛型和重载差异较大，在 SDK 边界收口为 Any。
         self._client: Any = client
         self._owns_client = owns_client
+        assert client is not None  # narrow for type checker: assigned above in either branch
         self._collection: Any = client.get_or_create_collection(
             name=collection_name,
             metadata={"hnsw:space": "cosine"},

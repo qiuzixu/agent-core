@@ -29,7 +29,7 @@ class GeminiProvider:
         context_window_tokens: int | None = None,
     ) -> None:
         try:
-            from google import genai
+            from google import genai  # type: ignore[attr-defined]
             from google.genai import types
         except ImportError as exc:
             raise ImportError("GeminiProvider 需要 google-genai 包，请执行：uv add google-genai") from exc
