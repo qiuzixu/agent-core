@@ -58,10 +58,12 @@ flowchart TB
         CHECKPOINT["Checkpointer<br/>版本 / 回滚 / 恢复"]
         PROMPTS["PromptTemplate / ChatPromptTemplate<br/>PromptRegistry / 版本"]
         STORES["Storage Adapters<br/>Memory / SQLite / PostgreSQL"]
+        CACHE["CacheService<br/>Memory / Redis"]
     end
 
     PUBLIC --> CONTRACTS
     PUBLIC --> ENGINE
+    PUBLIC --> CACHE
     PUBLIC --> EXTENSION
     PUBLIC --> KNOWLEDGE
     PUBLIC --> IO
@@ -450,3 +452,9 @@ flowchart LR
 | 2026-10-10 | Anthropic 流式坏参数对齐 | `AnthropicProvider.stream_chat` 对流式累积的工具参数 JSON 解析失败（或解析结果非对象）从静默 `args={}` 改为抛 `ModelInvocationError`，与 `OpenAIProvider` 流式/非流式路径的既有处理对齐。为模块内部错误处理行为修复，公共接口、模块边界与调用方向不变，无需修改 Mermaid 图。 |
 | 2026-10-11 | Checkpoint 包内模块拆分 | `checkpoint/store.py` 单文件（689 行）按职责拆分为包内三模块：`naming.py`（thread_id 文件名严格清洗/还原与 `_atomic_write_json` 原子写入，无包内依赖）、`store.py`（`Checkpointer` 协议与 `MemoryCheckpointer`/`FileCheckpointer` 当前快照实现，依赖 naming）、`travel.py`（`CheckpointVersion` 与 `TimeTravelCheckpointer` 版本管理，仅依赖 naming），依赖方向 naming ← store ← travel，无循环导入。包 `__init__` 保持原 5 个公共名（`Checkpointer`、`CheckpointVersion`、`FileCheckpointer`、`MemoryCheckpointer`、`TimeTravelCheckpointer`）导出与导入路径不变，两处测试深导入随之更新（patch 目标改为 `checkpoint.naming.os.replace`，thread hygiene 测试改为从 naming/store/travel 分别导入）。纯代码搬家、零行为改动：图中 checkpoint 以包粒度描述，包对外接口与依赖方向均未变化，无需修改 Mermaid 图。 |
 | 2026-10-11 | Anthropic 流式增量取值类型修复 | workspace 合并后 `anthropic` SDK 进入共享 venv，mypy 可见其真实类型，`anthropic.py` 流式循环中 `delta.text`/`delta.partial_json` 的属性直访报 union-attr。改为 getattr 探测与取值使用同一变量（与该文件"不依赖 SDK 私有事件类名、跨版本兼容"的鸭子类型设计一致），零行为变化；模块边界、调用方向与图中关系均不变，无需修改 Mermaid 图。 |
+| 2026-10-14 | ReAct Loop 精确死循环守卫 | `ReActAgent` 新增 `max_repeated_tool_calls`，在工具执行前按消息中的工具调用签名检测同一工具同一参数的连续重复；超过阈值会发布 `loop_detected` 并终止。模块边界、调用方向和图形关系未变化，无需修改 Mermaid 图。 |
+| 2026-10-17 | Tool priority scheduler | `ToolSpec` 新增 `priority` / `phase`，`ToolRegistry.build_tool_definitions()` 按优先级排序；`ReActAgent._execute_tools()` 按优先级分批执行，高优先级失败会阻断更低优先级工具。模块边界、调用方向和图形关系未变化，无需修改 Mermaid 图。 |
+| 2026-10-17 | 业务级挂起重试 | `RunStatus` 新增 `waiting_retry`；`ToolExecutor` 支持工具直接返回 `ToolResult`；ReAct Loop 在 retryable 工具失败时记录 `pending_retry`、更新状态并保留 checkpoint。队列调度/定时唤醒仍未实现。 |
+| 2026-10-18 | Workflow execution lineage injection | `DurableWorkflowRunner.start()` now injects `workflow_execution_id` into the graph state so nested ReAct / open_qa runs can persist a parent link. Module boundaries and call direction remain unchanged; no Mermaid update required. |
+| 2026-10-18 | Workflow governance stores | `agent_core.storage.governance` 新增 workflow 节点幂等与统一 session event 存储；`DurableWorkflowRunner` 支持 `max_retries`、retryable 节点错误、`waiting_retry`、节点幂等与业务事件旁路存储。框架 checkpoint 协议不变，Mermaid 图形关系无需变更。 |
+| 2026-10-17 | Retry scheduler v1 | Memory/SQLite/PostgreSQL Runtime Store 支持 `list_runs_by_status()`；`AgentRuntime` 新增 `resume_due_retries()` 和 `start_retry_scheduler()`，可从 `waiting_retry` checkpoint 唤醒到点任务。消息队列/死信队列仍未实现。 |

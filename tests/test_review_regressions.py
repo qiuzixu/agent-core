@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import tempfile
 import unittest
+from datetime import timedelta
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -39,7 +40,7 @@ from agent_core.storage import (
 from agent_core.storage.context import MemoryContextStore
 from agent_core.storage.runtime import RuntimeConcurrencyError
 from agent_core.storage.workflow import _from_dict
-from agent_core.tools import ToolExecutor, ToolRegistry
+from agent_core.tools import ToolExecutor, ToolRegistry, ToolResult
 
 
 class _FailingModel:
@@ -546,6 +547,119 @@ class TestToolLoopGuard(unittest.IsolatedAsyncioTestCase):
             await agent.run("go", thread_id="t-loop-guard")
         # 前两次已执行，第三次在副作用发生前被拦截。
         self.assertEqual(calls, {"x": 2})
+
+
+
+class TestToolPriorityScheduler(unittest.IsolatedAsyncioTestCase):
+    """高优先级工具失败时，应阻断更低优先级工具。"""
+
+    async def test_failed_high_priority_tool_blocks_lower_priority_tool(self) -> None:
+        calls: dict[str, int] = {}
+
+        async def failing_gate() -> str:
+            calls["failing_gate"] = calls.get("failing_gate", 0) + 1
+            raise RuntimeError("gate failed")
+
+        async def lower_priority_action() -> str:
+            calls["lower_priority_action"] = calls.get("lower_priority_action", 0) + 1
+            return "done"
+
+        registry = ToolRegistry()
+        registry.register("failing_gate", failing_gate, "gate", priority=1)
+        registry.register("lower_priority_action", lower_priority_action, "action", priority=10)
+
+        class _TwoToolModel:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def chat(self, messages: list[Message], **kwargs: Any) -> Message:
+                del messages, kwargs
+                self.calls += 1
+                if self.calls == 1:
+                    return assistant_message(
+                        "",
+                        tool_calls=[
+                            {"id": "low-1", "name": "lower_priority_action", "args": {}},
+                            {"id": "gate-1", "name": "failing_gate", "args": {}},
+                        ],
+                    )
+                return assistant_message("fallback-ok")
+
+            async def stream_chat(self, messages: list[Message], **kwargs: Any):
+                response = await self.chat(messages, **kwargs)
+                yield StreamChunk(text=response.content, tool_calls=response.tool_calls, is_tool_call=True)
+
+        agent = ReActAgent(
+            _TwoToolModel(),
+            ToolExecutor(registry),
+            system_prompt="test",
+            tool_definitions=registry.build_tool_definitions(),
+            max_iterations=3,
+        )
+        answer = await agent.run("go", thread_id="t-priority")
+        self.assertEqual(answer, "fallback-ok")
+        self.assertEqual(calls, {"failing_gate": 1})
+
+
+
+class TestBusinessRetrySuspension(unittest.IsolatedAsyncioTestCase):
+    """业务级挂起：retryable 工具失败应保留上下文并暂停任务。"""
+
+    async def test_retryable_tool_failure_suspends_run(self) -> None:
+        from datetime import UTC, datetime
+
+        calls: dict[str, int] = {}
+
+        async def upstream_unavailable() -> ToolResult:
+            calls["upstream_unavailable"] = calls.get("upstream_unavailable", 0) + 1
+            return ToolResult(
+                tool_name="upstream_unavailable",
+                success=False,
+                error="upstream unavailable",
+                error_kind="execution",
+                retryable=True,
+                metadata={"suspend": True, "retry_after_seconds": 0.01},
+            )
+
+        registry = ToolRegistry()
+        registry.register("upstream_unavailable", upstream_unavailable, "upstream")
+
+        class _AfterRetryModel:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def chat(self, messages: list[Message], **kwargs: Any) -> Message:
+                del messages, kwargs
+                self.calls += 1
+                if self.calls == 1:
+                    return assistant_message(
+                        "",
+                        tool_calls=[{"id": "retry-1", "name": "upstream_unavailable", "args": {}}],
+                    )
+                return assistant_message("waiting")
+
+            async def stream_chat(self, messages: list[Message], **kwargs: Any):
+                response = await self.chat(messages, **kwargs)
+                yield StreamChunk(text=response.content, tool_calls=response.tool_calls, is_tool_call=True)
+
+        agent = ReActAgent(
+            _AfterRetryModel(),
+            ToolExecutor(registry),
+            system_prompt="test",
+            tool_definitions=registry.build_tool_definitions(),
+            max_iterations=3,
+        )
+        context = RunContext(thread_id="t-retry", run_id="r-retry")
+        answer = await agent.run("go", run_context=context)
+        self.assertEqual(answer, "waiting")
+        self.assertEqual(context.status, "waiting_retry")
+        pending = context.state["pending_retry"]
+        self.assertEqual(pending["tool_name"], "upstream_unavailable")
+        self.assertEqual(pending["retry_count"], 1)
+        self.assertLessEqual(
+            datetime.fromisoformat(pending["next_retry_at"]),
+            datetime.now(UTC) + timedelta(seconds=1),
+        )
 
 
 

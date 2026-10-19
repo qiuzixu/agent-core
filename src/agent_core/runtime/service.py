@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from datetime import UTC, datetime
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -249,6 +250,66 @@ class AgentRuntime:
             self._tasks[run_id] = task
             task.add_done_callback(lambda _: self._cleanup_run(run_id))
             return RuntimeRun(context=context, task=task)
+
+    @staticmethod
+    def _is_retry_due(context: RunContext) -> bool:
+        pending_retry = context.state.get("pending_retry") or {}
+        next_retry_at = str(pending_retry.get("next_retry_at") or "")
+        if not next_retry_at:
+            return False
+        try:
+            due = datetime.fromisoformat(next_retry_at)
+        except ValueError:
+            return False
+        if due.tzinfo is None:
+            due = due.replace(tzinfo=UTC)
+        return due <= datetime.now(UTC)
+
+    async def resume_due_retries(self, *, limit: int = 100) -> list[RuntimeRun]:
+        """唤醒到点的 waiting_retry 任务；多实例部署时应由调度器调用。"""
+        if limit <= 0:
+            return []
+        list_by_status = getattr(self._run_store, "list_runs_by_status", None)
+        if not callable(list_by_status):
+            return []
+        candidates = await list_by_status("waiting_retry")
+        resumed: list[RuntimeRun] = []
+        for context in candidates:
+            if len(resumed) >= limit:
+                break
+            if not self._is_retry_due(context):
+                continue
+            try:
+                handle = await self.resume(
+                    context.thread_id,
+                    context.run_id,
+                    access=self._context_access(context),
+                )
+            except Exception:
+                logger.exception("恢复到点的重试任务失败：%s/%s", context.thread_id, context.run_id)
+                continue
+            resumed.append(handle)
+        return resumed
+
+    def start_retry_scheduler(
+        self,
+        *,
+        interval_seconds: float = 30.0,
+        limit: int = 100,
+    ) -> asyncio.Task[None]:
+        """启动内置轮询调度器；生产多实例部署也可以用独立 Worker 调用。"""
+        if interval_seconds <= 0:
+            raise ValueError("interval_seconds 必须大于 0")
+
+        async def loop() -> None:
+            while True:
+                try:
+                    await self.resume_due_retries(limit=limit)
+                except Exception:
+                    logger.exception("重试调度器扫描失败")
+                await asyncio.sleep(interval_seconds)
+
+        return asyncio.create_task(loop(), name="agent-core-retry-scheduler")
 
     async def cancel(
         self,

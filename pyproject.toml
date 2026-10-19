@@ -82,6 +82,10 @@ models = [
   "dashscope>=1.27,<2",
 ]
 
+redis = [
+  "redis>=5,<6",
+]
+
 [project.scripts]
 docs = "agent_core.docs:main"
 dev-docs = "agent_core.docs:main"
@@ -120,6 +124,7 @@ module = [
   "mcp.*",
   "openai",
   "opentelemetry",
+  "redis.*",
   "opentelemetry.*",
 ]
 ignore_missing_imports = true

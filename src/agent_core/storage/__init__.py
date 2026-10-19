@@ -16,6 +16,14 @@ from agent_core.storage.context import (
     SqliteContextStore,
     create_context_store,
 )
+from agent_core.storage.governance import (
+    SessionEvent,
+    SessionEventStore,
+    WorkflowIdempotencyRecord,
+    WorkflowIdempotencyStore,
+    create_session_event_store,
+    create_workflow_idempotency_store,
+)
 from agent_core.storage.lease import (
     MemoryRunLeaseStore,
     PostgresRunLeaseStore,
@@ -86,6 +94,8 @@ __all__ = [
     "RunLeaseStore",
     "RuntimeConcurrencyError",
     "RuntimeStore",
+    "SessionEvent",
+    "SessionEventStore",
     "SessionManager",
     "SqliteContextStore",
     "SqliteMemoryStore",
@@ -97,11 +107,15 @@ __all__ = [
     "WorkflowConcurrencyError",
     "WorkflowExecution",
     "WorkflowExecutionStore",
+    "WorkflowIdempotencyRecord",
+    "WorkflowIdempotencyStore",
     "create_context_store",
     "create_memory_store",
     "create_model_selection_store",
     "create_run_lease_store",
     "create_runtime_store",
+    "create_session_event_store",
     "create_session_store",
     "create_workflow_execution_store",
+    "create_workflow_idempotency_store",
 ]

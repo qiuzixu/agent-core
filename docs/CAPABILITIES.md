@@ -26,6 +26,7 @@ Agent Core 是一套零外部平台绑定的手写 Agent 运行时内核。
 | `retrieval` | 检索协议、内存/Chroma/pgvector 存储及环境工厂 | `Embeddings`、`EmbeddingRetriever`、`create_vector_store` |
 | `serialization` | 显式白名单、类型标识、Schema 版本和迁移函数 | `SerializerRegistry`、`SerializedEnvelope` |
 | `compaction` | Token 估算、历史摘要、消息裁剪、工具结果瘦身、spill 和超长恢复 | `CompactionMiddleware`、`TokenLimitMiddleware`、`SpillStore` |
+| `cache` | 进程内 TTL/LRU 缓存、请求合并、可选 Redis 后端和统一工厂 | `CacheService`、`MemoryCache`、`RedisCache`、`create_cache_service` |
 | `checkpoint` | 内存/文件 checkpoint、原子文件替换、历史版本、回滚和时间旅行 | `MemoryCheckpointer`、`FileCheckpointer`、`TimeTravelCheckpointer` |
 | `hitl` | 人工审批请求、持久化 deadline、条件状态转换、超时、跨进程决策同步和中间件接入 | `ApprovalQueue`、`HumanInTheLoopMiddleware` |
 | `workflow` | 异步状态机、节点策略、重试、超时、幂等、pending write、恢复和 Mermaid 导出 | `StateMachine`、`NodeExecutionPolicy`、`DurableWorkflowRunner` |
@@ -49,7 +50,12 @@ Agent Core 是一套零外部平台绑定的手写 Agent 运行时内核。
 - 最大迭代次数和最大工具调用次数保护；
 - 每轮运行事件、状态和 checkpoint 更新；
 - 并发工具按完成进度保存阶段快照，恢复时只继续尚未完成的工具；
+- 可选精确死循环守卫：同一工具同一参数连续调用超过阈值时强制终止；
 - 工具审批、中间件停止和异常状态收敛；
+- 可选 `priority` / `phase` 元数据：工具定义按优先级排序，Agent Loop 按优先级分批执行；
+- 高优先级工具失败时，阻断更低优先级工具，避免继续产生无效副作用；
+- 业务级挂起：`retryable` 工具失败可进入 `waiting_retry`，状态、参数和重试信息保留在 checkpoint；
+- 后台 retry scheduler：`AgentRuntime.resume_due_retries()` 可唤醒到点任务；可选 `start_retry_scheduler()` 提供内置轮询；
 - 上下文超长后压缩并重试模型调用。
 
 `AgentRuntime` 在 Agent Loop 外提供 Run 生命周期：
@@ -232,6 +238,9 @@ Windows 非法字符 `<>:"/\|?*`、`%`、控制符与保留设备名统一转义
 - `WorkflowPause` 主动中断；
 - 节点执行前持久化 `workflow_step_pending`，完成后保存状态和下一节点；
 - `DurableWorkflowRunner` 在节点边界保存状态和下一节点；
+- 节点副作用可使用 `WorkflowIdempotencyStore` 按 execution/node/参数指纹去重；
+- retryable 节点失败可进入 `waiting_retry`，最多执行 `max_retries` 次退避；
+- 节点 pending/complete/retry/失败事件可写入独立的 `SessionEventStore`；
 - Workflow Store 使用版本检查和条件更新拒绝并发覆盖；
 - 进程重启后从最后保存的下一节点恢复，避免重复执行已经完成的节点；
 - 默认在失败后重新抛出异常，也可设置 `raise_on_failure=False` 返回已经持久化的失败执行实例；

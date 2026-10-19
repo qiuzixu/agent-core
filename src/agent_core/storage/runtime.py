@@ -165,6 +165,13 @@ class MemoryRuntimeStore(RuntimeStore):
             if stored_thread == thread_id
         ]
 
+    async def list_runs_by_status(self, status: str) -> list[RunContext]:
+        return [
+            _context_from_dict(value)
+            for value in self._runs.values()
+            if value.get("status") == status
+        ]
+
     async def find_run_by_idempotency(
         self, tenant_id: str | None, user_id: str | None, idempotency_key: str
     ) -> RunContext | None:
@@ -446,6 +453,22 @@ class SqliteRuntimeStore(RuntimeStore):
         rows = await _run_in_thread(_op)
         result: list[RunContext] = []
         for (run_id,) in rows:
+            context = await self.load_run(thread_id, run_id)
+            if context:
+                result.append(context)
+        return result
+
+    async def list_runs_by_status(self, status: str) -> list[RunContext]:
+        def _op() -> list[Any]:
+            with self._connect() as conn:
+                return conn.execute(
+                    "SELECT thread_id, run_id FROM agent_runs WHERE status = ? ORDER BY updated_at DESC",
+                    (status,),
+                ).fetchall()
+
+        rows = await _run_in_thread(_op)
+        result: list[RunContext] = []
+        for thread_id, run_id in rows:
             context = await self.load_run(thread_id, run_id)
             if context:
                 result.append(context)
@@ -768,6 +791,14 @@ class PostgresRuntimeStore(RuntimeStore):
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT * FROM agent_runs WHERE thread_id=$1 ORDER BY updated_at DESC", thread_id
+            )
+        return [_context_from_dict(dict(row)) for row in rows]
+
+    async def list_runs_by_status(self, status: str) -> list[RunContext]:
+        self._check()
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM agent_runs WHERE status=$1 ORDER BY updated_at DESC", status
             )
         return [_context_from_dict(dict(row)) for row in rows]
 

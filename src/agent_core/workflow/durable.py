@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from agent_core.access import AccessContext, enforce_access
+from agent_core.storage.governance import (
+    SessionEvent,
+    SessionEventStore,
+    WorkflowIdempotencyRecord,
+    WorkflowIdempotencyStore,
+)
 from agent_core.storage.workflow import WorkflowExecution, WorkflowExecutionStore
 from agent_core.workflow.state_machine import (
     END,
@@ -13,6 +20,23 @@ from agent_core.workflow.state_machine import (
     StateMachine,
     WorkflowPause,
 )
+
+
+class WorkflowNodeError(RuntimeError):
+    """工作流节点失败；retryable=True 时外层可进入 waiting_retry。"""
+
+    def __init__(self, message: str, *, retryable: bool = False) -> None:
+        super().__init__(message)
+        self.retryable = retryable
+
+
+def _is_retryable_error(exc: BaseException) -> bool:
+    """按异常类型/文案识别瞬态错误；后续可升级为结构化 error_kind。"""
+    message = str(exc).lower()
+    return any(
+        token in message
+        for token in ("timeout", "connection", "temporarily", "rate limit", "超时", "连接", "503", "504")
+    )
 
 
 class DurableWorkflowRunner:
@@ -25,11 +49,17 @@ class DurableWorkflowRunner:
         *,
         require_access: bool = False,
         raise_on_failure: bool = True,
+        max_retries: int = 2,
+        idempotency_store: WorkflowIdempotencyStore | None = None,
+        session_event_store: SessionEventStore | None = None,
     ) -> None:
         self._machine = machine
         self._store = store
         self._strict_access = require_access
         self._raise_on_failure = raise_on_failure
+        self._max_retries = max(0, int(max_retries))
+        self._idempotency_store = idempotency_store
+        self._session_event_store = session_event_store
 
     async def start(
         self,
@@ -54,6 +84,10 @@ class DurableWorkflowRunner:
             result_data=dict(initial_state),
             events=[{"event_type": "workflow_queued", "step": START}],
         )
+        # 将 execution ID 注入状态，供内层 ReAct / open_qa 建立父子运行谱系。
+        initial_state = {**initial_state, "workflow_execution_id": execution.execution_id}
+        execution.input_data = dict(initial_state)
+        execution.result_data = dict(initial_state)
         await self._store.save(execution)
         return await self._run(execution)
 
@@ -74,8 +108,38 @@ class DurableWorkflowRunner:
             execution.status = "completed"
             await self._store.save(execution)
             return execution
-        execution.events.append({"event_type": "workflow_resumed", "step": execution.current_step or START})
+        await self._emit(
+            execution,
+            {"event_type": "workflow_resumed", "step": execution.current_step or START},
+        )
         return await self._run(execution)
+
+    async def _emit(self, execution: WorkflowExecution, event: dict[str, Any]) -> None:
+        """追加执行事件，并同步到统一会话事件 feed。"""
+        execution.events.append(event)
+        store = self._session_event_store
+        if store is None:
+            return
+        state = dict(execution.result_data or {})
+        thread_id = str(
+            state.get("source_thread_id")
+            or state.get("thread_id")
+            or execution.execution_id
+        )
+        await store.append(
+            SessionEvent(
+                thread_id=thread_id,
+                run_type="workflow",
+                run_id=execution.execution_id,
+                parent_run_id=state.get("source_thread_id"),
+                event_type=str(event.get("event_type", "workflow_event")),
+                payload={
+                    **{key: value for key, value in event.items() if key != "event_type"},
+                    "workflow_id": execution.definition_id,
+                    "status": execution.status,
+                },
+            )
+        )
 
     async def _run(self, execution: WorkflowExecution) -> WorkflowExecution:
         execution.status = "running"
@@ -87,15 +151,26 @@ class DurableWorkflowRunner:
             return f"{execution.execution_id}:{sequence}:{node_name}"
 
         async def persist_pending(context: NodeExecutionContext, _state: dict[str, Any]) -> None:
-            execution.events.append(
+            idempotency_store = self._idempotency_store
+            if idempotency_store is not None:
+                await idempotency_store.reserve(
+                    WorkflowIdempotencyRecord(
+                        key=context.idempotency_key,
+                        workflow_id=execution.definition_id,
+                        execution_id=execution.execution_id,
+                        node_id=context.node_name,
+                        arguments_hash=str(context.idempotency_key),
+                    )
+                )
+            await self._emit(
+                execution,
                 {
                     "event_type": "workflow_step_pending",
                     "step": context.node_name,
                     "attempt": context.attempt,
                     "idempotency_key": context.idempotency_key,
-                }
+                },
             )
-            await self._store.save(execution)
 
         async def persist_step(
             current_node: str,
@@ -106,15 +181,22 @@ class DurableWorkflowRunner:
             execution.current_step = next_node
             execution.steps_completed = completed_offset + completed_nodes
             execution.result_data = state
-            execution.events.append(
+            idempotency_store = self._idempotency_store
+            if idempotency_store is not None:
+                await idempotency_store.complete(
+                    idempotency_key(current_node, completed_nodes - 1),
+                    result={"result_data": state},
+                    message="workflow node completed",
+                )
+            await self._emit(
+                execution,
                 {
                     "event_type": "workflow_step_completed",
                     "step": current_node,
                     "next_step": next_node,
                     "idempotency_key": idempotency_key(current_node, completed_nodes - 1),
-                }
+                },
             )
-            await self._store.save(execution)
 
         try:
             result = await self._machine.ainvoke_from(
@@ -137,13 +219,43 @@ class DurableWorkflowRunner:
             await self._store.save(execution)
             return execution
         except Exception as exc:
+            retryable = bool(getattr(exc, "retryable", False)) or _is_retryable_error(exc)
+            retry_count = int((execution.result_data or {}).get("workflow_retry_count") or 0)
+            if retryable and retry_count < self._max_retries:
+                delay = 1.0 * (2**retry_count)
+                next_retry_at = (datetime.now(UTC) + timedelta(seconds=delay)).isoformat()
+                state = dict(execution.result_data or {})
+                state["workflow_retry_count"] = retry_count + 1
+                state["workflow_pending_retry"] = {
+                    "node_id": execution.current_step,
+                    "retry_count": retry_count + 1,
+                    "retry_after_seconds": delay,
+                    "next_retry_at": next_retry_at,
+                    "error": str(exc),
+                }
+                execution.status = "waiting_retry"
+                execution.result_data = state
+                await self._emit(
+                    execution,
+                    {
+                        "event_type": "workflow_node_waiting_retry",
+                        "step": execution.current_step,
+                        "retry_count": retry_count + 1,
+                        "next_retry_at": next_retry_at,
+                        "error": str(exc),
+                    },
+                )
+                await self._store.save(execution)
+                return execution
+
             execution.status = "failed"
-            execution.events.append(
+            await self._emit(
+                execution,
                 {
                     "event_type": "workflow_failed",
                     "step": execution.current_step,
                     "error": str(exc),
-                }
+                },
             )
             await self._store.save(execution)
             if self._raise_on_failure:
@@ -153,7 +265,7 @@ class DurableWorkflowRunner:
         execution.status = "completed"
         execution.current_step = END
         execution.result_data = result
-        execution.events.append({"event_type": "workflow_completed", "step": END})
+        await self._emit(execution, {"event_type": "workflow_completed", "step": END})
         await self._store.save(execution)
         return execution
 
@@ -172,4 +284,4 @@ class DurableWorkflowRunner:
         )
 
 
-__all__ = ["DurableWorkflowRunner"]
+__all__ = ["DurableWorkflowRunner", "WorkflowNodeError"]

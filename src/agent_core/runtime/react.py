@@ -1,4 +1,4 @@
-"""手写 ReAct 循环（tool-calling agent）。
+﻿"""手写 ReAct 循环（tool-calling agent）。
 
 执行模型：
 1. LLM 收到用户问题 + 工具描述
@@ -33,6 +33,7 @@ import logging
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 from agent_core.checkpoint import Checkpointer
@@ -55,7 +56,7 @@ from agent_core.protocol.messages import (
     user_message,
 )
 from agent_core.protocol.runtime import RunContext, RunStatus
-from agent_core.tools import ToolExecutor
+from agent_core.tools import ToolExecutor, ToolResult
 
 logger = logging.getLogger(__name__)
 
@@ -664,6 +665,7 @@ class ReActAgent:
             "tool_calls_used": tool_calls_used,
             "phase": phase,
             "pending_tool_calls": pending_tool_calls,
+            "state": dict(runtime_context.state),
         }
         runtime_context.checkpoint = state
         if runtime_context.checkpoint_callback is not None:
@@ -718,6 +720,46 @@ class ReActAgent:
                 f"ReAct agent 检测到同一工具同一参数连续调用 {self._max_repeated_tool_calls} 次，已强制终止。"
             )
 
+    @staticmethod
+    def _maybe_suspend_on_retryable_result(
+        runtime_context: RunContext,
+        tool_call: dict[str, Any],
+        result: ToolResult,
+    ) -> bool:
+        """业务级挂起：工具显式返回 retryable/suspend 时，暂停 run 并保留上下文。"""
+        if result.success or not result.retryable:
+            return False
+        if result.metadata.get("suspend") is False:
+            return False
+
+        previous = runtime_context.state.get("pending_retry") or {}
+        retry_count = int(previous.get("retry_count", 0)) + 1
+        delay_seconds = max(0.0, float(result.metadata.get("retry_after_seconds", 1.0)))
+        next_retry_at = (
+            datetime.now(UTC) + timedelta(seconds=delay_seconds)
+        ).isoformat()
+
+        runtime_context.state["pending_retry"] = {
+            "tool_name": str(tool_call.get("name", "")),
+            "arguments": dict(tool_call.get("args") or {}),
+            "error_kind": result.error_kind,
+            "error": result.error,
+            "retry_count": retry_count,
+            "retry_after_seconds": delay_seconds,
+            "next_retry_at": next_retry_at,
+            "metadata": dict(result.metadata),
+        }
+        runtime_context.status = "waiting_retry"
+        runtime_context.emit(
+            "run_waiting_retry",
+            tool_name=str(tool_call.get("name", "")),
+            retry_count=retry_count,
+            next_retry_at=next_retry_at,
+            error_kind=result.error_kind,
+            error=result.error,
+        )
+        return True
+
     async def _finish_run(
         self,
         runtime_context: RunContext,
@@ -726,6 +768,12 @@ class ReActAgent:
         **payload: Any,
     ) -> None:
         """设置终态并立即通知持久化回调，所有退出路径共用。"""
+        if (
+            runtime_context.status == "waiting_retry"
+            and status in {"completed", "failed"}
+        ):
+            # 业务级挂起是可恢复状态，不应被普通终态覆盖。
+            return
         if runtime_context.status != status:
             runtime_context.status = status
             runtime_context.emit(event_type, **payload)
@@ -753,10 +801,14 @@ class ReActAgent:
         ctx: MiddlewareContext,
         runtime_context: RunContext | None = None,
     ) -> list[Message]:
-        """并发执行所有工具，把结果追加到 messages。"""
+        """按优先级分批执行工具；高优先级失败会阻断更低优先级工具。"""
 
-        async def execute_one(tc: dict[str, Any]) -> Message:
-            # 每个并发任务使用独立上下文，避免工具名、参数和结果互相覆盖。
+        success_by_index: dict[int, bool] = {}
+        ordered_results: dict[int, Message] = {}
+        completed_indices: set[int] = set()
+        progress_messages: list[Message] = []
+
+        async def execute_one(index: int, tc: dict[str, Any]) -> Message:
             tool_ctx = MiddlewareContext(
                 messages=list(messages),
                 iteration=ctx.iteration,
@@ -772,11 +824,13 @@ class ReActAgent:
                     tool_name=tc["name"],
                     arguments=tool_ctx.tool_args,
                 )
-            mw_result = await self._middleware_manager.execute_before_tool(tool_ctx)
 
+            mw_result = await self._middleware_manager.execute_before_tool(tool_ctx)
             if mw_result.action == MiddlewareAction.STOP:
                 logger.warning("中间件阻止工具 %s 执行", tc["name"])
                 result = f"[工具 {tc['name']} 被阻止执行]"
+                tool_ctx.metadata["tool_success"] = False
+                success_by_index[index] = False
                 if runtime_context is not None:
                     runtime_context.emit(
                         "tool_finished",
@@ -784,12 +838,14 @@ class ReActAgent:
                         success=False,
                         result={"error_kind": "approval", "error": result},
                     )
-                tool_ctx.metadata["tool_success"] = False
             else:
-                # 审批通过后才真正执行副作用工具。
-                structured_result = await self._tool_executor.execute_result(tc["name"], tc.get("args", {}))
+                structured_result = await self._tool_executor.execute_result(
+                    tc["name"],
+                    tc.get("args", {}),
+                )
                 result = structured_result.to_text()
                 tool_ctx.metadata["tool_success"] = structured_result.success
+                success_by_index[index] = structured_result.success
                 if runtime_context is not None:
                     runtime_context.emit(
                         "tool_finished",
@@ -797,8 +853,12 @@ class ReActAgent:
                         success=structured_result.success,
                         result=structured_result.to_dict(),
                     )
+                    self._maybe_suspend_on_retryable_result(
+                        runtime_context,
+                        tc,
+                        structured_result,
+                    )
 
-            # after_tool 中间件
             tool_ctx.tool_result = result
             await self._middleware_manager.execute_after_tool(tool_ctx)
             return tool_message(
@@ -807,68 +867,105 @@ class ReActAgent:
                 name=tc["name"],
             )
 
-        async def execute_indexed(index: int, tool_call: dict[str, Any]) -> tuple[int, Message | Exception]:
+        async def execute_indexed(index: int, tool_call: dict[str, Any]) -> tuple[int, Message]:
             try:
-                return index, await execute_one(tool_call)
+                return index, await execute_one(index, tool_call)
             except Exception as exc:
-                return index, exc
+                success_by_index[index] = False
+                error_text = str(exc)
+                logger.exception(
+                    "工具 %s 的执行链异常",
+                    tool_call["name"],
+                    exc_info=(type(exc), exc, exc.__traceback__),
+                )
+                content = f"[工具 {tool_call['name']} 执行异常] {error_text}"
+                outcome = tool_message(
+                    content=content,
+                    tool_call_id=tool_call["id"],
+                    name=tool_call["name"],
+                )
+                if runtime_context is not None:
+                    runtime_context.emit(
+                        "tool_finished",
+                        tool_name=tool_call["name"],
+                        success=False,
+                        result={"error_kind": "execution", "error": error_text},
+                    )
+                return index, outcome
 
-        tasks = [
-            asyncio.create_task(execute_indexed(index, tool_call))
+        async def run_batch(batch: list[tuple[int, dict[str, Any]]]) -> None:
+            tasks = [
+                asyncio.create_task(execute_indexed(index, tool_call))
+                for index, tool_call in batch
+            ]
+            try:
+                for completed in asyncio.as_completed(tasks):
+                    index, outcome = await completed
+                    ordered_results[index] = outcome
+                    progress_messages.append(outcome)
+                    completed_indices.add(index)
+                    if runtime_context is not None:
+                        pending = [
+                            tool_call
+                            for pending_index, tool_call in enumerate(tool_calls)
+                            if pending_index not in completed_indices
+                        ]
+                        if pending:
+                            await self._persist_tool_progress(
+                                runtime_context,
+                                [*messages, *progress_messages],
+                                pending,
+                            )
+            finally:
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+        def priority_of(index: int, tool_call: dict[str, Any]) -> int:
+            spec_for = getattr(self._tool_executor, "spec_for", None)
+            spec = spec_for(tool_call["name"]) if callable(spec_for) else None
+            return spec.priority if spec is not None else 100
+
+        priority_entries = [
+            (priority_of(index, tool_call), index, tool_call)
             for index, tool_call in enumerate(tool_calls)
         ]
-        completed_indices: set[int] = set()
-        progress_messages: list[Message] = []
-        ordered_messages: list[Message | None] = [None] * len(tool_calls)
-        try:
-            for completed in asyncio.as_completed(tasks):
-                index, outcome = await completed
-                tool_call = tool_calls[index]
-                if isinstance(outcome, Exception):
-                    error_text = str(outcome)
-                    logger.exception(
-                        "工具 %s 的执行链异常",
-                        tool_call["name"],
-                        exc_info=(type(outcome), outcome, outcome.__traceback__),
-                    )
-                    content = f"[工具 {tool_call['name']} 执行异常] {error_text}"
-                    outcome = tool_message(
+        priorities = sorted({priority for priority, _, _ in priority_entries})
+
+        for priority in priorities:
+            batch = [
+                (index, tool_call)
+                for entry_priority, index, tool_call in priority_entries
+                if entry_priority == priority
+            ]
+            blocked = any(success is False for success in success_by_index.values())
+            if blocked:
+                for index, tool_call in batch:
+                    content = f"[工具 {tool_call['name']} 被更高优先级工具失败阻断]"
+                    ordered_results[index] = tool_message(
                         content=content,
                         tool_call_id=tool_call["id"],
                         name=tool_call["name"],
                     )
+                    success_by_index[index] = False
+                    progress_messages.append(ordered_results[index])
+                    completed_indices.add(index)
                     if runtime_context is not None:
                         runtime_context.emit(
                             "tool_finished",
                             tool_name=tool_call["name"],
                             success=False,
-                            result={"error_kind": "execution", "error": error_text},
+                            result={
+                                "error_kind": "priority_gate",
+                                "error": content,
+                            },
                         )
-                ordered_messages[index] = outcome
-                completed_indices.add(index)
-                progress_messages.append(outcome)
-                if runtime_context is not None:
-                    pending = [
-                        tool_call
-                        for pending_index, tool_call in enumerate(tool_calls)
-                        if pending_index not in completed_indices
-                    ]
-                    if pending:
-                        # 只保存"仍有未完成工具"的阶段快照；批末的 phase=model 快照
-                        # 由主循环统一保存，避免与最后一次进度快照重复全量持久化。
-                        await self._persist_tool_progress(
-                            runtime_context,
-                            [*messages, *progress_messages],
-                            pending,
-                        )
-        finally:
-            for task in tasks:
-                if not task.done():
-                    task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+                continue
 
-        # 最终消息按模型原始调用顺序追加；阶段性 checkpoint 允许按完成顺序恢复。
-        messages.extend(message for message in ordered_messages if message is not None)
+            await run_batch(batch)
+
+        messages.extend(ordered_results[index] for index in range(len(tool_calls)))
         return messages
 
     async def _persist_tool_progress(

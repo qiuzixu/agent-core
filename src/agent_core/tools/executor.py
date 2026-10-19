@@ -27,6 +27,8 @@ class ToolSpec:
     requires_approval: bool = False
     timeout_seconds: float | None = None
     idempotent: bool = True
+    priority: int = 100
+    phase: str = "generic"
 
 
 class ToolRegistry:
@@ -50,6 +52,8 @@ class ToolRegistry:
         requires_approval: bool = False,
         timeout_seconds: float | None = None,
         idempotent: bool = True,
+        priority: int = 100,
+        phase: str = "generic",
     ) -> None:
         """注册一个工具。
 
@@ -69,6 +73,8 @@ class ToolRegistry:
             requires_approval=requires_approval,
             timeout_seconds=timeout_seconds,
             idempotent=idempotent,
+            priority=max(0, int(priority)),
+            phase=phase,
         )
         logger.debug("Registered tool: %r", name)
 
@@ -97,7 +103,10 @@ class ToolRegistry:
         返回注册时声明的完整参数 schema。
         """
         definitions = []
-        for name, spec in self._specs.items():
+        for name, spec in sorted(
+            self._specs.items(),
+            key=lambda item: (item[1].priority, item[0]),
+        ):
             definitions.append(
                 {
                     "type": "function",
@@ -125,6 +134,10 @@ class ToolExecutor:
     ) -> None:
         self._registry = registry
         self._approval_callback = approval_callback
+
+    def spec_for(self, tool_name: str) -> ToolSpec | None:
+        """返回工具元数据，供 Agent Loop 做优先级调度。"""
+        return self._registry.get_spec(tool_name)
 
     async def execute(
         self,
@@ -242,6 +255,11 @@ class ToolExecutor:
             else:
                 result = await invoke()
 
+            if isinstance(result, ToolResult):
+                result.tool_name = tool_name
+                if not result.success and not result.error_kind:
+                    result.error_kind = "execution"
+                return result
             return ToolResult(tool_name=tool_name, success=True, value=result)
 
         except TimeoutError:
