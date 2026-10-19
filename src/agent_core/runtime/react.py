@@ -46,6 +46,7 @@ from agent_core.middleware import (
     MiddlewareAction,
     MiddlewareContext,
     MiddlewareManager,
+    ParallelToolPolicy,
 )
 from agent_core.model import ModelAdapter, StreamChunk
 from agent_core.protocol.messages import (
@@ -130,6 +131,7 @@ class ReActAgent:
         checkpointer: Checkpointer | None = None,
         thread_id: str = "default",
         max_repeated_tool_calls: int = 3,
+        parallel_policy: ParallelToolPolicy | None = None,
     ) -> None:
         self._llm = llm
         self._tool_executor = tool_executor
@@ -138,6 +140,7 @@ class ReActAgent:
         self._max_iterations = max_iterations
         self._max_tool_calls = max_tool_calls
         self._max_repeated_tool_calls = max(0, int(max_repeated_tool_calls))
+        self._parallel_policy = parallel_policy or ParallelToolPolicy.from_env()
         self._middleware_manager = MiddlewareManager(middleware)
         self._checkpointer = checkpointer
         self._thread_id = thread_id
@@ -963,7 +966,8 @@ class ReActAgent:
                         )
                 continue
 
-            await run_batch(batch)
+            for sub_batch in self._parallel_policy.split(batch):
+                await run_batch(sub_batch)
 
         messages.extend(ordered_results[index] for index in range(len(tool_calls)))
         return messages

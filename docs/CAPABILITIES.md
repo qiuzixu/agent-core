@@ -354,3 +354,24 @@ Checkpoint、状态机和 Middleware。上层 API 可以据此统一映射 HTTP 
 - 具体 Agent 团队、角色说明、业务路由规则和允许共享的上下文。
 
 这个边界保证 `agent-core` 可以被任何新 Agent 项目直接依赖。
+
+
+## 2026-10-19 新增：6 项 ⚠️ 中间件增强
+
+| 能力 | agent-core 模块 | vanilla 接线 | 环境变量 |
+|---|---|---|---|
+| 并行工具策略 | `middleware/parallel_policy.py` | `api/deps.py` → `ReActAgent(parallel_policy=...)` | `AGENT_PARALLEL_*` |
+| 资源级 RBAC | `middleware/resource_rbac.py` | `api/deps.py` 装配 + `api/chat.py` 身份注入 | `AGENT_RESOURCE_RBAC_*` |
+| 全链路追踪 | `middleware/tracing.py` | `api/app.py` `HttpTraceMiddleware` | `AGENT_TRACING_ENABLED` |
+| 记忆衰减 | `middleware/memory_decay.py` | `api/deps.py` `get_memory_decay_service()` + lifespan prune | `AGENT_MEMORY_DECAY_*` |
+| 数据轮转 | `middleware/retention.py` | `api/deps.py` `get_retention_sweeper()` + lifespan sweep | `AGENT_RETENTION_*` |
+| 健康聚合 | `observability/health.py` | `api/deps.py` `get_health_registry()` → `/health/deps` | `AGENT_HEALTH_TIMEOUT_SECONDS` |
+
+## 2026-10-19 新增：4 项 ❌ 中间件补全
+
+| 能力 | agent-core 模块 | vanilla 接线 | 环境变量 |
+|---|---|---|---|
+| Secrets 密钥管理 | `middleware/secrets.py` | `api/deps.py` `get_secrets_provider()` | `AGENT_SECRETS_*` |
+| A2A 多 Agent 通信 | `middleware/a2a.py` | `api/deps.py` A2A 装配 | `AGENT_A2A_*` |
+| Agent Self-Check | `middleware/self_check.py` | `api/deps.py` SelfCheckMiddleware | `AGENT_SELF_CHECK_*` |
+| 蓝绿/灰度发布 | `middleware/canary.py` | `api/app.py` `HttpCanaryMiddleware` | `AGENT_CANARY_*` |

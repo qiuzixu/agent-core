@@ -149,8 +149,13 @@ from agent_core.observability import (
     setup_tracing,
 )
 from agent_core.ports import (
+    AlertPayload,
+    AlertSink,
     ApprovalStore,
+    ConfigCenter,
     ContextStore,
+    DeadLetterRecord,
+    DeadLetterSink,
     EventSink,
     MemoryRecord,
     MemorySearchResult,
@@ -160,6 +165,7 @@ from agent_core.ports import (
     ModelSelectionStore,
     RunStore,
     SessionStore,
+    ToolCacheStore,
     WorkflowStore,
 )
 from agent_core.prompts import (
@@ -381,6 +387,12 @@ __all__ = [
     "MemorySearchResult",
     "MemorySessionStore",
     "MemoryStore",
+    "AlertPayload",
+    "AlertSink",
+    "ConfigCenter",
+    "DeadLetterRecord",
+    "DeadLetterSink",
+    "ToolCacheStore",
     "MemoryWorkflowExecutionStore",
     "Message",
     "MessageTemplate",

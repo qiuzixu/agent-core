@@ -458,3 +458,17 @@ flowchart LR
 | 2026-10-18 | Workflow execution lineage injection | `DurableWorkflowRunner.start()` now injects `workflow_execution_id` into the graph state so nested ReAct / open_qa runs can persist a parent link. Module boundaries and call direction remain unchanged; no Mermaid update required. |
 | 2026-10-18 | Workflow governance stores | `agent_core.storage.governance` 新增 workflow 节点幂等与统一 session event 存储；`DurableWorkflowRunner` 支持 `max_retries`、retryable 节点错误、`waiting_retry`、节点幂等与业务事件旁路存储。框架 checkpoint 协议不变，Mermaid 图形关系无需变更。 |
 | 2026-10-17 | Retry scheduler v1 | Memory/SQLite/PostgreSQL Runtime Store 支持 `list_runs_by_status()`；`AgentRuntime` 新增 `resume_due_retries()` 和 `start_retry_scheduler()`，可从 `waiting_retry` checkpoint 唤醒到点任务。消息队列/死信队列仍未实现。 |
+| 2026-10-19 | 6 项 ⚠️ 中间件增强（agent-core 层） | 新增 6 个模块：`middleware/parallel_policy.py`（声明式并行策略）、`middleware/resource_rbac.py`（资源级 RBAC）、`middleware/tracing.py`（trace_id 生成/传播）、`middleware/memory_decay.py`（记忆衰减/遗忘）、`middleware/retention.py`（数据过期/轮转）、`observability/health.py`（健康检查聚合）。`ReActAgent` 新增 `parallel_policy` 参数并在优先级批次内执行 `split()` 子批次。均为纯标准库，不引入新依赖。 |
+| 2026-10-19 | ParallelToolPolicy max_concurrency 修复 | 修复 `split()` 在无 serial-only 工具时不应用 `max_concurrency` 的遗漏（`if not changed` 分支补齐批次切分逻辑）。 |
+| 2026-10-19 | Retention archive_directory 修复 | 修复 `apply_retention()` 轮转分支中 `archive_directory.mkdir()` 引用未定义局部变量的 NameError（应为 `archive_dir`）。 |
+
+## 2026-10-19 新增：4 项 ❌ 中间件补全
+
+| 能力 | agent-core 模块 | vanilla 接线 | 环境变量 |
+|---|---|---|---|
+| Secrets 密钥管理 | `middleware/secrets.py` | `api/deps.py` `get_secrets_provider()` | `AGENT_SECRETS_*` |
+| A2A 多 Agent 通信 | `middleware/a2a.py` | `api/deps.py` A2A 装配 | `AGENT_A2A_*` |
+| Agent Self-Check | `middleware/self_check.py` | `api/deps.py` SelfCheckMiddleware | `AGENT_SELF_CHECK_*` |
+| 蓝绿/灰度发布 | `middleware/canary.py` | `api/app.py` `HttpCanaryMiddleware` | `AGENT_CANARY_*` |
+
+至此 28 项中间件全部实现（28✅ + 0⚠️ + 0❌）。

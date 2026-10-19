@@ -6,6 +6,14 @@ from agent_core.ports.model_selection import (
     ModelSelectionScope,
     ModelSelectionStore,
 )
+from agent_core.ports.platform import (
+    AlertPayload,
+    AlertSink,
+    ConfigCenter,
+    DeadLetterRecord,
+    DeadLetterSink,
+    ToolCacheStore,
+)
 from agent_core.ports.storage import (
     ApprovalStore,
     ContextStore,
@@ -16,8 +24,13 @@ from agent_core.ports.storage import (
 )
 
 __all__ = [
+    "AlertPayload",
+    "AlertSink",
     "ApprovalStore",
+    "ConfigCenter",
     "ContextStore",
+    "DeadLetterRecord",
+    "DeadLetterSink",
     "EventSink",
     "MemoryRecord",
     "MemorySearchResult",
@@ -27,5 +40,6 @@ __all__ = [
     "ModelSelectionStore",
     "RunStore",
     "SessionStore",
+    "ToolCacheStore",
     "WorkflowStore",
 ]
