@@ -375,3 +375,10 @@ Checkpoint、状态机和 Middleware。上层 API 可以据此统一映射 HTTP 
 | A2A 多 Agent 通信 | `middleware/a2a.py` | `api/deps.py` A2A 装配 | `AGENT_A2A_*` |
 | Agent Self-Check | `middleware/self_check.py` | `api/deps.py` SelfCheckMiddleware | `AGENT_SELF_CHECK_*` |
 | 蓝绿/灰度发布 | `middleware/canary.py` | `api/app.py` `HttpCanaryMiddleware` | `AGENT_CANARY_*` |
+
+
+## 2026-10-20 新增：轻量知识图谱内核
+
+| 能力 | agent-core 模块 | vanilla 接线 | 说明 |
+|---|---|---|---|
+| 通用图谱存储 | ports/knowledge_graph.py、storage/knowledge_graph.py | core/knowledge_graph_service.py | 提供 GraphEntity、GraphRelation、KnowledgeGraphStore 协议与 InMemoryKnowledgeGraphStore；不引入 Neo4j，业务实体类型和关系投影仍留在应用层。 |

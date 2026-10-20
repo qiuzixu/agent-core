@@ -1,5 +1,11 @@
 """Agent Core 的可替换外部端口。"""
 
+from agent_core.ports.knowledge_graph import (
+    Direction,
+    GraphEntity,
+    GraphRelation,
+    KnowledgeGraphStore,
+)
 from agent_core.ports.memory import MemoryRecord, MemorySearchResult, MemoryStore
 from agent_core.ports.model_selection import (
     ModelSelection,
@@ -31,7 +37,11 @@ __all__ = [
     "ContextStore",
     "DeadLetterRecord",
     "DeadLetterSink",
+    "Direction",
     "EventSink",
+    "GraphEntity",
+    "GraphRelation",
+    "KnowledgeGraphStore",
     "MemoryRecord",
     "MemorySearchResult",
     "MemoryStore",

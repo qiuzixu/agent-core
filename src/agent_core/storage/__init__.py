@@ -24,6 +24,7 @@ from agent_core.storage.governance import (
     create_session_event_store,
     create_workflow_idempotency_store,
 )
+from agent_core.storage.knowledge_graph import InMemoryKnowledgeGraphStore
 from agent_core.storage.lease import (
     MemoryRunLeaseStore,
     PostgresRunLeaseStore,
@@ -73,6 +74,7 @@ from agent_core.storage.workflow import (
 __all__ = [
     "BaseSessionStore",
     "ContextStore",
+    "InMemoryKnowledgeGraphStore",
     "InMemoryMemoryStore",
     "MemoryContextStore",
     "MemoryModelSelectionStore",

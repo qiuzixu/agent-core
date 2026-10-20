@@ -472,3 +472,5 @@ flowchart LR
 | 蓝绿/灰度发布 | `middleware/canary.py` | `api/app.py` `HttpCanaryMiddleware` | `AGENT_CANARY_*` |
 
 至此 28 项中间件全部实现（28✅ + 0⚠️ + 0❌）。
+
+| 2026-10-20 | 轻量知识图谱内核 | 新增 ports/knowledge_graph.py 定义 GraphEntity、GraphRelation、KnowledgeGraphStore 协议；新增 storage/knowledge_graph.py 提供 InMemoryKnowledgeGraphStore。通用实体/关系/子图查询进入 Core，业务实体投影仍由上层 Agent 负责；不引入 Neo4j，模块边界与调用方向无需修改 Mermaid 图。 |

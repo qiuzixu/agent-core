@@ -21,6 +21,7 @@ import hashlib
 import json
 import logging
 import time
+import math
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any
@@ -60,18 +61,22 @@ class InMemoryToolCacheStore:
 
     def __init__(self, max_entries: int = 200) -> None:
         self._max_entries = max_entries
-        self._cache: OrderedDict[str, tuple[float, str]] = OrderedDict()
+        self._cache: OrderedDict[str, tuple[float, str, float]] = OrderedDict()
 
     async def get(self, key: str) -> str | None:
         entry = self._cache.get(key)
         if entry is None:
             return None
-        ts, value = entry
+        ts, value, expiry = entry
+        if time.monotonic() > expiry:
+            del self._cache[key]
+            return None
         self._cache.move_to_end(key)
         return value
 
     async def set(self, key: str, value: str, *, ttl_seconds: float | None = None) -> None:
-        self._cache[key] = (time.monotonic(), value)
+        expiry = (time.monotonic() + ttl_seconds) if ttl_seconds is not None else math.inf
+        self._cache[key] = (time.monotonic(), value, expiry)
         while len(self._cache) > self._max_entries:
             self._cache.popitem(last=False)
 
@@ -148,3 +153,4 @@ class ToolCacheMiddleware(Middleware):
 
     def get_stats(self) -> dict:
         return {"enabled": self._config.enabled, "store_type": type(self._store).__name__}
+
