@@ -12,6 +12,7 @@ from agent_core.ports.model_selection import (
     ModelSelectionScope,
     ModelSelectionStore,
 )
+from agent_core.ports.registry import ServiceInstance, ServiceRegistry
 from agent_core.ports.platform import (
     AlertPayload,
     AlertSink,
@@ -51,5 +52,9 @@ __all__ = [
     "RunStore",
     "SessionStore",
     "ToolCacheStore",
+    "ServiceInstance",
+    "ServiceRegistry",
     "WorkflowStore",
 ]
+
+
