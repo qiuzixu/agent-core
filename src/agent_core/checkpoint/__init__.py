@@ -5,6 +5,7 @@ from agent_core.checkpoint.store import (
     FileCheckpointer,
     MemoryCheckpointer,
 )
+from agent_core.checkpoint.trace import trace_tree
 from agent_core.checkpoint.travel import (
     CheckpointVersion,
     TimeTravelCheckpointer,
@@ -16,4 +17,5 @@ __all__ = [
     "FileCheckpointer",
     "MemoryCheckpointer",
     "TimeTravelCheckpointer",
+    "trace_tree",
 ]

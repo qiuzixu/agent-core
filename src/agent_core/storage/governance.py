@@ -49,7 +49,6 @@ class SessionEvent:
     event_type: str
     run_type: str = "workflow"
     run_id: str = ""
-    parent_run_id: str | None = None
     payload: dict[str, Any] = field(default_factory=dict)
     event_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     created_at: str = field(default_factory=_now)
@@ -389,7 +388,6 @@ class SqliteSessionEventStore(SessionEventStore):
         thread_id TEXT NOT NULL,
         run_type TEXT NOT NULL,
         run_id TEXT NOT NULL,
-        parent_run_id TEXT,
         event_type TEXT NOT NULL,
         payload_json TEXT NOT NULL,
         created_at TEXT NOT NULL
@@ -417,10 +415,9 @@ class SqliteSessionEventStore(SessionEventStore):
             thread_id=str(row[1]),
             run_type=str(row[2]),
             run_id=str(row[3]),
-            parent_run_id=row[4],
-            event_type=str(row[5]),
-            payload=json.loads(row[6] or "{}"),
-            created_at=str(row[7]),
+            event_type=str(row[4]),
+            payload=json.loads(row[5] or "{}"),
+            created_at=str(row[6]),
         )
 
     async def append(self, event: SessionEvent) -> SessionEvent:
@@ -430,15 +427,14 @@ class SqliteSessionEventStore(SessionEventStore):
             with sqlite3.connect(str(self._db_path), timeout=30.0) as conn:
                 conn.execute(
                     """INSERT OR IGNORE INTO session_events
-                       (event_id, thread_id, run_type, run_id, parent_run_id,
+                       (event_id, thread_id, run_type, run_id,
                         event_type, payload_json, created_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
                     (
                         event.event_id,
                         event.thread_id,
                         event.run_type,
                         event.run_id,
-                        event.parent_run_id,
                         event.event_type,
                         json.dumps(value["payload"], ensure_ascii=False),
                         event.created_at,
@@ -487,7 +483,6 @@ class PostgresSessionEventStore(SessionEventStore):
                 thread_id TEXT NOT NULL,
                 run_type TEXT NOT NULL,
                 run_id TEXT NOT NULL,
-                parent_run_id TEXT,
                 event_type TEXT NOT NULL,
                 payload JSONB NOT NULL DEFAULT '{}'::jsonb,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -503,14 +498,13 @@ class PostgresSessionEventStore(SessionEventStore):
         assert self._pool is not None
         await self._pool.execute(
             """INSERT INTO session_events
-               (event_id, thread_id, run_type, run_id, parent_run_id, event_type, payload, created_at)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, now())
+               (event_id, thread_id, run_type, run_id, event_type, payload, created_at)
+               VALUES ($1, $2, $3, $4, $5, $6, now())
                ON CONFLICT (event_id) DO NOTHING""",
             event.event_id,
             event.thread_id,
             event.run_type,
             event.run_id,
-            event.parent_run_id,
             event.event_type,
             event.payload,
         )
@@ -546,7 +540,6 @@ class PostgresSessionEventStore(SessionEventStore):
                 thread_id=str(row["thread_id"]),
                 run_type=str(row["run_type"]),
                 run_id=str(row["run_id"]),
-                parent_run_id=row["parent_run_id"],
                 event_type=str(row["event_type"]),
                 payload=dict(row["payload"] or {}),
                 created_at=row["created_at"].isoformat(),

@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from agent_core.access import AccessContext, enforce_access
+from agent_core.checkpoint.store import Checkpointer, DEFAULT_CHECKPOINT_NS
 from agent_core.storage.governance import (
     SessionEvent,
     SessionEventStore,
@@ -52,6 +53,7 @@ class DurableWorkflowRunner:
         max_retries: int = 2,
         idempotency_store: WorkflowIdempotencyStore | None = None,
         session_event_store: SessionEventStore | None = None,
+        checkpointer: Checkpointer | None = None,
     ) -> None:
         self._machine = machine
         self._store = store
@@ -60,6 +62,7 @@ class DurableWorkflowRunner:
         self._max_retries = max(0, int(max_retries))
         self._idempotency_store = idempotency_store
         self._session_event_store = session_event_store
+        self._checkpointer = checkpointer
 
     async def start(
         self,
@@ -108,6 +111,23 @@ class DurableWorkflowRunner:
             execution.status = "completed"
             await self._store.save(execution)
             return execution
+        # 尝试从共享 checkpointer 的 workflow namespace 加载最新状态。
+        # checkpoint 与 execution_store.result_data 应该一致；如果 checkpoint 更新
+        # （例如 store 写入失败但 checkpoint 成功），用 checkpoint 的状态恢复。
+        if self._checkpointer is not None:
+            state = dict(execution.result_data or {})
+            thread_id = str(
+                state.get("source_thread_id")
+                or state.get("thread_id")
+                or execution.execution_id
+            )
+            ns = f"workflow:{execution.execution_id}"
+            try:
+                checkpoint_state = await self._checkpointer.load(thread_id, checkpoint_ns=ns)
+            except Exception:
+                checkpoint_state = None
+            if checkpoint_state is not None:
+                execution.result_data = checkpoint_state
         await self._emit(
             execution,
             {"event_type": "workflow_resumed", "step": execution.current_step or START},
@@ -131,7 +151,6 @@ class DurableWorkflowRunner:
                 thread_id=thread_id,
                 run_type="workflow",
                 run_id=execution.execution_id,
-                parent_run_id=state.get("source_thread_id"),
                 event_type=str(event.get("event_type", "workflow_event")),
                 payload={
                     **{key: value for key, value in event.items() if key != "event_type"},
@@ -188,6 +207,7 @@ class DurableWorkflowRunner:
                     result={"result_data": state},
                     message="workflow node completed",
                 )
+            await self._save_checkpoint(execution)
             await self._emit(
                 execution,
                 {
@@ -268,6 +288,19 @@ class DurableWorkflowRunner:
         await self._emit(execution, {"event_type": "workflow_completed", "step": END})
         await self._store.save(execution)
         return execution
+
+    async def _save_checkpoint(self, execution: WorkflowExecution) -> None:
+        """把工作流当前状态存到共享 checkpointer 的 workflow namespace 下。"""
+        if self._checkpointer is None:
+            return
+        state = dict(execution.result_data or {})
+        thread_id = str(
+            state.get("source_thread_id")
+            or state.get("thread_id")
+            or execution.execution_id
+        )
+        ns = f"workflow:{execution.execution_id}"
+        await self._checkpointer.save(thread_id, state, checkpoint_ns=ns)
 
     def _check_access(
         self,
