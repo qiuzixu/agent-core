@@ -135,6 +135,26 @@ class ApprovalQueue:
         if poll_interval_seconds <= 0:
             raise ValueError("poll_interval_seconds 必须大于 0")
         self._poll_interval = poll_interval_seconds
+        # 可选的通知回调：审批创建/决定后调用，供 WebSocket 推送等外部消费者使用。
+        self._notify: list[Any] = []
+
+    def add_notify_callback(self, callback: Any) -> None:
+        """注册审批事件通知回调（如 WebSocket 推送）。
+
+        回调签名: async def callback(event_type: str, data: dict) -> None
+        event_type: "approval_created" | "approval_approved" | "approval_rejected"
+        注册后回调失败不会影响审批流程本身。
+        """
+        self._notify.append(callback)
+
+    async def _fire_notify(self, event_type: str, data: dict[str, Any]) -> None:
+        for cb in self._notify:
+            try:
+                result = cb(event_type, data)
+                if asyncio.iscoroutine(result) or asyncio.isfuture(result):
+                    await result
+            except Exception:
+                logger.exception("审批通知回调执行失败: %s", event_type)
 
     def create_request(
         self,
@@ -166,6 +186,9 @@ class ApprovalQueue:
             expires_at=self._expires_at(timeout_seconds),
         )
         self._requests[request.request_id] = request
+        asyncio.get_event_loop().create_task(
+            self._fire_notify("approval_created", request.to_dict())
+        )
         return request
 
     async def create_request_async(
@@ -194,6 +217,7 @@ class ApprovalQueue:
         self._requests[request.request_id] = request
         if self._approval_store:
             await self._approval_store.save_approval(request.to_record())
+        await self._fire_notify("approval_created", request.to_dict())
         return request
 
     async def wait_for_decision(
@@ -276,6 +300,7 @@ class ApprovalQueue:
                 return False
         request.status = ApprovalStatus.APPROVED
         request._event.set()
+        await self._fire_notify("approval_approved", request.to_dict())
         return True
 
     async def reject(
@@ -297,6 +322,7 @@ class ApprovalQueue:
         request.status = ApprovalStatus.REJECTED
         request.reason = reason
         request._event.set()
+        await self._fire_notify("approval_rejected", request.to_dict())
         return True
 
     def list_pending(
@@ -515,3 +541,4 @@ __all__ = [
     "ApprovalStatus",
     "HumanInTheLoopMiddleware",
 ]
+
