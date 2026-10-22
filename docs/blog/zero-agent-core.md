@@ -111,7 +111,7 @@ powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | ie
 - `run()` 阻塞式调用；
 - `stream()` 流式输出；
 - 一个 `requires_approval=True` 的写工具审批回调；
-- 用 `FileCheckpointer` 做跨进程恢复。
+- 用 `TimeTravelCheckpointer` 做跨进程恢复。
 
 ## 架构上比较在意的一件事
 

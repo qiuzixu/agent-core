@@ -29,7 +29,6 @@ from agent_core.callbacks import (
 from agent_core.checkpoint import (
     Checkpointer,
     CheckpointVersion,
-    FileCheckpointer,
     MemoryCheckpointer,
     TimeTravelCheckpointer,
 )
@@ -356,7 +355,7 @@ __all__ = [
     "EmbeddingRetriever",
     "Embeddings",
     "EventSink",
-    "FileCheckpointer",
+
     "GeminiProvider",
     "GovernedModelAdapter",
     "Guard",

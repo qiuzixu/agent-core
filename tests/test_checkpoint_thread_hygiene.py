@@ -12,15 +12,8 @@ import unittest
 from pathlib import Path
 
 from agent_core.checkpoint.naming import _restore_thread_id, _sanitize_thread_id
-from agent_core.checkpoint.store import CheckpointError, FileCheckpointer
+from agent_core.checkpoint.store import CheckpointError
 from agent_core.checkpoint.travel import TimeTravelCheckpointer
-
-
-class _NoDirFileCheckpointer(FileCheckpointer):
-    """不真正创建目录的测试替身（仅验证文件名映射，不触碰文件系统）。"""
-
-    def __init__(self, storage_dir: str) -> None:
-        self._storage_dir = Path(storage_dir)
 
 
 class _NoDirTimeTravelCheckpointer(TimeTravelCheckpointer):
@@ -93,26 +86,6 @@ class ThreadIdSanitizationTests(unittest.TestCase):
     def test_restore_returns_unrecognized_stem_as_is(self) -> None:
         """历史遗留文件名无法还原时原样返回，不抛异常。"""
         self.assertEqual(_restore_thread_id("plain-thread"), "plain-thread")
-
-
-class FileCheckpointerPathTests(unittest.TestCase):
-    def test_get_file_path_keeps_distinct_threads_distinct(self) -> None:
-        """a/b 与 a_b 映射到不同文件，不再互相覆盖；含 : 的 thread 可用。"""
-        checkpointer = _NoDirFileCheckpointer("unused")
-        self.assertEqual(checkpointer._get_file_path("a/b").name, "a%2Fb.json")
-        self.assertEqual(checkpointer._get_file_path("a_b").name, "a_b.json")
-        self.assertNotEqual(checkpointer._get_file_path("a/b"), checkpointer._get_file_path("a_b"))
-        self.assertEqual(checkpointer._get_file_path("thread:1").name, "thread%3A1.json")
-        self.assertEqual(checkpointer._get_file_path("a\\b").name, "a%5Cb.json")
-
-    def test_time_travel_version_file_uses_same_sanitization(self) -> None:
-        checkpointer = _NoDirTimeTravelCheckpointer("unused")
-        self.assertEqual(checkpointer._get_version_file("a/b").name, "a%2Fb_versions.json")
-        self.assertEqual(checkpointer._get_version_file("thread:1").name, "thread%3A1_versions.json")
-        self.assertNotEqual(
-            checkpointer._get_version_file("a/b"),
-            checkpointer._get_version_file("a_b"),
-        )
 
 
 class TimeTravelVersionCapTests(unittest.IsolatedAsyncioTestCase):

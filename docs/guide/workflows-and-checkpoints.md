@@ -20,7 +20,7 @@ agent = ReActAgent(
 | 实现 | 用途 |
 | --- | --- |
 | `MemoryCheckpointer` | 单元测试和临时执行 |
-| `FileCheckpointer` | 本地开发的最新快照 |
+| `TimeTravelCheckpointer` | 本地开发的最新快照 |
 | `TimeTravelCheckpointer` | 保留历史版本、查看和回滚 |
 
 Checkpoint 保存消息、迭代次数、工具调用计数、最后响应和运行元数据。文件实现适合开发，

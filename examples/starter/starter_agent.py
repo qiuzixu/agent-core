@@ -4,7 +4,7 @@
 
 1. 工具注册（含一个 ``requires_approval`` 写工具，演示审批回调）；
 2. 中间件挂载（``LoggingMiddleware``）；
-3. Checkpointer（``FileCheckpointer``，跨进程可恢复）与 ``run`` / ``stream`` 两种调用；
+3. Checkpointer（``TimeTravelCheckpointer``，跨进程可恢复）与 ``run`` / ``stream`` 两种调用；
 4. 全程离线：使用仿照 ``examples/basic_agent.py`` 的 ``DemoModel``，不访问任何网络。
 
 换真实模型时改哪里？——见文件末尾 ``build_llm()`` 的注释：
@@ -21,7 +21,7 @@ from pathlib import Path
 
 from agent_core import (
     ContextUsage,
-    FileCheckpointer,
+    TimeTravelCheckpointer,
     LoggingMiddleware,
     Message,
     ReActAgent,
@@ -208,7 +208,7 @@ def build_agent() -> ReActAgent:
         system_prompt="你是一个演示助手。",
         tool_definitions=registry.build_tool_definitions(),
         middleware=[LoggingMiddleware()],  # 中间件挂载：记录每轮 LLM/工具调用
-        checkpointer=FileCheckpointer(CHECKPOINT_DIR),  # 会话状态持久化到文件
+        checkpointer=TimeTravelCheckpointer(CHECKPOINT_DIR),  # 会话状态持久化到文件
         thread_id="starter-demo",
     )
 

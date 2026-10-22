@@ -125,7 +125,7 @@ AccessContext。它不会动态导入输入中的类，也不使用 pickle。
 
 | API | 作用 |
 | --- | --- |
-| `Checkpointer` / `MemoryCheckpointer` / `FileCheckpointer` | 最新快照协议和实现 |
+| `Checkpointer` / `MemoryCheckpointer` / `TimeTravelCheckpointer` | 最新快照协议和实现 |
 | `TimeTravelCheckpointer` / `CheckpointVersion` | 历史版本与回滚 |
 | `StateMachineBuilder` / `StateMachine` | 通用异步状态机 |
 | `NodeExecutionPolicy` / `NodeExecutionContext` | 节点重试、超时、退避和稳定幂等键 |

@@ -14,7 +14,7 @@ from typing import Any
 from unittest.mock import patch
 
 from agent_core.access import AccessContext
-from agent_core.checkpoint import FileCheckpointer
+from agent_core.checkpoint import MemoryCheckpointer, TimeTravelCheckpointer
 from agent_core.documents import Document
 from agent_core.errors import CheckpointError, ModelInvocationError, ModelOutputValidationError
 from agent_core.guardrails import GuardrailsMiddleware, LengthGuard
@@ -213,7 +213,7 @@ class TestReviewRegressions(unittest.IsolatedAsyncioTestCase):
 
     async def test_file_checkpoint_failed_replace_keeps_previous_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            checkpointer = FileCheckpointer(directory)
+            checkpointer = TimeTravelCheckpointer(storage_dir=directory)
             await checkpointer.save("thread", {"step": 1})
             with (
                 patch("agent_core.checkpoint.naming.os.replace", side_effect=OSError("disk error")),

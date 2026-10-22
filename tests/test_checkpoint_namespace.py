@@ -4,7 +4,6 @@
 1. ns 为空时行为与旧版完全一致（向后兼容）
 2. ns 非空时同 thread 不同 ns 不互相覆盖
 3. list_namespaces 返回正确
-4. FileCheckpointer ns 为空时文件名不变
 5. TimeTravelCheckpointer ns 版本管理
 6. trace_tree 返回多层树
 7. DurableWorkflowRunner checkpoint 存到 workflow:ns
@@ -23,7 +22,6 @@ import pytest
 
 from agent_core.checkpoint.store import (
     DEFAULT_CHECKPOINT_NS,
-    FileCheckpointer,
     MemoryCheckpointer,
 )
 from agent_core.checkpoint.trace import trace_tree
@@ -110,45 +108,6 @@ class TestMemoryCheckpointerNs:
             assert len(versions) == 1
             empty = await checkpointer.list_versions("t1", checkpoint_ns="nonexistent")
             assert empty == []
-
-        asyncio.run(run())
-
-
-# ── FileCheckpointer ──────────────────────────────────────────
-
-
-class TestFileCheckpointerNs:
-    """FileCheckpointer namespace 向后兼容与新文件名。"""
-
-    def test_ns_empty_same_filename(self, tmp_path: Path) -> None:
-        """ns 为空时文件名与旧版一致。"""
-
-        async def run() -> None:
-            fc = FileCheckpointer(tmp_path)
-            await fc.save("thread-a", {"x": 1})
-            expected = tmp_path / "thread-a.json"
-            assert expected.exists()
-            assert await fc.load("thread-a") == {"x": 1}
-
-        asyncio.run(run())
-
-    def test_ns_non_empty_new_filename(self, tmp_path: Path) -> None:
-        """ns 非空时生成独立文件，不覆盖旧文件。"""
-
-        async def run() -> None:
-            fc = FileCheckpointer(tmp_path)
-            await fc.save("thread-a", {"x": 1})
-            await fc.save("thread-a", {"y": 2}, checkpoint_ns="workflow:exec-1")
-
-            # 原文件不被覆盖
-            assert await fc.load("thread-a") == {"x": 1}
-            # ns 文件可加载
-            wf = await fc.load("thread-a", checkpoint_ns="workflow:exec-1")
-            assert wf == {"y": 2}
-            # list_namespaces
-            ns = fc.list_namespaces("thread-a")
-            assert "" in ns
-            assert "workflow:exec-1" in ns
 
         asyncio.run(run())
 

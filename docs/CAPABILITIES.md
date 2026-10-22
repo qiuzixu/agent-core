@@ -27,7 +27,7 @@ Agent Core 是一套零外部平台绑定的手写 Agent 运行时内核。
 | `serialization` | 显式白名单、类型标识、Schema 版本和迁移函数 | `SerializerRegistry`、`SerializedEnvelope` |
 | `compaction` | Token 估算、历史摘要、消息裁剪、工具结果瘦身、spill 和超长恢复 | `CompactionMiddleware`、`TokenLimitMiddleware`、`SpillStore` |
 | `cache` | 进程内 TTL/LRU 缓存、请求合并、可选 Redis 后端和统一工厂 | `CacheService`、`MemoryCache`、`RedisCache`、`create_cache_service` |
-| `checkpoint` | 内存/文件 checkpoint、原子文件替换、历史版本、回滚和时间旅行 | `MemoryCheckpointer`、`FileCheckpointer`、`TimeTravelCheckpointer` |
+| `checkpoint` | 内存/文件 checkpoint、原子文件替换、历史版本、回滚和时间旅行 | `MemoryCheckpointer`、`TimeTravelCheckpointer`、`TimeTravelCheckpointer` |
 | `hitl` | 人工审批请求、持久化 deadline、条件状态转换、超时、跨进程决策同步和中间件接入 | `ApprovalQueue`、`HumanInTheLoopMiddleware` |
 | `workflow` | 异步状态机、节点策略、重试、超时、幂等、pending write、恢复和 Mermaid 导出 | `StateMachine`、`NodeExecutionPolicy`、`DurableWorkflowRunner` |
 | `multi-agent` 扩展 | Agent 注册、权限过滤、规则/模型路由、handoff、父子 Run、预算、租约和恢复 | `AgentRegistry`、`SupervisorAgent`、`RuntimeAgentInvoker` |

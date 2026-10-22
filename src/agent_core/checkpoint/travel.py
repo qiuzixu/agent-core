@@ -20,6 +20,13 @@ from pathlib import Path
 from typing import Any
 
 from agent_core.checkpoint.naming import _atomic_write_json, _restore_thread_id, _sanitize_thread_id
+from agent_core.checkpoint.schema import (
+    CHECKPOINT_SCHEMA_VERSION,
+    SchemaMigrationError,
+    ensure_schema_version,
+    get_schema_version,
+    migrate_state,
+)
 from agent_core.errors import CheckpointError
 
 logger = logging.getLogger(__name__)
@@ -44,6 +51,7 @@ class CheckpointVersion:
         state: dict[str, Any],
         metadata: dict[str, Any] | None = None,
         checkpoint_ns: str = DEFAULT_CHECKPOINT_NS,
+        branch: str = "main",
     ) -> None:
         """初始化。
 
@@ -59,6 +67,7 @@ class CheckpointVersion:
         self.state = state
         self.metadata = metadata or {}
         self.checkpoint_ns = checkpoint_ns
+        self.branch = branch
 
     def to_dict(self) -> dict[str, Any]:
         """转换为字典。"""
@@ -68,6 +77,7 @@ class CheckpointVersion:
             "state": self.state,
             "metadata": self.metadata,
             "checkpoint_ns": self.checkpoint_ns,
+            "branch": self.branch,
         }
 
     @classmethod
@@ -79,7 +89,27 @@ class CheckpointVersion:
             state=data["state"],
             metadata=data.get("metadata"),
             checkpoint_ns=data.get("checkpoint_ns", DEFAULT_CHECKPOINT_NS),
+            branch=data.get("branch", "main"),
         )
+
+
+def _migrate_loaded(state: dict[str, Any]) -> dict[str, Any]:
+    """加载 state 后自动检测 schema 版本并迁移到当前版本。
+
+    无版本戳的旧数据（schema v0）自动升级到当前版本。
+    迁移失败时抛出 SchemaMigrationError（调用方可选择降级为诚实报错）。
+    """
+    version = get_schema_version(state)
+    if version < CHECKPOINT_SCHEMA_VERSION:
+        return migrate_state(state, version)
+    return state
+
+
+def _strip_internal_metadata(state: dict[str, Any]) -> dict[str, Any]:
+    """剥离 _checkpoint_metadata 内部键，对调用方透明。"""
+    result = dict(state)
+    result.pop("_checkpoint_metadata", None)
+    return result
 
 
 class TimeTravelCheckpointer:
@@ -141,6 +171,7 @@ class TimeTravelCheckpointer:
         metadata: dict[str, Any] | None = None,
         *,
         checkpoint_ns: str = DEFAULT_CHECKPOINT_NS,
+        branch: str = "main",
     ) -> str:
         """保存新版本。
 
@@ -157,12 +188,16 @@ class TimeTravelCheckpointer:
         version_id = str(uuid.uuid4())
         timestamp = datetime.now(UTC).isoformat()
 
+        # 打上 schema 版本戳，load 时自动检测并迁移旧版本
+        stamped_state = ensure_schema_version(state)
+
         version = CheckpointVersion(
             version_id=version_id,
             timestamp=timestamp,
-            state=copy.deepcopy(state),
+            state=copy.deepcopy(stamped_state),
             metadata=metadata or {},
             checkpoint_ns=checkpoint_ns,
+            branch=branch,
         )
 
         # 添加到版本列表（超过容量上限时淘汰最旧版本，指针随淘汰前移）
@@ -236,7 +271,7 @@ class TimeTravelCheckpointer:
                         thread_id,
                         checkpoint_ns,
                     )
-                    return copy.deepcopy(v.state)
+                    return _strip_internal_metadata(copy.deepcopy(v.state))
             logger.warning(
                 "Checkpoint version %s not found for thread %r ns %r",
                 version_id,
@@ -255,7 +290,7 @@ class TimeTravelCheckpointer:
             thread_id,
             checkpoint_ns,
         )
-        return copy.deepcopy(latest.state)
+        return _strip_internal_metadata(copy.deepcopy(latest.state))
 
     async def list_versions(
         self,
@@ -441,6 +476,84 @@ class TimeTravelCheckpointer:
         }
 
         return diff
+
+    async def fork(
+        self,
+        thread_id: str,
+        version_id: str,
+        new_branch: str,
+        *,
+        checkpoint_ns: str = DEFAULT_CHECKPOINT_NS,
+    ) -> str:
+        """从指定版本创建一个分支副本。
+
+        新分支的初始版本复制源版本的全部 state，打上新分支名。
+        当前指针移到新分支的最新版本，后续 save 自动使用新分支名。
+        原分支数据不受影响。
+
+        Args:
+            thread_id: 会话 ID。
+            version_id: 要从哪个版本 fork。
+            new_branch: 新分支名称（如 "retry-from-step-3"）。
+            checkpoint_ns: checkpoint 命名空间。
+
+        Returns:
+            新版本的 version_id。
+
+        Raises:
+            CheckpointError: 版本不存在。
+        """
+        key = _storage_key(thread_id, checkpoint_ns)
+        await self._load_versions_from_file(key)
+
+        versions = self._versions.get(key, [])
+        source = next((v for v in versions if v.version_id == version_id), None)
+        if source is None:
+            raise CheckpointError(
+                f"fork 失败：版本 {version_id!r} 不存在于 thread {thread_id!r} ns {checkpoint_ns!r}"
+            )
+
+        new_version_id = str(uuid.uuid4())
+        timestamp = datetime.now(UTC).isoformat()
+        fork_version = CheckpointVersion(
+            version_id=new_version_id,
+            timestamp=timestamp,
+            state=copy.deepcopy(source.state),
+            metadata={
+                **source.metadata,
+                "forked_from": version_id,
+                "forked_branch": source.branch,
+            },
+            checkpoint_ns=checkpoint_ns,
+            branch=new_branch,
+        )
+
+        versions.append(fork_version)
+        self._trim_versions(key)
+        # 当前指针移到 fork 版本，后续 save 自动使用新分支
+        self._current_version[key] = len(versions) - 1
+
+        try:
+            await self._persist_versions(key)
+        except Exception:
+            for position in range(len(versions) - 1, -1, -1):
+                if versions[position] is fork_version:
+                    del versions[position]
+                    break
+            self._restore_current_pointer(key, source)
+            raise
+
+        logger.info(
+            "Forked version %s -> branch %r (new version %s) for thread %r ns %r",
+            version_id, new_branch, new_version_id, thread_id, checkpoint_ns,
+        )
+        return new_version_id
+
+    def list_branches(self, thread_id: str, *, checkpoint_ns: str = DEFAULT_CHECKPOINT_NS) -> list[str]:
+        """列出该 (thread_id, ns) 下所有已使用的分支名（去重）。"""
+        key = _storage_key(thread_id, checkpoint_ns)
+        versions = self._versions.get(key, [])
+        return sorted({v.branch for v in versions})
 
     def _trim_versions(self, key: str) -> int:
         """把版本数量收敛到 `_max_versions_per_thread` 内，返回淘汰的最旧版本数。

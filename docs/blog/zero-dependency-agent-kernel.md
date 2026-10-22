@@ -138,7 +138,7 @@ agent = ReActAgent(
 asyncio.run(agent.run("帮我计算 20 + 22", thread_id="demo"))
 ```
 
-完整的单文件示例见 `examples/starter/starter_agent.py`：离线可运行、不需要任何 API Key，依次演示 `run`（阻塞式）、`stream`（流式）和一个 `requires_approval=True` 写工具的审批回调，并演示了如何用 `FileCheckpointer` 把会话状态落盘、跨进程恢复。换真实模型只需把 `DemoModel()` 换成 `create_model_provider(config)`，其余代码零改动。更多示例（自定义模型、持久化工作流）在 `examples/` 目录，系统文档在 `docs/guide/`。
+完整的单文件示例见 `examples/starter/starter_agent.py`：离线可运行、不需要任何 API Key，依次演示 `run`（阻塞式）、`stream`（流式）和一个 `requires_approval=True` 写工具的审批回调，并演示了如何用 `TimeTravelCheckpointer` 把会话状态落盘、跨进程恢复。换真实模型只需把 `DemoModel()` 换成 `create_model_provider(config)`，其余代码零改动。更多示例（自定义模型、持久化工作流）在 `examples/` 目录，系统文档在 `docs/guide/`。
 
 ## 五、当前限制
 

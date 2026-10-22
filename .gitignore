@@ -14,3 +14,8 @@ site/
 *.sqlite
 *.sqlite3
 .venv/*
+
+# pytest 临时目录与示例运行产物
+.tmp/
+examples/starter/.starter_checkpoints/
+pytest-of-TYS/
