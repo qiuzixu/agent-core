@@ -1,14 +1,24 @@
-"""手写 checkpoint 持久化。
+"""Checkpoint 契约层：协议定义 + 内存实现。
 
-功能：
-- 保存和加载会话状态（state）
-- 支持按 thread_id + checkpoint_ns 隔离不同会话/工作流层
-- 简化实现：内存存储 + 可选的 JSON 文件持久化
+本模块是 checkpoint 包的入口契约：
+
+- `Checkpointer` 协议：Agent Loop 所需的最小存储接口（save / load / delete），
+  通过 `checkpoint_ns` 支持 (thread_id, checkpoint_ns) 二级隔离——
+  对话层用空字符串，工作流层用 "workflow:<execution_id>"；
+- `MemoryCheckpointer`：进程内字典实现，每个 (thread_id, ns) 只保留最新快照，
+  无版本历史，进程退出即丢。适用于测试环境（快、隔离）。
+
+后端选择速查（详见 factory.py）：
+- 测试：MemoryCheckpointer（本模块）
+- 开发：SqliteCheckpointer（sqlite.py，落盘 checkpoints.db）
+- 生产：PostgresCheckpointer（postgres.py，多实例共享）
+- 版本历史 / 回滚 / 分支：TimeTravelCheckpointer（travel.py）
 
 包内职责划分：
 - `naming`：文件名清洗与原子写入（无依赖的底层工具）；
-- 本模块（`store`）：当前快照的 `Checkpointer` 协议与内存/文件两个实现；
-- `travel`：`CheckpointVersion` 与时间旅行多版本存储。
+- `store`（本模块）：协议 + 内存当前快照实现；
+- `travel`：CheckpointVersion 与时间旅行多版本存储；
+- `schema`：schema 版本戳与链式迁移。
 """
 
 from __future__ import annotations
@@ -32,6 +42,10 @@ def _storage_key(thread_id: str, checkpoint_ns: str) -> str:
     """把 (thread_id, checkpoint_ns) 组合成内部存储 key。
 
     同一 thread_id 下不同 namespace 的数据互不覆盖。
+
+    分隔符用 NUL（\x00）：假设 thread_id 本身不含控制字符，
+    因此拼接后的 key 可以无歧义地还原出 (thread_id, ns) 二元组。
+    ns 为空（对话层）时直接返回 thread_id，保持与旧版存储兼容。
     """
     if not checkpoint_ns or checkpoint_ns == DEFAULT_CHECKPOINT_NS:
         return thread_id
@@ -98,7 +112,9 @@ class MemoryCheckpointer:
             state: 状态字典。
             checkpoint_ns: checkpoint 命名空间（对话层为空，工作流层为 "workflow:<id>"）。
         """
-        # metadata 由版本型实现使用；内存当前快照保持原有 state 结构不变。
+        # deepcopy 隔离：调用方后续修改 state 不会影响已存快照；
+        # load() 返回的也是副本，避免外部改动破坏内部存储。
+        # metadata 仅供版本型实现使用，内存当前快照只保留 state。
         del metadata
         key = _storage_key(thread_id, checkpoint_ns)
         self._storage[key] = copy.deepcopy(state)

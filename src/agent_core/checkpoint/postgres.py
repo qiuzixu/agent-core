@@ -1,9 +1,11 @@
-"""PostgreSQL checkpointer backend.
+"""PostgreSQL checkpoint 后端（生产环境默认）。
 
-Production-ready checkpoint storage using asyncpg (connection pool).
-Mirrors SqliteCheckpointer interface: save / load / delete /
-list_namespaces / list_versions / prune per (thread_id, checkpoint_ns).
-Requires `asyncpg` package (optional dependency).
+- 与 SqliteCheckpointer 接口逐一对齐：save / load / delete /
+  list_
+- asyncpg 连接池异步访问，多实例部署共享同一张 checkpoints 表；namespaces / list_versions / prune，切换后端不改业务代码；
+- state / metadata 用 JSONB 存储，为未来按内容查询留余地；
+- 可选依赖：需要 pip install agent-core[postgresql]；
+  production 环境未提供 DSN 时工厂函数直接报错（诚实失败，不静默降级）。
 """
 
 from __future__ import annotations
@@ -52,21 +54,27 @@ class PostgresCheckpointer:
     """
 
     def __init__(self, dsn: str) -> None:
+        """保存 DSN 并初始化连接池为 None（需显式调 await initialize()）。"""
         self._dsn = dsn.replace("postgresql+asyncpg://", "postgresql://")
         self._pool: Any = None
 
     async def initialize(self) -> None:
+        """创建连接池并执行建表 DDL。必须在其他操作前调用一次。"""
+
         try:
             import asyncpg
         except ImportError as exc:
             raise ImportError(
                 "PostgresCheckpointer 需要 asyncpg, 请安装: pip install agent-core[postgresql]"
             ) from exc
+        # min=2：常驻连接避免请求冷启动；max=10：防止单实例占满 PG 连接上限。
         self._pool = await asyncpg.create_pool(self._dsn, min_size=2, max_size=10)
         async with self._pool.acquire() as conn:
             await conn.execute(_DDL)
 
     async def close(self) -> None:
+        """关闭连接池，释放资源。关闭后不可再使用。"""
+
         if self._pool:
             await self._pool.close()
             self._pool = None
@@ -83,7 +91,8 @@ class PostgresCheckpointer:
         *,
         checkpoint_ns: str = DEFAULT_CHECKPOINT_NS,
     ) -> str:
-        """保存新版本, 返回版本 ID."""
+        """保存新版本，返回版本 ID。"""
+
         self._check()
         version_id = str(uuid.uuid4())
         now = datetime.now(UTC)
@@ -108,11 +117,11 @@ class PostgresCheckpointer:
                 )
         except Exception as exc:
             raise CheckpointError(
-                f"Failed to save checkpoint for thread {thread_id!r} ns {checkpoint_ns!r}: {exc}"
+                f"保存 checkpoint 失败（thread={thread_id!r} ns={checkpoint_ns!r}）：{exc}"
             ) from exc
 
         logger.debug(
-            "Saved checkpoint %s for thread %r ns %r (schema v%d)",
+            "已保存 checkpoint %s（thread=%r ns=%r，schema v%d）",
             version_id, thread_id, checkpoint_ns, schema_version,
         )
         return version_id
@@ -123,7 +132,8 @@ class PostgresCheckpointer:
         *,
         checkpoint_ns: str = DEFAULT_CHECKPOINT_NS,
     ) -> dict[str, Any] | None:
-        """加载最新版本的 state (带 schema 自动迁移)."""
+        """加载最新版本的 state（带 schema 自动迁移）。"""
+
         self._check()
         try:
             async with self._pool.acquire() as conn:
@@ -136,7 +146,7 @@ class PostgresCheckpointer:
                 )
         except Exception as exc:
             raise CheckpointError(
-                f"Failed to load checkpoint for thread {thread_id!r} ns {checkpoint_ns!r}: {exc}"
+                f"加载 checkpoint 失败（thread={thread_id!r} ns={checkpoint_ns!r}）：{exc}"
             ) from exc
 
         if row is None:
@@ -169,7 +179,7 @@ class PostgresCheckpointer:
                 )
         except Exception as exc:
             raise CheckpointError(
-                f"Failed to delete checkpoint for thread {thread_id!r} ns {checkpoint_ns!r}: {exc}"
+                f"删除 checkpoint 失败（thread={thread_id!r} ns={checkpoint_ns!r}）：{exc}"
             ) from exc
 
     async def list_threads(self) -> list[str]:
@@ -208,7 +218,7 @@ class PostgresCheckpointer:
                 )
         except Exception as exc:
             raise CheckpointError(
-                f"Failed to list versions for thread {thread_id!r} ns {checkpoint_ns!r}: {exc}"
+                f"列出版本失败（thread={thread_id!r} ns={checkpoint_ns!r}）：{exc}"
             ) from exc
         return [
             {
@@ -246,7 +256,7 @@ class PostgresCheckpointer:
                 )
         except Exception as exc:
             raise CheckpointError(
-                f"Failed to prune checkpoints for thread {thread_id!r} ns {checkpoint_ns!r}: {exc}"
+                f"清理 checkpoint 失败（thread={thread_id!r} ns={checkpoint_ns!r}）：{exc}"
             ) from exc
 
         deleted = int(result.split()[-1]) if result else 0

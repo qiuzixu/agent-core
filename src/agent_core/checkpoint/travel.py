@@ -228,7 +228,7 @@ class TimeTravelCheckpointer:
             raise
 
         logger.info(
-            "Saved checkpoint version %s for thread %r ns %r (total versions: %d)",
+            "已保存 checkpoint 版本 %s（thread=%r ns=%r，共 %d 个版本）",
             version_id,
             thread_id,
             checkpoint_ns,
@@ -266,14 +266,14 @@ class TimeTravelCheckpointer:
             for v in versions:
                 if v.version_id == version_id:
                     logger.info(
-                        "Loaded checkpoint version %s for thread %r ns %r",
+                        "已加载 checkpoint 版本 %s（thread=%r ns=%r）",
                         version_id,
                         thread_id,
                         checkpoint_ns,
                     )
                     return _strip_internal_metadata(copy.deepcopy(v.state))
             logger.warning(
-                "Checkpoint version %s not found for thread %r ns %r",
+                "未找到 checkpoint 版本 %s（thread=%r ns=%r）",
                 version_id,
                 thread_id,
                 checkpoint_ns,
@@ -285,7 +285,7 @@ class TimeTravelCheckpointer:
         current_index = max(0, min(current_index, len(versions) - 1))
         latest = versions[current_index]
         logger.info(
-            "Loaded current checkpoint version %s for thread %r ns %r",
+            "已加载当前 checkpoint 版本 %s（thread=%r ns=%r）",
             latest.version_id,
             thread_id,
             checkpoint_ns,
@@ -355,7 +355,7 @@ class TimeTravelCheckpointer:
 
         versions = self._versions.get(key, [])
         if not versions:
-            logger.warning("No versions found for thread %r ns %r", thread_id, checkpoint_ns)
+            logger.warning("未找到任何版本（thread=%r ns=%r）", thread_id, checkpoint_ns)
             return False
 
         # 查找版本索引
@@ -366,7 +366,7 @@ class TimeTravelCheckpointer:
                 # 否则进程重启后会再次指向最新版本。
                 await self._persist_versions(key)
                 logger.info(
-                    "Rolled back to version %s for thread %r ns %r (index: %d)",
+                    "已回滚到版本 %s（thread=%r ns=%r，索引=%d）",
                     version_id,
                     thread_id,
                     checkpoint_ns,
@@ -375,10 +375,7 @@ class TimeTravelCheckpointer:
                 return True
 
         logger.warning(
-            "Version %s not found for thread %r ns %r",
-            version_id,
-            thread_id,
-            checkpoint_ns,
+            "未找到版本 %s（thread=%r ns=%r）", version_id, thread_id, checkpoint_ns,
         )
         return False
 
@@ -418,10 +415,10 @@ class TimeTravelCheckpointer:
                 else:
                     self._current_version.pop(key, None)
                 await self._persist_versions(key)
-                logger.info("Deleted checkpoint version %s for thread %r ns %r", version_id, thread_id, checkpoint_ns)
+                logger.info("已删除 checkpoint 版本 %s（thread=%r ns=%r）", version_id, thread_id, checkpoint_ns)
                 return True
 
-        logger.warning("Version %s not found for thread %r ns %r", version_id, thread_id, checkpoint_ns)
+        logger.warning("未找到版本 %s（thread=%r ns=%r）", version_id, thread_id, checkpoint_ns)
         return False
 
     async def delete(
@@ -544,7 +541,7 @@ class TimeTravelCheckpointer:
             raise
 
         logger.info(
-            "Forked version %s -> branch %r (new version %s) for thread %r ns %r",
+            "已从版本 %s 创建分支 %r（新版本 %s，thread=%r ns=%r）",
             version_id, new_branch, new_version_id, thread_id, checkpoint_ns,
         )
         return new_version_id
@@ -572,7 +569,7 @@ class TimeTravelCheckpointer:
         if current is not None:
             self._current_version[key] = max(current - excess, 0)
         logger.info(
-            "Evicted %d oldest checkpoint versions for key %r (limit: %d)",
+            "已淘汰 %d 个最旧版本（key=%r，上限 %d）",
             excess,
             key,
             self._max_versions_per_thread,
