@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from agent_core.compaction.types import (
     SUMMARY_CLOSE,
@@ -37,6 +38,27 @@ def estimate_message_tokens(message: Message, *, chars_per_token: int = 4) -> in
 def estimate_tokens(messages: list[Message], *, chars_per_token: int = 4) -> int:
     """按字符粗估一组消息的 token 数（用于尾部预算与"是否变小"判断）。"""
     return sum(estimate_message_tokens(m, chars_per_token=chars_per_token) for m in messages)
+
+
+def estimate_input_tokens(
+    messages: list[Message],
+    *,
+    tool_definitions: list[dict[str, Any]] | None = None,
+    chars_per_token: int = 4,
+) -> int:
+    """估算一次模型调用的完整输入 token（消息 + 工具 schema）。
+
+    工具定义本身会随请求一起发送，占用同一个窗口；漏算会系统性
+    低估占用，导致压缩触发过晚。Provider 提供精确 tokenizer 时
+    不应调用本函数，仅在计数不可用时作为兜底。
+    """
+    tokens = estimate_tokens(messages, chars_per_token=chars_per_token)
+    if tool_definitions:
+        tool_chars = sum(
+            len(json.dumps(tool, ensure_ascii=False)) for tool in tool_definitions
+        )
+        tokens += max(tool_chars // chars_per_token, 1)
+    return tokens
 
 
 def balanced_cut(messages: list[Message], proposed_cut: int) -> int:

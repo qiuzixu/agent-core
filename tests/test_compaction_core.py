@@ -32,6 +32,7 @@ from agent_core.compaction.region import (
     CHECKPOINT_PREAMBLE,
     balanced_cut,
     build_checkpoint,
+    estimate_input_tokens,
     estimate_tokens,
     extract_previous_summary,
     rebuild,
@@ -130,6 +131,23 @@ class TestRegionCutting(unittest.TestCase):
         call = {"id": "call-1", "type": "function", "name": "lookup", "args": {"query": "x"}}
         message = assistant_message("", tool_calls=[call])
         self.assertGreater(estimate_tokens([message]), 1)
+
+    def test_estimate_input_tokens_counts_tool_schema(self) -> None:
+        """工具 schema 会随请求发送，估算必须把它计入。"""
+        messages = [system_message("sys"), user_message(_big_text(400))]
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "lookup",
+                    "description": "查询低空场景",
+                    "parameters": {"type": "object", "properties": {"query": {"type": "string"}}},
+                },
+            }
+        ]
+        without_tools = estimate_input_tokens(messages)
+        with_tools = estimate_input_tokens(messages, tool_definitions=tools)
+        self.assertGreater(with_tools, without_tools)
 
 
 class TestPruner(unittest.TestCase):
@@ -448,6 +466,107 @@ class TestCompactionMiddleware(unittest.IsolatedAsyncioTestCase):
         # 重试次数达到上限后不再接管。
         self.assertFalse(await middleware.handle_exception(Exception("prompt is too long"), ctx))
         self.assertFalse(await middleware.handle_exception(Exception("prompt is too long"), ctx))
+
+    # ──────────────────────────────────────────────
+    # 计数兜底与输出预留
+    # ──────────────────────────────────────────────
+
+    async def test_missing_input_tokens_falls_back_to_estimate(self) -> None:
+        """Provider 没有 tokenizer（input_tokens=None）时按字符估算，主动压缩仍能触发。"""
+        model = _FakeModel(reply="## 任务目标\n压缩历史")
+
+        async def no_tokenizer(messages: list[Message], tools: Any = None) -> ContextUsage:
+            del messages, tools
+            return ContextUsage(
+                input_tokens=None,
+                context_window_tokens=WINDOW_TOKENS,
+                exact=False,
+                source="provider_without_tokenizer",
+            )
+
+        middleware = CompactionMiddleware(
+            model,
+            config=CompactionConfig(threshold_ratio=0.5, retain_ratio=0.2),
+            count_tokens=no_tokenizer,
+        )
+        ctx = MiddlewareContext(messages=_long_history_with_tool_output())
+
+        result = await middleware.before_model(ctx)
+
+        self.assertEqual(result.action, MiddlewareAction.MODIFY)
+        self.assertTrue(result.data["compaction"].compacted)
+
+    async def test_estimate_when_unavailable_can_be_disabled(self) -> None:
+        """关闭估算兜底后，精确计数不可用就放行（交给硬截断兜底）。"""
+        model = _FakeModel(reply="## 任务目标\n压缩历史")
+
+        async def no_tokenizer(messages: list[Message], tools: Any = None) -> ContextUsage:
+            del messages, tools
+            return ContextUsage(
+                input_tokens=None,
+                context_window_tokens=WINDOW_TOKENS,
+                exact=False,
+                source="provider_without_tokenizer",
+            )
+
+        middleware = CompactionMiddleware(
+            model,
+            config=CompactionConfig(
+                threshold_ratio=0.5,
+                retain_ratio=0.2,
+                estimate_when_unavailable=False,
+            ),
+            count_tokens=no_tokenizer,
+        )
+        ctx = MiddlewareContext(messages=_long_history_with_tool_output())
+
+        result = await middleware.before_model(ctx)
+
+        self.assertEqual(result.action, MiddlewareAction.CONTINUE)
+        self.assertEqual(model.chat_calls, 0)
+
+    async def test_configured_window_enables_estimation(self) -> None:
+        """Provider 既不给计数也不给窗口时，显式配置窗口仍可启用估算兜底。"""
+        model = _FakeModel(reply="## 任务目标\n压缩历史")
+
+        async def nothing(messages: list[Message], tools: Any = None) -> ContextUsage:
+            del messages, tools
+            return ContextUsage(input_tokens=None, context_window_tokens=None, exact=False, source="unavailable")
+
+        middleware = CompactionMiddleware(
+            model,
+            config=CompactionConfig(threshold_ratio=0.5, retain_ratio=0.2),
+            count_tokens=nothing,
+            context_window_tokens=WINDOW_TOKENS,
+        )
+        ctx = MiddlewareContext(messages=_long_history_with_tool_output())
+
+        result = await middleware.before_model(ctx)
+
+        self.assertEqual(result.action, MiddlewareAction.MODIFY)
+
+    async def test_output_reserve_lowers_effective_window(self) -> None:
+        """输出预留会压缩可用输入窗口，让压缩更早触发。"""
+        model = _FakeModel(reply="## 任务目标\n压缩历史")
+        # 17 条 100 字符消息 ≈ 401 tokens：低于 1000×0.5=500，但高于 (1000-400)×0.5=300。
+        messages = [system_message("sys")]
+        messages.extend(user_message(_big_text(100)) for _ in range(16))
+
+        without_reserve = CompactionMiddleware(
+            model,
+            config=CompactionConfig(threshold_ratio=0.5, retain_ratio=0.2),
+            reserved_output_tokens=0,
+        )
+        first = await without_reserve.before_model(MiddlewareContext(messages=list(messages)))
+        self.assertEqual(first.action, MiddlewareAction.CONTINUE)
+
+        with_reserve = CompactionMiddleware(
+            model,
+            config=CompactionConfig(threshold_ratio=0.5, retain_ratio=0.2),
+            reserved_output_tokens=400,
+        )
+        second = await with_reserve.before_model(MiddlewareContext(messages=list(messages)))
+        self.assertEqual(second.action, MiddlewareAction.MODIFY)
 
 
 if __name__ == "__main__":

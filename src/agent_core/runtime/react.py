@@ -48,7 +48,8 @@ from agent_core.middleware import (
     MiddlewareManager,
     ParallelToolPolicy,
 )
-from agent_core.model import ModelAdapter, StreamChunk
+from agent_core.compaction.region import estimate_input_tokens
+from agent_core.model import ContextUsage, ModelAdapter, StreamChunk
 from agent_core.protocol.messages import (
     Message,
     assistant_message,
@@ -602,6 +603,33 @@ class ReActAgent:
         )
         msgs.append(user_message(user_content))
         return msgs
+
+    async def context_usage(
+        self,
+        user_input: str,
+        *,
+        memory_context: str | None = None,
+    ) -> ContextUsage:
+        """统计下一次模型调用的输入 token 与窗口上限。
+
+        精确优先：Provider 提供 tokenizer 时直接返回其计数。
+        估算兜底：Provider 没有 tokenizer（例如标准 OpenAI 兼容端点）时，
+        按“消息 + 工具 schema”的字符数估算，并用 exact=False 明确标记，
+        供 /context/usage 前端区分“精确值”与“估算值”。
+        """
+        messages = self._build_initial_messages(user_input, memory_context)
+        usage = await self._llm.context_usage(messages, tools=self._tool_definitions)
+        if usage.input_tokens is not None:
+            return usage
+        return ContextUsage(
+            input_tokens=estimate_input_tokens(
+                messages,
+                tool_definitions=self._tool_definitions,
+            ),
+            context_window_tokens=usage.context_window_tokens,
+            exact=False,
+            source=f"{usage.source}+char_estimate",
+        )
 
     @staticmethod
     # 这个方法负责把 JSON 字典恢复为内部消息对象。

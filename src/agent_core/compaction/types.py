@@ -36,6 +36,10 @@ class CompactionConfig:
         enabled: 总开关，关闭后中间件直接放行。
         chars_per_token: 无精确计数时的字符/token 估算比例（用于尾部预算
             与"摘要是否更小"的判断）。
+        reserved_output_tokens: 为本次模型输出预留的 token 数；0 表示自动
+            从模型适配器的 max_tokens 读取（窗口按输入+输出共享）。
+        estimate_when_unavailable: 精确计数不可用时是否回退到字符估算；
+            关闭后只能依赖模型侧的"上下文超长"报错兜底。
     """
 
     threshold_ratio: float = 0.75
@@ -45,6 +49,21 @@ class CompactionConfig:
     max_overflow_retries: int = 1
     enabled: bool = True
     chars_per_token: int = 4
+    reserved_output_tokens: int = 0
+    """为模型输出预留的 token 数。
+
+    窗口按“输入 + 输出”共享计算：请求里还要放本次生成的内容，
+    因此可用输入上限是“窗口 - 预留输出”。设为 0 表示自动从模型
+    适配器的 max_tokens 读取；读取不到则按 0 处理。
+    """
+    estimate_when_unavailable: bool = True
+    """精确计数不可用时是否回退到字符估算。
+
+    Provider 没有 tokenizer 接口（例如标准 OpenAI 兼容端点）时，
+    context_usage 会返回 input_tokens=None。开启后按
+    “字符数 / chars_per_token”粗估，保证主动压缩仍能触发；
+    关闭则只能依赖模型侧的“上下文超长”报错兜底。
+    """
 
     def __post_init__(self) -> None:
         if not 0 < self.threshold_ratio <= 1:
@@ -62,6 +81,8 @@ class CompactionConfig:
             raise ValueError("compaction max_overflow_retries 不能为负数")
         if self.chars_per_token <= 0:
             raise ValueError("compaction chars_per_token 必须为正整数")
+        if self.reserved_output_tokens < 0:
+            raise ValueError("compaction reserved_output_tokens 不能为负数")
 
 
 @dataclass

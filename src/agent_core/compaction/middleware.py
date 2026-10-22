@@ -31,6 +31,7 @@ from agent_core.compaction.pruner import (
 from agent_core.compaction.region import (
     balanced_cut,
     build_checkpoint,
+    estimate_input_tokens,
     estimate_tokens,
     extract_previous_summary,
     rebuild,
@@ -105,6 +106,8 @@ class CompactionMiddleware(Middleware):
         llm: ModelAdapter,
         *,
         config: CompactionConfig | None = None,
+        context_window_tokens: int | None = None,
+        reserved_output_tokens: int | None = None,
         tool_definitions: list[dict[str, Any]] | None = None,
         count_tokens: CountTokens | None = None,
         summarizer: ModelAdapter | None = None,
@@ -115,6 +118,11 @@ class CompactionMiddleware(Middleware):
         summary_sections: tuple[str, ...] = DEFAULT_SUMMARY_SECTIONS,
     ) -> None:
         self._config = config or CompactionConfig()
+        self._llm = llm
+        # 窗口兜底：Provider 不给窗口时（或在单测里），用显式配置的窗口
+        self._configured_window = context_window_tokens
+        # 输出预留兜底：None 表示自动从模型适配器读取 max_tokens
+        self._explicit_reserved = reserved_output_tokens
         self._tool_definitions = tool_definitions
         self._count_tokens: CountTokens = count_tokens or llm.context_usage
         self._summarizer = summarizer or llm
@@ -127,6 +135,38 @@ class CompactionMiddleware(Middleware):
         self._last_window: int | None = None
 
     # ──────────────────────────────────────────────
+    # 窗口与输出预留
+    # ──────────────────────────────────────────────
+
+    def _output_reserve(self) -> int:
+        """返回为模型输出预留的 token 数。
+
+        优先级：构造参数 > CompactionConfig 字段 > 模型适配器的 max_tokens。
+        窗口是“输入 + 输出”共享的，预留输出后才是真正的可用输入上限。
+        """
+        if self._explicit_reserved is not None:
+            return max(self._explicit_reserved, 0)
+        if self._config.reserved_output_tokens > 0:
+            return self._config.reserved_output_tokens
+        for attr in ("max_tokens", "_max_tokens"):
+            value = getattr(self._llm, attr, None)
+            if isinstance(value, int) and value > 0:
+                return value
+        return 0
+
+    def _effective_window(self, window: int) -> int:
+        """可用输入窗口 = 模型窗口 - 输出预留，至少保留 1。"""
+        return max(window - self._output_reserve(), 1)
+
+    def _estimate_input_tokens(self, messages: list[Message]) -> int:
+        """按字符估算输入占用（含工具 schema），用于精确计数不可用时兜底。"""
+        return estimate_input_tokens(
+            messages,
+            tool_definitions=self._tool_definitions,
+            chars_per_token=self._config.chars_per_token,
+        )
+
+    # ──────────────────────────────────────────────
     # 入口
     # ──────────────────────────────────────────────
 
@@ -136,14 +176,28 @@ class CompactionMiddleware(Middleware):
             return MiddlewareResult(action=MiddlewareAction.CONTINUE)
 
         usage = await self._safe_measure(context.messages)
-        if usage is None or not usage.input_tokens or not usage.context_window_tokens:
-            # 没有真实占用/窗口信息就无法判断压力，交给兜底中间件
+        window = (
+            (usage.context_window_tokens if usage is not None else None)
+            or self._configured_window
+            or self._last_window
+        )
+        if not window:
+            # 窗口未知时无法判断压力；配置 context_window_tokens 可让估算兜底生效
             return MiddlewareResult(action=MiddlewareAction.CONTINUE)
 
-        window = usage.context_window_tokens
         self._last_window = window
-        before_tokens = usage.input_tokens
-        ratio = before_tokens / window
+        measured = usage.input_tokens if usage is not None else None
+        estimated = measured is None
+        if measured is not None:
+            before_tokens = measured
+        elif config.estimate_when_unavailable:
+            # Provider 没有 tokenizer 时按字符估算，避免主动压缩永远不触发
+            before_tokens = self._estimate_input_tokens(context.messages)
+        else:
+            return MiddlewareResult(action=MiddlewareAction.CONTINUE)
+
+        effective_window = self._effective_window(window)
+        ratio = before_tokens / effective_window
         if ratio < config.threshold_ratio:
             return MiddlewareResult(action=MiddlewareAction.CONTINUE)
 
@@ -152,7 +206,9 @@ class CompactionMiddleware(Middleware):
             "compaction_started",
             before_tokens=before_tokens,
             window=window,
+            effective_window=effective_window,
             ratio=round(ratio, 4),
+            estimated=estimated,
         )
 
         try:
@@ -177,7 +233,7 @@ class CompactionMiddleware(Middleware):
             result.cut,
             result.before_tokens,
             result.after_tokens,
-            result.after_tokens / window * 100,
+            result.after_tokens / effective_window * 100,
             result.reason,
         )
         self._emit(
@@ -186,7 +242,7 @@ class CompactionMiddleware(Middleware):
             before_tokens=result.before_tokens,
             after_tokens=result.after_tokens,
             cut=result.cut,
-            ratio=round(result.after_tokens / window, 4),
+            ratio=round(result.after_tokens / effective_window, 4),
         )
 
         context.messages = result.messages
@@ -222,24 +278,26 @@ class CompactionMiddleware(Middleware):
         ctx.metadata[OVERFLOW_RETRY_KEY] = attempts + 1
 
         usage = await self._safe_measure(ctx.messages)
-        window = None
-        before_tokens = 0
-        if usage is not None:
-            window = usage.context_window_tokens
-            before_tokens = usage.input_tokens or 0
-        window = window or self._last_window
+        window = (
+            (usage.context_window_tokens if usage is not None else None)
+            or self._configured_window
+            or self._last_window
+        )
+        before_tokens = (usage.input_tokens or 0) if usage is not None else 0
         if not window:
             logger.warning("[Compaction] 无窗口信息，无法处理上下文超长错误")
             return False
         if not before_tokens:
-            before_tokens = estimate_tokens(ctx.messages, chars_per_token=config.chars_per_token)
+            before_tokens = self._estimate_input_tokens(ctx.messages)
 
+        effective_window = self._effective_window(window)
         self._emit(
             ctx,
             "compaction_started",
             before_tokens=before_tokens,
             window=window,
-            ratio=round(before_tokens / window, 4),
+            effective_window=effective_window,
+            ratio=round(before_tokens / effective_window, 4),
             forced=True,
         )
         try:
@@ -268,7 +326,7 @@ class CompactionMiddleware(Middleware):
             before_tokens=result.before_tokens,
             after_tokens=result.after_tokens,
             cut=result.cut,
-            ratio=round(result.after_tokens / window, 4),
+            ratio=round(result.after_tokens / effective_window, 4),
             forced=True,
         )
         return True
@@ -293,8 +351,9 @@ class CompactionMiddleware(Middleware):
             CompactionError: 摘要失败 / 结构不合规，由调用方降级处理。
         """
         config = self._config
-        threshold_tokens = int(window * config.threshold_ratio)
-        retain_tokens = int(window * config.retain_ratio)
+        effective_window = self._effective_window(window)
+        threshold_tokens = int(effective_window * config.threshold_ratio)
+        retain_tokens = int(effective_window * config.retain_ratio)
 
         # 1. 瘦身：只截断 role == "tool" 的超长输出，不改语义
         pruned, pruned_count = prune_tool_results(

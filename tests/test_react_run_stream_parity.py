@@ -206,5 +206,42 @@ class TestRunStreamCheckpointParity(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stream_context.checkpoint["tool_calls_used"], 1)
 
 
+
+class _NoTokenizerModel(_ScriptedModel):
+    """模拟没有 tokenizer 接口的 Provider：精确计数恒为 None。"""
+
+    async def context_usage(self, messages: list[Message], **kwargs: Any) -> Any:
+        del messages, kwargs
+        from agent_core.model import ContextUsage
+
+        return ContextUsage(
+            input_tokens=None,
+            context_window_tokens=1000,
+            exact=False,
+            source="unavailable",
+        )
+
+
+class TestContextUsage(unittest.IsolatedAsyncioTestCase):
+    """context_usage 的精确优先 + 估算兜底。"""
+
+    async def test_estimation_fallback_when_provider_has_no_tokenizer(self) -> None:
+        agent = ReActAgent(
+            _NoTokenizerModel([]),
+            ToolExecutor(_make_registry()),
+            system_prompt="测试助手",
+            tool_definitions=_make_registry().build_tool_definitions(),
+        )
+
+        usage = await agent.context_usage("查询机场")
+
+        # 估算值参与展示，但 exact 必须为 False，source 标明来源。
+        self.assertIsNotNone(usage.input_tokens)
+        self.assertGreater(usage.input_tokens or 0, 0)
+        self.assertFalse(usage.exact)
+        self.assertIn("char_estimate", usage.source)
+        self.assertEqual(usage.context_window_tokens, 1000)
+
+
 if __name__ == "__main__":
     unittest.main()
