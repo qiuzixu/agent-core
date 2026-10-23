@@ -4,6 +4,7 @@
 """
 
 from __future__ import annotations
+import inspect
 
 from typing import Any
 
@@ -33,10 +34,20 @@ async def trace_tree(checkpointer: Checkpointer, thread_id: str) -> dict[str, An
     if list_namespaces is None or list_versions is None:
         return {"thread_id": thread_id, "namespaces": {}, "error": "checkpointer 不支持 namespace 查询"}
 
-    namespaces_raw = list_namespaces(thread_id)
+    namespaces_outcome = list_namespaces(thread_id)
+    # 内置实现里 list_namespaces 有同步（memory/sqlite）与异步（postgres）两种，
+    # 统一用 isawaitable 收窄，两种协议实现都兼容。
+    namespaces_raw = (
+        await namespaces_outcome
+        if inspect.isawaitable(namespaces_outcome)
+        else list(namespaces_outcome)
+    )
     result: dict[str, Any] = {}
     for ns in namespaces_raw:
-        versions = await list_versions(thread_id, checkpoint_ns=ns)
+        versions_outcome = list_versions(thread_id, checkpoint_ns=ns)
+        if not inspect.isawaitable(versions_outcome):
+            raise TypeError("checkpointer.list_versions 必须返回可等待结果")
+        versions = await versions_outcome
         latest = versions[-1] if versions else None
         result[ns or DEFAULT_CHECKPOINT_NS] = {
             "versions": len(versions),

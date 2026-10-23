@@ -5,6 +5,7 @@ Runtime 负责运行实例和生命周期，业务编排仍由调用方注入到
 """
 
 from __future__ import annotations
+import inspect
 
 import asyncio
 import logging
@@ -294,7 +295,10 @@ class AgentRuntime:
         list_by_status = getattr(self._run_store, "list_runs_by_status", None)
         if not callable(list_by_status):
             return []
-        candidates = await list_by_status("waiting_retry")
+        candidates_outcome = list_by_status("waiting_retry")
+        if not inspect.isawaitable(candidates_outcome):
+            raise TypeError("RunStore.list_runs_by_status 必须返回可等待结果")
+        candidates = await candidates_outcome
         resumed: list[RuntimeRun] = []
         for context in candidates:
             if len(resumed) >= limit:

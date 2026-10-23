@@ -20,6 +20,7 @@
 """
 
 from __future__ import annotations
+import inspect
 
 import asyncio
 import logging
@@ -127,7 +128,10 @@ class MiddlewareManager:
             handler = getattr(mw, "handle_exception", None)
             if handler is None:
                 continue
-            if await handler(exc, ctx):
+            outcome = handler(exc, ctx)
+            if not inspect.isawaitable(outcome):
+                raise TypeError("Middleware.handle_exception 必须返回可等待结果")
+            if await outcome:
                 return True
         return False
 
@@ -136,7 +140,13 @@ class MiddlewareManager:
         for mw in self._middlewares:
             logger.debug("中间件 %s.%s", mw.name, hook)
             previous_messages = ctx.messages
-            result: MiddlewareResult = await getattr(mw, hook)(ctx)
+            hook_call = getattr(mw, hook, None)
+            if not callable(hook_call):
+                raise TypeError(f"Middleware 未实现 {hook}()")
+            hook_outcome = hook_call(ctx)
+            if not inspect.isawaitable(hook_outcome):
+                raise TypeError(f"Middleware.{hook} 必须返回可等待结果")
+            result: MiddlewareResult = await hook_outcome
             if result.action == MiddlewareAction.MODIFY:
                 # MODIFY 有两种合法写法：替换 ctx 字段（推荐），或在 data 中携带修改。
                 # 此处对账：本轮替换了 ctx.messages 时以 ctx 为准，防止 data 携带的

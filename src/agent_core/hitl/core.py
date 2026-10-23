@@ -4,6 +4,7 @@ Core 只负责审批状态机和异步等待，不负责 HTTP 路由、认证或
 """
 
 from __future__ import annotations
+import inspect
 
 import asyncio
 import logging
@@ -408,8 +409,11 @@ class ApprovalQueue:
         if self._approval_store is None:
             return False
         transition = getattr(self._approval_store, "transition_approval", None)
-        if transition is not None:
-            return bool(await transition(record, expected_status="pending"))
+        if callable(transition):
+            outcome = transition(record, expected_status="pending")
+            if not inspect.isawaitable(outcome):
+                raise TypeError("ApprovalStore.transition_approval 必须返回可等待结果")
+            return bool(await outcome)
         current = await self._approval_store.load_approval(record.approval_id)
         if current is None or current.status != "pending":
             return False

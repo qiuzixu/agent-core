@@ -143,9 +143,13 @@ class ToolExecutor:
         registry: ToolRegistry,
         *,
         approval_callback: Callable[[ToolSpec, dict[str, Any]], Awaitable[bool]] | None = None,
+        max_concurrent: int = 5,
     ) -> None:
         self._registry = registry
         self._approval_callback = approval_callback
+        self._semaphore = asyncio.Semaphore(max(1, max_concurrent))
+        # 工具使用统计：{tool_name: {"calls": int, "successes": int, "failures": int, "total_seconds": float}}
+        self._usage_stats: dict[str, dict[str, Any]] = {}
 
     def spec_for(self, tool_name: str) -> ToolSpec | None:
         """返回工具元数据，供 Agent Loop 做优先级调度。"""
@@ -253,6 +257,8 @@ class ToolExecutor:
                             error_kind="approval",
                         )
 
+        import time
+        _start_time = time.monotonic()
         try:
             logger.debug("Executing tool: %r with args: %s", tool_name, arguments)
 
@@ -267,6 +273,7 @@ class ToolExecutor:
             else:
                 result = await invoke()
 
+            self._record_usage(tool_name, time.monotonic() - _start_time, success=True)
             if isinstance(result, ToolResult):
                 result.tool_name = tool_name
                 if not result.success and not result.error_kind:
@@ -275,6 +282,7 @@ class ToolExecutor:
             return ToolResult(tool_name=tool_name, success=True, value=result)
 
         except TimeoutError:
+            self._record_usage(tool_name, time.monotonic() - _start_time, success=False)
             logger.warning("Tool %r timed out", tool_name)
             return ToolResult(
                 tool_name=tool_name,
@@ -284,6 +292,7 @@ class ToolExecutor:
                 retryable=True,
             )
         except Exception as exc:
+            self._record_usage(tool_name, time.monotonic() - _start_time, success=False)
             logger.warning("Tool %r raised exception: %s", tool_name, exc, exc_info=True)
             return ToolResult(
                 tool_name=tool_name,
@@ -321,6 +330,22 @@ class ToolExecutor:
                 return f"参数 {name} 必须是对象"
         return None
 
+    def _record_usage(self, tool_name: str, elapsed_seconds: float, *, success: bool) -> None:
+        """\u8bb0\u5f55\u5de5\u5177\u8c03\u7528\u7edf\u8ba1\u3002"""
+        stats = self._usage_stats.setdefault(
+            tool_name, {"calls": 0, "successes": 0, "failures": 0, "total_seconds": 0.0}
+        )
+        stats["calls"] += 1
+        if success:
+            stats["successes"] += 1
+        else:
+            stats["failures"] += 1
+        stats["total_seconds"] += elapsed_seconds
+
+    def get_usage_stats(self) -> dict[str, dict[str, Any]]:
+        """\u8fd4\u56de\u5de5\u5177\u4f7f\u7528\u7edf\u8ba1\u5feb\u7167\u3002"""
+        return {name: dict(stats) for name, stats in self._usage_stats.items()}
+
     async def execute_batch(
         self,
         tool_calls: list[dict[str, Any]],
@@ -333,5 +358,9 @@ class ToolExecutor:
         Returns:
             工具执行结果列表（与 tool_calls 顺序对应）。
         """
-        tasks = [self.execute(tc["name"], tc.get("args", {})) for tc in tool_calls]
+        async def _limited_execute(call: dict[str, Any]) -> str:
+            async with self._semaphore:
+                return await self.execute(call["name"], call.get("args", {}))
+
+        tasks = [_limited_execute(tc) for tc in tool_calls]
         return await asyncio.gather(*tasks)

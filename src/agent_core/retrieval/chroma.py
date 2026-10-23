@@ -65,7 +65,7 @@ class ChromaVectorStore(VectorStore):
         if not self._owns_client:
             return
         close = getattr(self._client, "close", None)
-        if close is not None:
+        if callable(close):
             await asyncio.to_thread(close)
         self._owns_client = False
 

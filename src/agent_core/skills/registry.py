@@ -149,6 +149,41 @@ class SkillRegistry:
             tool_definitions=definitions,
         )
 
+    def check_for_changes(self) -> list[str]:
+        """\u68c0\u67e5\u5df2\u6ce8\u518c Skill \u7684\u6e90\u6587\u4ef6\u662f\u5426\u6709\u53d8\u5316\u3002
+
+        \u8fd4\u56de\u9700\u8981\u91cd\u65b0\u52a0\u8f7d\u7684 Skill \u540d\u79f0\u5217\u8868\u3002
+        \u901a\u8fc7\u6bd4\u8f83 manifest \u6587\u4ef6\u7684 mtime \u5b9e\u73b0\u8f6e\u8be2\u5f0f\u70ed\u91cd\u8f7d\u3002
+        """
+        changed: list[str] = []
+        for name, skill in self._skills.items():
+            if skill.source is None or not skill.source.is_file():
+                continue
+            current_mtime = skill.source.stat().st_mtime
+            cached = getattr(self, "_mtimes", {})
+            if name in cached and cached[name] != current_mtime:
+                changed.append(name)
+            cached[name] = current_mtime
+        if not hasattr(self, "_mtimes"):
+            self._mtimes = {name: (skill.source.stat().st_mtime if skill.source and skill.source.is_file() else 0) for name, skill in self._skills.items()}
+        return changed
+
+    def reload_changed(self, *, tool_registry: ToolRegistry | None = None, **kwargs: object) -> list[str]:
+        """\u91cd\u65b0\u52a0\u8f7d\u5df2\u53d8\u5316\u7684 Skill\uff0c\u8fd4\u56de\u91cd\u65b0\u52a0\u8f7d\u7684\u540d\u79f0\u5217\u8868\u3002"""
+        changed = self.check_for_changes()
+        reloaded: list[str] = []
+        for name in changed:
+            skill = self._skills.get(name)
+            if skill is None or skill.source is None:
+                continue
+            try:
+                self._skills.pop(name, None)
+                self.load(skill.source)
+                reloaded.append(name)
+            except Exception:
+                pass
+        return reloaded
+
     def _select(self, names: str | Iterable[str] | None) -> tuple[SkillSpec, ...]:
         if names is None:
             selected_names = list(self.names())
