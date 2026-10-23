@@ -37,6 +37,8 @@ class McpToolCaller(Protocol):
 
     async def list_tools(self) -> list[str]: ...
 
+    async def list_tool_definitions(self) -> list[JsonObject]: ...
+
     async def call_tool(self, name: str, arguments: Mapping[str, object] | None = None) -> JsonObject: ...
 
 
@@ -98,6 +100,27 @@ class McpToolClient:
         except Exception as exc:
             raise McpToolError(f"MCP tools/list 调用失败：{exc}") from exc
         return [str(tool.name) for tool in result.tools]
+
+    async def list_tool_definitions(self) -> list[JsonObject]:
+        """列出 MCP 服务的完整工具定义（含 inputSchema），供自动注册使用。"""
+        session = await self._require_session()
+        try:
+            async with asyncio.timeout(self._timeout_seconds):
+                result = await session.list_tools()  # type: ignore[attr-defined]
+        except TimeoutError as exc:
+            raise McpTimeoutError("MCP tools/list 超时") from exc
+        except Exception as exc:
+            raise McpToolError(f"MCP tools/list 调用失败：{exc}") from exc
+        definitions: list[JsonObject] = []
+        for tool in result.tools:
+            definitions.append({
+                "name": str(tool.name),
+                "description": getattr(tool, "description", None) or "",
+                "inputSchema": getattr(tool, "inputSchema", None) or {
+                    "type": "object", "properties": {}, "required": []
+                },
+            })
+        return definitions
 
     async def call_tool(self, name: str, arguments: Mapping[str, object] | None = None) -> JsonObject:
         """调用 MCP 工具并要求其返回结构化对象。"""

@@ -167,12 +167,15 @@ async def chat_structured[T](
         *(message for message in messages if message.role != "system"),
     ]
     last_error: ModelOutputValidationError | None = None
+    use_native_json = bool(getattr(model, "supports_native_json", False))
     for attempt in range(1, spec.max_retries + 2):
         kwargs: dict[str, Any] = {"tools": tools}
         if temperature is not None:
             kwargs["temperature"] = temperature
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens
+        if use_native_json:
+            kwargs["json_mode"] = True
         raw = await model.chat(working, **kwargs)
         try:
             value = parse_structured_output(raw, spec)

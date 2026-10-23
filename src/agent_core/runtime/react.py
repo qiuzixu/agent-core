@@ -58,6 +58,7 @@ from agent_core.protocol.messages import (
     user_message,
 )
 from agent_core.protocol.runtime import RunContext, RunStatus
+from agent_core.runtime.state import transition_run_status
 from agent_core.tools import ToolExecutor, ToolResult
 
 logger = logging.getLogger(__name__)
@@ -182,7 +183,9 @@ class ReActAgent:
                 if event.answer is not None:
                     answer = event.answer
         except asyncio.CancelledError:
-            await self._finish_run(runtime_context, "cancelled", "run_cancelled")
+            # 租约丢失引发的取消由 Runtime 收口为 interrupted，Agent 不抢落终态。
+            if not runtime_context.metadata.get("_lease_lost", False):
+                await self._finish_run(runtime_context, "cancelled", "run_cancelled")
             raise
         except Exception as exc:
             await self._finish_run(
@@ -236,7 +239,9 @@ class ReActAgent:
                 if event.text_delta:
                     yield event.text_delta
         except (asyncio.CancelledError, GeneratorExit):
-            await self._finish_run(runtime_context, "cancelled", "run_cancelled")
+            # 流式取消同理：lease_lost 标记存在时不抢先保存 cancelled。
+            if not runtime_context.metadata.get("_lease_lost", False):
+                await self._finish_run(runtime_context, "cancelled", "run_cancelled")
             raise
         except Exception as exc:
             await self._finish_run(
@@ -280,7 +285,8 @@ class ReActAgent:
             runtime_context.checkpoint = checkpoint_state
         return runtime_context
 
-    # TODO(debug): breakpoint suggestion #5 - _iterate: ReAct per-iteration loop (msg build -> middleware -> LLM -> tool exec -> checkpoint).
+    # 主循环：消息构造 -> checkpoint 恢复 -> before_model -> LLM -> after_model
+    # -> 工具执行 -> checkpoint 保存 -> 下一轮模型调用。
     async def _iterate(
         self,
         mode: _LoopMode,
@@ -301,30 +307,34 @@ class ReActAgent:
         Yields:
             ``_LoopEvent``：text_delta 为流式文本增量，answer 为最终回答。
         """
+        # 1. 恢复或新建消息历史。
+        #    有 checkpoint.messages 时继续使用完整历史；否则由 system + memory + 用户输入构造。
         checkpoint = checkpoint_state or {}
         messages = (
             self._messages_from_checkpoint(checkpoint)
             if checkpoint.get("messages")
             else self._build_initial_messages(user_input, memory_context)
         )
-        # 3.2 初始化运行变量
+        # 2. 初始化恢复所需的运行变量。
+        #    last_answer 只保留最近一次有效文本；metadata 会透传给中间件。
         last_answer = str(checkpoint.get("last_answer", ""))
         metadata = self._runtime_metadata(run_context, dict(run_metadata or {}))
-        run_context.status = "running"
+        transition_run_status(run_context, "running")
         # 恢复执行时沿用已有上下文的会话 ID，避免快照落到默认会话；
         # 流式与普通执行使用同一套会话隔离规则。
         checkpoint_thread = thread_id or run_context.thread_id
 
+        # 3. 已完成快照不用重跑，直接返回最终回答。
         if checkpoint.get("phase") == "completed":
             if last_answer:
                 yield _LoopEvent(answer=last_answer)
                 return
             raise ModelOutputValidationError("completed checkpoint 缺少最终回答")
 
-        # 4. checkpoint 恢复阶段
+        # 4. 断点恢复阶段：优先重放上次还没执行完的工具。
+        #    phase=execute_tools 表示 LLM 已产出工具调用，但部分工具尚未完成。
         start_iteration = int(checkpoint.get("next_iteration", checkpoint.get("iteration", 0)))
         pending_tool_calls = checkpoint.get("pending_tool_calls")
-        # 4.1 如果上次停在工具执行前，于是构造一个 middleware 上下文：
         if checkpoint.get("phase") == "execute_tools" and isinstance(pending_tool_calls, list):
             restore_ctx = MiddlewareContext(
                 messages=messages,
@@ -348,10 +358,10 @@ class ReActAgent:
                 pending_tool_calls=[],
             )
 
+        # 5. 普通主循环：最多 max_iterations 轮；每轮都可能“模型回答”或“模型调工具”。
         tool_calls_used = int(checkpoint.get("tool_calls_used", 0))
-        # 5. Agent 主循环
         for iteration in range(start_iteration, self._max_iterations):
-            # 5.1 设置当前轮次
+            # 每轮使用独立 MiddlewareContext，避免上一轮的临时状态泄漏到下一轮。
             run_context.iteration = iteration
             ctx = MiddlewareContext(
                 messages=messages,
@@ -360,7 +370,7 @@ class ReActAgent:
                 emit=run_context.emit,
             )
 
-            # before_model
+            # 5.1 before_model：中间件可以拦截请求，或压缩/改写消息历史。
             mw_result = await self._middleware_manager.execute_before_model(ctx)
             if mw_result.action == MiddlewareAction.STOP:
                 raise ModelOutputValidationError(
@@ -369,7 +379,7 @@ class ReActAgent:
             if mw_result.action == MiddlewareAction.MODIFY:
                 messages = mw_result.data.get("messages", messages)
 
-            # ── 策略点：一轮模型调用 ──────────────────────
+            # 5.2 策略点：一轮模型调用。
             # 非流式：llm.chat 返回完整响应；流式：消费 stream_chat，
             # 文本增量逐块转发给调用方，tool_calls 增量按 ID 归并。
             response: Message | None = None
@@ -383,9 +393,10 @@ class ReActAgent:
                     yield _LoopEvent(text_delta=item.text)
             assert response is not None
 
-            # 7. 保存模型响应
+            # 5.3 保存模型响应。
             messages.append(response)
-            # 这一步非常关键，因为下一轮调用模型时，模型必须知道自己上一轮说了什么。
+            # 这一步非常关键：下一轮模型必须看到自己上一轮说的话和工具调用，
+            # 否则 tool_calls 与后续 tool_message 会失去配对关系。
             run_context.emit(
                 "model_finished",
                 iteration=iteration,
@@ -393,7 +404,7 @@ class ReActAgent:
             )
             ctx.llm_response = response
 
-            # after_model
+            # 5.4 after_model：中间件可校验、改写、要求重试或阻断模型输出。
             mw_result = await self._middleware_manager.execute_after_model(ctx)
             if mw_result.action == MiddlewareAction.RETRY:
                 messages.pop()
@@ -409,6 +420,7 @@ class ReActAgent:
             if response.content:
                 last_answer = response.content
 
+            # 5.5 全局工具预算守卫：防止模型在多轮循环中耗尽外部资源。
             next_tool_calls_used = tool_calls_used + len(response.tool_calls)
             if next_tool_calls_used > self._max_tool_calls:
                 raise ModelOutputValidationError(
@@ -428,6 +440,7 @@ class ReActAgent:
                 metadata={**metadata, "iteration": iteration, "answer_preview": last_answer[:80]},
             )
 
+            # 5.6 没有工具调用时，本轮文本就是最终答案。
             if not response.tool_calls:
                 if not response.content:
                     raise ModelOutputValidationError(mode.empty_final_error)
@@ -437,7 +450,7 @@ class ReActAgent:
             tool_calls_used = next_tool_calls_used
             run_context.tool_calls_used = tool_calls_used
 
-            # 死循环守卫：必须放在工具真正执行前，避免继续产生副作用。
+            # 5.7 死循环守卫：必须放在工具真正执行前，避免继续产生副作用。
             self._assert_no_tool_loop(messages, run_context)
 
             if mode.streaming:
@@ -467,6 +480,7 @@ class ReActAgent:
                 f"ReAct agent 达到最大迭代次数（{self._max_iterations}），尚未生成不含工具调用的最终回答。"
             )
 
+        # 6. 循环正常结束时，必须有可返回的最终回答。
         if not last_answer:
             raise ModelOutputValidationError(mode.missing_answer_error)
 
@@ -531,6 +545,7 @@ class ReActAgent:
         """
         text_parts: list[str] = []
         tool_calls_by_key: dict[str, dict[str, Any]] = {}
+        # 同一轮内允许中间件决定重试；每次重试都重新收集本轮增量。
         while True:
             text_parts.clear()
             tool_calls_by_key.clear()
@@ -539,10 +554,12 @@ class ReActAgent:
                     messages,
                     tools=self._tool_definitions or None,
                 ):
+                    # 文本增量立即向上游转发，调用方可以转成 SSE/WebSocket。
                     if chunk.text:
                         text_parts.append(chunk.text)
                         yield chunk
 
+                    # 工具调用增量不是一次到达；必须按 ID/位置归并成完整调用。
                     if chunk.is_tool_call and chunk.tool_calls:
                         for call_index, tool_call in enumerate(chunk.tool_calls):
                             key = str(tool_call.get("id") or f"index:{call_index}")
@@ -569,7 +586,7 @@ class ReActAgent:
                 raise mode.invocation_error(iteration, exc) from exc
             break
 
-        # 组装 assistant message
+        # 把所有流式增量组装成一条 assistant 消息，供后续循环/持久化使用。
         yield assistant_message("".join(text_parts), tool_calls=list(tool_calls_by_key.values()))
 
     # ──────────────────────────────────────────────
@@ -632,13 +649,14 @@ class ReActAgent:
         )
 
     @staticmethod
-    # 这个方法负责把 JSON 字典恢复为内部消息对象。
     def _messages_from_checkpoint(state: dict[str, Any]) -> list[Message]:
         """从 checkpoint 恢复内部消息，兼容 OpenAI tool-call 格式。"""
         messages: list[Message] = []
+        # checkpoint 里存的是 message.to_dict()；这里反向恢复为内部 Message 对象。
         for item in state.get("messages", []):
             if not isinstance(item, dict):
                 continue
+            # 兼容两种历史格式：新的 Core 扁平格式和旧的 OpenAI function.call 格式。
             tool_calls: list[dict[str, Any]] = []
             for call in item.get("tool_calls", []) or []:
                 if not isinstance(call, dict):
@@ -688,6 +706,8 @@ class ReActAgent:
         metadata: dict[str, Any] | None = None,
     ) -> None:
         """保存可恢复的完整循环状态，并通知 RuntimeStore。"""
+        # 快照完整保存：消息、下一轮起点、阶段、未完成工具、预算和业务 state。
+        # phase 含义：execute_tools=挂起等待工具执行；model=下一轮从 LLM 开始；completed=结束。
         state = {
             "messages": [message.to_dict() for message in messages],
             "iteration": iteration,
@@ -780,7 +800,7 @@ class ReActAgent:
             "next_retry_at": next_retry_at,
             "metadata": dict(result.metadata),
         }
-        runtime_context.status = "waiting_retry"
+        transition_run_status(runtime_context, "waiting_retry")
         runtime_context.emit(
             "run_waiting_retry",
             tool_name=str(tool_call.get("name", "")),
@@ -806,7 +826,7 @@ class ReActAgent:
             # 业务级挂起是可恢复状态，不应被普通终态覆盖。
             return
         if runtime_context.status != status:
-            runtime_context.status = status
+            transition_run_status(runtime_context, status)
             runtime_context.emit(event_type, **payload)
 
         callback = runtime_context.checkpoint_callback
@@ -834,11 +854,13 @@ class ReActAgent:
     ) -> list[Message]:
         """按优先级分批执行工具；高优先级失败会阻断更低优先级工具。"""
 
+        # 并发工具的执行结果必须按原始调用顺序回填，不能按完成先后顺序回填。
         success_by_index: dict[int, bool] = {}
         ordered_results: dict[int, Message] = {}
         completed_indices: set[int] = set()
         progress_messages: list[Message] = []
 
+        # 单个工具的完整执行链：事件 -> before_tool -> 执行 -> after_tool。
         async def execute_one(index: int, tc: dict[str, Any]) -> Message:
             tool_ctx = MiddlewareContext(
                 messages=list(messages),
@@ -898,6 +920,7 @@ class ReActAgent:
                 name=tc["name"],
             )
 
+        # 工具异常不直接打断整批并发；转成失败 tool_message 让模型看到错误。
         async def execute_indexed(index: int, tool_call: dict[str, Any]) -> tuple[int, Message]:
             try:
                 return index, await execute_one(index, tool_call)
@@ -924,6 +947,7 @@ class ReActAgent:
                     )
                 return index, outcome
 
+        # 一个可并发批次；每个子批次完成后立即持久化未完成工具，便于断点恢复。
         async def run_batch(batch: list[tuple[int, dict[str, Any]]]) -> None:
             tasks = [
                 asyncio.create_task(execute_indexed(index, tool_call))
@@ -958,12 +982,14 @@ class ReActAgent:
             spec = spec_for(tool_call["name"]) if callable(spec_for) else None
             return spec.priority if spec is not None else 100
 
+        # 先按工具 spec.priority 分层；数字小的优先级更高。
         priority_entries = [
             (priority_of(index, tool_call), index, tool_call)
             for index, tool_call in enumerate(tool_calls)
         ]
         priorities = sorted({priority for priority, _, _ in priority_entries})
 
+        # 逐层执行。只要更高优先级层有失败，后续所有低优先级工具都短路为阻断结果。
         for priority in priorities:
             batch = [
                 (index, tool_call)
@@ -994,6 +1020,7 @@ class ReActAgent:
                         )
                 continue
 
+            # 并行策略再把同一优先级拆成多个子批次，控制最大并发数。
             for sub_batch in self._parallel_policy.split(batch):
                 await run_batch(sub_batch)
 
@@ -1007,6 +1034,8 @@ class ReActAgent:
         pending_tool_calls: list[dict[str, Any]],
     ) -> None:
         """保存并发工具批次的阶段性进度，恢复时只重放尚未完成的调用。"""
+        # 并发批次每完成一个工具就保存一次：恢复时 pending 里的才重放，
+        # completed_indices 里的工具不会重复产生副作用。
         state = {
             **runtime_context.checkpoint,
             "messages": [message.to_dict() for message in messages],

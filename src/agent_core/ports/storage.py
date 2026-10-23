@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any, Protocol
+from typing import Any, Protocol, runtime_checkable
 
 from agent_core.access import AccessContext
 from agent_core.protocol.messages import Message
@@ -53,6 +53,19 @@ class RunStore(Protocol):
         idempotency_key: str,
     ) -> RunContext | None:
         """查找同一作用域内已经存在的幂等请求。"""
+        ...
+
+
+@runtime_checkable
+class RecoverableRunStore(Protocol):
+    """支持按状态扫描 run 的扩展协议。
+
+    普通 ``RunStore`` 只服务单次 run 的保存/读取；重试调度器这类后台扫描
+    需要后端显式暴露按状态查询能力，避免 runtime 用 getattr 依赖隐式接口。
+    """
+
+    async def list_runs_by_status(self, status: str) -> list[RunContext]:
+        """返回指定状态的全部 run；生产后端应按状态建索引。"""
         ...
 
 

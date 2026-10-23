@@ -127,7 +127,7 @@ class ModelGovernanceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(first.content, "fallback-1")
         self.assertEqual(second.content, "fallback-2")
-        self.assertEqual(primary.calls, 1)
+        self.assertEqual(primary.calls, 3)  # 1 次初始调用 + 2 次重试（max_retries=2）
 
 
 class PromptTemplateTests(unittest.TestCase):

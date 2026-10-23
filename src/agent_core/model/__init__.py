@@ -2,6 +2,7 @@
 
 from agent_core.model.catalog import (
     ModelOption,
+    available_catalog,
     catalog_payload,
     default_model_catalog,
     provider_display_name,
@@ -49,6 +50,7 @@ __all__ = [
     "ModelAdapter",
     "ModelExecutionPolicy",
     "ModelOption",
+    "available_catalog",
     "ModelProviderFactory",
     "ModelProviderRegistry",
     "OllamaProvider",

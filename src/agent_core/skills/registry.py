@@ -125,6 +125,7 @@ class SkillRegistry:
                 requires_approval=tool.requires_approval,
                 timeout_seconds=tool.timeout_seconds,
                 idempotent=tool.idempotent,
+                replace=replace_tools,
             )
 
         instructions = "\n\n".join(

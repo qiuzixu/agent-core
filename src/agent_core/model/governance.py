@@ -44,9 +44,11 @@ class ModelExecutionPolicy:
     tokens_per_window: int | None = None
     window_seconds: float = 60.0
     queue_timeout_seconds: float | None = 30.0
-    call_timeout_seconds: float | None = 120.0
+    call_timeout_seconds: float | None = 600.0
     failure_threshold: int = 5
     recovery_timeout_seconds: float = 30.0
+    max_retries: int = 2
+    retry_backoff_seconds: float = 1.0
 
     def __post_init__(self) -> None:
         if self.max_concurrency <= 0:
@@ -234,23 +236,27 @@ class GovernedModelAdapter:
                 if not await self._allow(index, scope):
                     last_error = ModelUnavailableError(f"第 {index + 1} 个模型适配器熔断中")
                     continue
-                try:
-                    async with asyncio.timeout(self._policy.call_timeout_seconds):
-                        result = await adapter.chat(
-                            messages,
-                            tools=tools,
-                            temperature=temperature,
-                            max_tokens=max_tokens,
-                        )
-                    await self._success(index, scope)
-                    return result
-                except TimeoutError as exc:
-                    last_error = ModelTimeoutError("模型调用超时")
-                    last_error.__cause__ = exc
-                    await self._failure(index, scope)
-                except ModelInvocationError as exc:
-                    last_error = exc
-                    await self._failure(index, scope)
+                # P1：同模型重试——暂时性错误（超时/网络抖动）先重试，重试耗尽才降级
+                for attempt in range(self._policy.max_retries + 1):
+                    try:
+                        async with asyncio.timeout(self._policy.call_timeout_seconds):
+                            result = await adapter.chat(
+                                messages,
+                                tools=tools,
+                                temperature=temperature,
+                                max_tokens=max_tokens,
+                            )
+                        await self._success(index, scope)
+                        return result
+                    except TimeoutError as exc:
+                        last_error = ModelTimeoutError("模型调用超时")
+                        last_error.__cause__ = exc
+                        await self._failure(index, scope)
+                    except ModelInvocationError as exc:
+                        last_error = exc
+                        await self._failure(index, scope)
+                    if attempt < self._policy.max_retries:
+                        await asyncio.sleep(self._policy.retry_backoff_seconds * (2 ** attempt))
         if last_error is None:
             raise ModelUnavailableError("没有可用的模型适配器")
         raise last_error
@@ -275,30 +281,70 @@ class GovernedModelAdapter:
                 if not await self._allow(index, scope):
                     last_error = ModelUnavailableError(f"第 {index + 1} 个模型适配器熔断中")
                     continue
-                try:
-                    async with asyncio.timeout(self._policy.call_timeout_seconds):
-                        async for chunk in adapter.stream_chat(
-                            messages,
-                            tools=tools,
-                            temperature=temperature,
-                            max_tokens=max_tokens,
-                        ):
-                            emitted = True
-                            yield chunk
-                    await self._success(index, scope)
-                    return
-                except TimeoutError as exc:
-                    last_error = ModelTimeoutError("模型流式调用超时")
-                    last_error.__cause__ = exc
-                    await self._failure(index, scope)
-                except ModelInvocationError as exc:
-                    last_error = exc
-                    await self._failure(index, scope)
-                if emitted and last_error is not None:
-                    raise last_error
+                # P1：同模型重试——仅在尚未向调用方发射任何 chunk 时才可重试
+                for attempt in range(self._policy.max_retries + 1):
+                    emitted = False
+                    try:
+                        async with asyncio.timeout(self._policy.call_timeout_seconds):
+                            async for chunk in adapter.stream_chat(
+                                messages,
+                                tools=tools,
+                                temperature=temperature,
+                                max_tokens=max_tokens,
+                            ):
+                                emitted = True
+                                yield chunk
+                        await self._success(index, scope)
+                        return
+                    except TimeoutError as exc:
+                        last_error = ModelTimeoutError("模型流式调用超时")
+                        last_error.__cause__ = exc
+                        await self._failure(index, scope)
+                    except ModelInvocationError as exc:
+                        last_error = exc
+                        await self._failure(index, scope)
+                    if emitted and last_error is not None:
+                        raise last_error
+                    if attempt < self._policy.max_retries:
+                        await asyncio.sleep(self._policy.retry_backoff_seconds * (2 ** attempt))
         if last_error is None:
             raise ModelUnavailableError("没有可用的模型适配器")
         raise last_error
+
+    @property
+    def supports_native_json(self) -> bool:
+        """首个 adapter 是否支持 Provider 原生 JSON 模式（供结构化输出模块探测）。"""
+        return bool(getattr(self._adapters[0], "supports_native_json", False))
+
+    def health_status(self) -> list[dict[str, Any]]:
+        """返回每个候选 adapter 的熔断状态摘要（挂到 /health 端点）。"""
+        result: list[dict[str, Any]] = []
+        now = time.monotonic()
+        for index, adapter in enumerate(self._adapters):
+            model_name = getattr(adapter, "model", "") or getattr(adapter, "provider_name", str(index))
+            circuits: list[dict[str, Any]] = []
+            for (circuit_index, scope), state in sorted(self._circuits.items()):
+                if circuit_index != index:
+                    continue
+                if state.opened_at is not None:
+                    remaining = max(0.0, self._policy.recovery_timeout_seconds - (now - state.opened_at))
+                    status = "open"
+                elif state.failures > 0:
+                    remaining = 0.0
+                    status = "half_open"
+                else:
+                    remaining = 0.0
+                    status = "closed"
+                entry: dict[str, Any] = {"scope": scope, "status": status, "failures": state.failures}
+                if status == "open":
+                    entry["recovery_in_seconds"] = round(remaining, 1)
+                circuits.append(entry)
+            result.append({
+                "index": index,
+                "model": str(model_name),
+                "circuits": circuits,
+            })
+        return result
 
     async def context_usage(
         self,

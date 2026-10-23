@@ -13,6 +13,7 @@ from agent_core.protocol.messages import Message, assistant_message
 
 
 class GeminiProvider:
+    supports_native_json = True
     """Google Gemini 模型适配器。
 
     使用官方 ``google-genai`` SDK，安装方式：``uv add google-genai``。
@@ -207,6 +208,7 @@ class GeminiProvider:
         tools: list[dict[str, Any]] | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        json_mode: bool = False,
     ) -> Message:
         system_instruction, contents = self._to_gemini_contents(messages)
         config = self._config(
@@ -215,6 +217,9 @@ class GeminiProvider:
             temperature=temperature,
             max_tokens=max_tokens,
         )
+        # 原生 JSON 模式：让 Gemini API 层面强制输出 JSON
+        if json_mode:
+            config.response_mime_type = "application/json"
         try:
             response = await self._client.aio.models.generate_content(
                 model=self.model, contents=contents, config=config

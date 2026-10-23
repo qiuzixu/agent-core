@@ -31,6 +31,10 @@ class ToolSpec:
     phase: str = "generic"
 
 
+
+class ToolRegistrationError(Exception):
+    """工具注册冲突（同名工具已存在且未显式允许覆盖）。"""
+
 class ToolRegistry:
     """工具注册表。
 
@@ -54,6 +58,7 @@ class ToolRegistry:
         idempotent: bool = True,
         priority: int = 100,
         phase: str = "generic",
+        replace: bool = False,
     ) -> None:
         """注册一个工具。
 
@@ -62,8 +67,10 @@ class ToolRegistry:
             func: 工具函数（可以是同步或异步）。
             description: 工具描述（供 LLM 理解用途）。
         """
-        if name in self._tools:
-            logger.warning("Tool %r already registered, overwriting", name)
+        if name in self._tools and not replace:
+            raise ToolRegistrationError(
+                f"工具 {name!r} 已注册，如需覆盖请显式传入 replace=True"
+            )
         self._tools[name] = func
         self._specs[name] = ToolSpec(
             name=name,
@@ -77,6 +84,11 @@ class ToolRegistry:
             phase=phase,
         )
         logger.debug("Registered tool: %r", name)
+
+    def unregister(self, name: str) -> None:
+        """移除一个动态注册的工具；不存在时静默返回。"""
+        self._tools.pop(name, None)
+        self._specs.pop(name, None)
 
     def get_tool(self, name: str) -> ToolFunc | None:
         """获取工具函数。"""

@@ -64,8 +64,31 @@ def catalog_payload(
     return [item.to_dict() for item in (options or default_model_catalog())]
 
 
+def available_catalog(config: Any) -> list[dict[str, Any]]:
+    """根据实际配置过滤模型目录，只返回有 API Key 的 provider 的模型。"""
+    available_providers: set[str] = set()
+    for provider_name in (
+        "openai",
+        "anthropic",
+        "gemini",
+        "ollama",
+    ):
+        key_attr = f"{provider_name}_api_key"
+        if provider_name == "ollama":
+            # Ollama 不需要密钥，只要配置了就可用
+            available_providers.add(provider_name)
+        elif getattr(config, key_attr, None):
+            available_providers.add(provider_name)
+    return [
+        item.to_dict()
+        for item in default_model_catalog()
+        if item.provider in available_providers
+    ]
+
+
 __all__ = [
     "PROVIDER_DISPLAY_NAMES",
+    "available_catalog",
     "ModelOption",
     "catalog_payload",
     "default_model_catalog",

@@ -22,6 +22,7 @@ from agent_core.protocol.runtime import (
     ApprovalRecord,
     RunContext,
 )
+from agent_core.runtime.state import transition_run_status
 from agent_core.storage._sqlite_utils import (
     _run_in_thread,
     run_sync_in_thread,
@@ -190,7 +191,7 @@ class MemoryRuntimeStore(RuntimeStore):
             if value.get("status") not in {"queued", "running"}:
                 continue
             context = _context_from_dict(value)
-            context.status = "interrupted"
+            transition_run_status(context, "interrupted")
             context.emit("run_interrupted", reason="服务重启")
             context.version = int(value.get("version", 0))
             await self.save_run(context)
@@ -501,7 +502,7 @@ class SqliteRuntimeStore(RuntimeStore):
             context = await self.load_run(thread_id, run_id)
             if context is None:
                 continue
-            context.status = "interrupted"
+            transition_run_status(context, "interrupted")
             context.emit("run_interrupted", reason="服务重启")
             await self.save_run(context)
             result.append(context)
@@ -828,7 +829,7 @@ class PostgresRuntimeStore(RuntimeStore):
             context = await self.load_run(row["thread_id"], row["run_id"])
             if context is None:
                 continue
-            context.status = "interrupted"
+            transition_run_status(context, "interrupted")
             context.emit("run_interrupted", reason="服务重启")
             await self.save_run(context)
             result.append(context)

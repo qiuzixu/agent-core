@@ -113,6 +113,7 @@ class OpenAIProvider:
     """
 
     provider_name = "openai"
+    supports_native_json = True
 
     def __init__(
         self,
@@ -151,6 +152,7 @@ class OpenAIProvider:
         tools: list[dict[str, Any]] | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        json_mode: bool = False,
     ) -> Message:
         """调用 LLM 进行对话。
 
@@ -180,6 +182,10 @@ class OpenAIProvider:
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
+
+        # 原生 JSON 模式：让 API 层面强制输出合法 JSON
+        if json_mode:
+            kwargs["response_format"] = {"type": "json_object"}
 
         try:
             logger.debug(
@@ -464,63 +470,3 @@ class OpenAIProvider:
         else:
             # 纯文本结束，发一个 finish 信号
             yield StreamChunk(finish_reason=finish_reason)
-
-    # ──────────────────────────────────────────────
-    # JSON 结构化输出
-    # ──────────────────────────────────────────────
-
-    async def parse_json(
-        self,
-        messages: list[Message],
-        *,
-        schema: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        """调用 LLM 并解析 JSON 输出。
-
-        Args:
-            messages: 消息历史列表。
-            schema: 可选的 JSON schema（用于验证）。
-
-        Returns:
-            解析后的 JSON 对象。
-
-        Raises:
-            ModelInvocationError: LLM 调用失败或 JSON 解析失败。
-        """
-        # Message 是可变对象，浅拷贝会把 JSON 指令永久追加到调用方的 system 消息。
-        enhanced_messages = copy.deepcopy(messages)
-        if enhanced_messages and enhanced_messages[0].role == "system":
-            enhanced_messages[0].content += "\n\n**重要**：你必须返回有效的 JSON 格式，不要包含任何其他文本。"
-
-        response = await self.chat(enhanced_messages)
-        content = response.content.strip()
-
-        # 移除 markdown 代码块标记
-        if content.startswith("```json"):
-            content = content[7:]
-        if content.startswith("```"):
-            content = content[3:]
-        if content.endswith("```"):
-            content = content[:-3]
-        content = content.strip()
-
-        try:
-            result = json.loads(content)
-        except json.JSONDecodeError as exc:
-            raise ModelInvocationError(
-                f"Failed to parse JSON from LLM output: {exc}\nOutput: {content[:200]}"
-            ) from exc
-
-        if not isinstance(result, dict):
-            raise ModelInvocationError(f"LLM output is not a JSON object: {type(result)}")
-
-        if schema is not None:
-            from agent_core.errors import ModelOutputValidationError
-            from agent_core.model.structured import validate_json_schema
-
-            try:
-                validate_json_schema(result, schema)
-            except ModelOutputValidationError as exc:
-                raise ModelInvocationError(f"LLM JSON 输出不符合 schema：{exc}") from exc
-
-        return {str(key): value for key, value in result.items()}

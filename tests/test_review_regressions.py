@@ -105,16 +105,6 @@ class _ToolCallingModel(_SuccessfulModel):
         return assistant_message("完成")
 
 
-class _JsonProvider(OpenAIProvider):
-    def __init__(self) -> None:
-        self.seen_messages: list[Message] = []
-
-    async def chat(self, messages: list[Message], **kwargs: Any) -> Message:
-        del kwargs
-        self.seen_messages = messages
-        return assistant_message('{"ok": true}')
-
-
 class TestReviewRegressions(unittest.IsolatedAsyncioTestCase):
     async def test_sqlite_runtime_rejects_stale_version(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -234,14 +224,6 @@ class TestReviewRegressions(unittest.IsolatedAsyncioTestCase):
         )
         result = await governed.chat([user_message("hello")])
         self.assertEqual(result.content, "fallback-ok")
-
-    async def test_parse_json_does_not_mutate_input_messages(self) -> None:
-        provider = _JsonProvider()
-        messages = [system_message("original"), user_message("json")]
-        result = await provider.parse_json(messages, schema={"type": "object", "required": ["ok"]})
-        self.assertEqual(result, {"ok": True})
-        self.assertEqual(messages[0].content, "original")
-        self.assertIn("有效的 JSON", provider.seen_messages[0].content)
 
     async def test_openai_bad_tool_arguments_are_wrapped(self) -> None:
         async def create(**kwargs: Any) -> Any:
