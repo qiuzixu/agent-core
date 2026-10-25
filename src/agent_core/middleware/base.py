@@ -79,7 +79,31 @@ class MiddlewareContext:
 
 
 class Middleware:
-    """中间件基类，子类按需重写钩子方法。"""
+    """中间件基类，子类按需重写钩子方法。
+
+    优先级（priority）：数值越小越先执行。MiddlewareManager 构造时按
+    priority 升序排列，同一优先级内保持插入顺序（稳定排序）。
+
+    推荐分层：
+        安全类  1~9    （HITL、Guardrails、Auth、InjectionGuard、RBAC）
+        治理类  10~19  （熔断器、幂等、成本预算、超时预算、工具校验）
+        性能类  20~29  （Compaction、TokenLimit、SemanticCache、ToolCache）
+        可观测  30~39  （Trace、Audit、Alerting、Feedback）
+        兜底类  40+    （Fallback、DLQ）
+        默认值  100    （未声明优先级的自定义中间件排最后）
+
+    注意：Compaction 必须排在 TokenLimit 之前，否则硬截断会抢在
+    智能压缩前面执行，摘要永远不会生成。
+
+    超时隔离（hook_timeout）：单个中间件钩子调用的最大等待秒数。
+    超时后该中间件的返回值视为 CONTINUE，链继续走下一个中间件，
+    防止某个中间件卡死阻塞整条管道。设为 0 或负数表示不隔离。
+    安全类中间件（如 HITL 审批等待用户确认）可能天然耗时较长，
+    应设置更大的超时值或设为 0 禁用超时。
+    """
+
+    priority: int = 100
+    hook_timeout: float = 30.0
 
     @property
     def name(self) -> str:
@@ -104,11 +128,27 @@ class Middleware:
 
 
 class MiddlewareManager:
-    def __init__(self, middlewares: list[Middleware] | None = None) -> None:
-        self._middlewares = middlewares or []
+    def __init__(
+        self,
+        middlewares: list[Middleware] | None = None,
+        *,
+        default_hook_timeout: float = 30.0,
+    ) -> None:
+        # 按优先级升序排列：priority 小的先执行，同一优先级保持插入顺序
+        self._middlewares = sorted(middlewares or [], key=lambda mw: getattr(mw, "priority", 100))
+        # 每个中间件钩子调用的默认超时上限（秒）；中间件可通过 hook_timeout 覆盖
+        self._default_hook_timeout = default_hook_timeout
 
     def add(self, middleware: Middleware) -> None:
         self._middlewares.append(middleware)
+        self._middlewares.sort(key=lambda mw: getattr(mw, "priority", 100))
+
+    def describe_chain(self) -> list[dict[str, Any]]:
+        """返回当前中间件链的诊断信息（按执行顺序），用于排查拦截问题。"""
+        return [
+            {"name": mw.name, "priority": getattr(mw, "priority", 100)}
+            for mw in self._middlewares
+        ]
 
     async def execute_before_model(self, ctx: MiddlewareContext) -> MiddlewareResult:
         return await self._run_chain("before_model", ctx)
@@ -123,7 +163,11 @@ class MiddlewareManager:
         return await self._run_chain("after_tool", ctx)
 
     async def handle_exception(self, exc: Exception, ctx: MiddlewareContext) -> bool:
-        """让支持异常重试的中间件决定是否再次调用模型。"""
+        """让支持异常重试的中间件决定是否再次调用模型。
+
+        同样带超时隔离：异常处理超时的中间件视为不接管（返回 False），
+        链继续问下一个中间件。
+        """
         for mw in self._middlewares:
             handler = getattr(mw, "handle_exception", None)
             if handler is None:
@@ -131,7 +175,19 @@ class MiddlewareManager:
             outcome = handler(exc, ctx)
             if not inspect.isawaitable(outcome):
                 raise TypeError("Middleware.handle_exception 必须返回可等待结果")
-            if await outcome:
+            timeout = getattr(mw, "hook_timeout", 0) or self._default_hook_timeout
+            if timeout and timeout > 0:
+                try:
+                    should_retry = await asyncio.wait_for(outcome, timeout=timeout)
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "[Middleware] %s.handle_exception 超时（%.1f 秒），跳过",
+                        mw.name, timeout,
+                    )
+                    continue
+            else:
+                should_retry = await outcome
+            if should_retry:
                 return True
         return False
 
@@ -146,7 +202,21 @@ class MiddlewareManager:
             hook_outcome = hook_call(ctx)
             if not inspect.isawaitable(hook_outcome):
                 raise TypeError(f"Middleware.{hook} 必须返回可等待结果")
-            result: MiddlewareResult = await hook_outcome
+
+            # 超时隔离：单个中间件卡死不阻塞整条链。
+            # 超时后视为 CONTINUE 继续走下一个中间件，并记录告警日志。
+            timeout = getattr(mw, "hook_timeout", 0) or self._default_hook_timeout
+            if timeout and timeout > 0:
+                try:
+                    result: MiddlewareResult = await asyncio.wait_for(hook_outcome, timeout=timeout)
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "[Middleware] %s.%s 超时（%.1f 秒），跳过该中间件继续执行链",
+                        mw.name, hook, timeout,
+                    )
+                    continue
+            else:
+                result = await hook_outcome
             if result.action == MiddlewareAction.MODIFY:
                 # MODIFY 有两种合法写法：替换 ctx 字段（推荐），或在 data 中携带修改。
                 # 此处对账：本轮替换了 ctx.messages 时以 ctx 为准，防止 data 携带的
@@ -170,6 +240,7 @@ class MiddlewareManager:
 
 
 class LoggingMiddleware(Middleware):
+    priority = 50
     """记录所有 LLM / 工具调用的日志。"""
 
     async def before_model(self, context: MiddlewareContext) -> MiddlewareResult:

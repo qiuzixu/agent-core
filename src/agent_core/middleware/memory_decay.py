@@ -100,6 +100,7 @@ def select_forgetting(
 
 
 class MemoryDecayService:
+    priority = 36
     """把衰减策略落到 MemoryStore 的应用服务（vanilla/LangGraph 均可复用）。"""
 
     def __init__(self, store: Any, config: MemoryDecayConfig | None = None) -> None:

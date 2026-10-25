@@ -72,6 +72,7 @@ _INJECTION_PATTERNS: list[re.Pattern[str]] = [
 
 
 class InjectionGuardMiddleware(Middleware):
+    priority = 2
     """增强 Prompt Injection 防护。
 
     before_model: 检查用户消息中的注入尝试

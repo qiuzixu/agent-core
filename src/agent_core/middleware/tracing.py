@@ -71,6 +71,7 @@ class TraceConfig:
 
 
 class TraceMiddleware(Middleware):
+    priority = 30
     """确保每次运行携带 trace_id，并贯穿 model / tool 的中间件上下文。"""
 
     def __init__(self, config: TraceConfig | None = None) -> None:

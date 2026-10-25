@@ -56,6 +56,7 @@ class _CacheEntry:
 
 
 class FallbackMiddleware(Middleware):
+    priority = 40
     """优雅降级：工具连续失败时返回缓存结果或跳过非关键工具。"""
 
     def __init__(self, config: FallbackConfig | None = None) -> None:

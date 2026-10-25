@@ -166,6 +166,7 @@ class CircuitBreakerRegistry:
 
 
 class CircuitBreakerMiddleware(Middleware):
+    priority = 10
     """Agent 中间件层的外部服务熔断。
 
     在 before_tool 阶段检查目标工具对应的外部服务是否熔断。

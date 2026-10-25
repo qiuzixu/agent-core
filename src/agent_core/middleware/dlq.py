@@ -59,6 +59,7 @@ class JsonlDeadLetterSink:
 
 
 class DLQMiddleware(Middleware):
+    priority = 41
     """工具调用失败时通过 DeadLetterSink 写入死信。"""
 
     def __init__(

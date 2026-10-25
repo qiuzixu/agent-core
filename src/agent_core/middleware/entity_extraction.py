@@ -74,6 +74,7 @@ _ENTITY_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
 
 
 class EntityExtractionMiddleware(Middleware):
+    priority = 34
     """实体提取：从用户消息中提取结构化实体并持久化。"""
 
     def __init__(self, config: EntityExtractionConfig | None = None) -> None:

@@ -77,6 +77,7 @@ class _SlidingWindow:
 
 
 class AlertingMiddleware(Middleware):
+    priority = 32
     """告警：滑动窗口内检查错误率和 P99 延迟，通过 AlertSink 发送。"""
 
     def __init__(

@@ -172,6 +172,7 @@ class UserCostTracker:
 
 
 class CostBudgetMiddleware(Middleware):
+    priority = 14
     """Agent 中间件层的成本追踪与预算控制。
 
     before_model: 检查用户是否还有预算

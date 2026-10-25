@@ -88,6 +88,8 @@ def is_context_overflow_error(exc: BaseException) -> bool:
 
 
 class CompactionMiddleware(Middleware):
+    priority = 20
+    hook_timeout = 60.0  # 摘要调用走模型 API，天然耗时较长
     """把窗口压力下的头部旧消息压成结构化摘要。
 
     依赖由构造注入（中间件的 before_model 拿不到 LLM）：

@@ -82,6 +82,7 @@ def _truncate(value: Any, max_len: int = 200) -> str:
 
 
 class AuditMiddleware(Middleware):
+    priority = 31
     """审计日志中间件。
 
     在 before_model / after_model / before_tool / after_tool 各阶段写入审计记录。

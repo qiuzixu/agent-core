@@ -169,6 +169,7 @@ def verify_signature(
 
 
 class SignatureMiddleware:
+    priority = 4
     """Agent 层签名验证（供 HTTP 框架适配层调用）。
 
     HTTP 层通过 verify_signature() 直接调用，

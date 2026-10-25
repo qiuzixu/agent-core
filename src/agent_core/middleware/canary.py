@@ -30,6 +30,7 @@ class CanaryConfig:
 
 
 class CanaryRouter:
+    priority = 6
     """确定性灰度路由器。"""
 
     def __init__(self, config: CanaryConfig | None = None) -> None:

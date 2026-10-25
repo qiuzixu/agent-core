@@ -39,6 +39,7 @@ class IdempotencyConfig:
 
 
 class IdempotencyMiddleware(Middleware):
+    priority = 11
     """在 before_model 阶段检查请求是否为重复提交。
 
     通过请求消息内容计算指纹，在时间窗口内相同指纹视为重复。

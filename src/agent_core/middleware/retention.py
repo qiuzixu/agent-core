@@ -127,6 +127,7 @@ class _RegisteredTask:
 
 
 class RetentionSweeper:
+    priority = 37
     """聚合多个保留策略与自定义清理任务，供 lifespan 周期调用。"""
 
     def __init__(self) -> None:

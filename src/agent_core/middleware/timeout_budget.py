@@ -47,6 +47,7 @@ class TimeoutBudgetConfig:
 
 
 class TimeoutBudgetMiddleware(Middleware):
+    priority = 12
     """超时预算传播：before_model / before_tool 检查剩余时间。"""
 
     def __init__(self, config: TimeoutBudgetConfig | None = None) -> None:

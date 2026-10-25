@@ -16,6 +16,8 @@ from agent_core.middleware.base import (
 
 
 class HumanInTheLoopMiddleware(Middleware):
+    priority = 1
+    hook_timeout = 0  # HITL 审批等待用户确认可能耗时数分钟，禁用超时隔离
     """在工具执行前暂停，等待审批队列返回决定。
 
     三种工作模式（按优先级）：

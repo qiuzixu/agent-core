@@ -91,6 +91,7 @@ class InMemoryToolCacheStore:
 
 
 class ToolCacheMiddleware(Middleware):
+    priority = 23
     """工具结果缓存：before_tool 查缓存，after_tool 存缓存。
 
     通过 CacheBackend / ToolCacheStore 协议存取，业务层可注入 RedisCache。

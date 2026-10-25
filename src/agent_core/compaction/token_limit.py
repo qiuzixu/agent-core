@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 class TokenLimitMiddleware(Middleware):
+    priority = 21
     """防止消息历史超出 token 限制。"""
 
     def __init__(

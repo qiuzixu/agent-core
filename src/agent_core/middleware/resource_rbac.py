@@ -52,6 +52,7 @@ class ResourceRbacConfig:
 
 
 class ResourceRbacMiddleware(Middleware):
+    priority = 5
     """Agent 层资源级权限中间件。"""
 
     def __init__(self, config: ResourceRbacConfig | None = None) -> None:

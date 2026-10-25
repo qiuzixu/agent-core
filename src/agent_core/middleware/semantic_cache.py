@@ -120,6 +120,7 @@ def _similarity(text_a: str, text_b: str) -> float:
 
 
 class SemanticCacheMiddleware(Middleware):
+    priority = 22
     """语义缓存：相似问题直接返回缓存结果，省去 LLM 调用。"""
 
     def __init__(self, config: SemanticCacheConfig | None = None) -> None:

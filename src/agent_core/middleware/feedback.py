@@ -110,6 +110,7 @@ class FeedbackStore:
 
 
 class FeedbackMiddleware(Middleware):
+    priority = 33
     """记录 LLM 调用上下文（session_id、model、耗时）供反馈关联。
 
     本中间件本身不处理反馈提交（那是 HTTP API 的事），

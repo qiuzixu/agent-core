@@ -1,9 +1,14 @@
 name: Docs
 
 on:
-  push:
-    branches: [master, main]
+  # 日常 push 不再自动构建文档（避免无关提交触发失败邮件）；
+  # 文档变更在 PR 时检查，正式部署用 tag 触发的发布工作流。
   pull_request:
+    paths:
+      - "docs/**"
+      - "mkdocs.yml"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
 
 permissions:
   contents: read

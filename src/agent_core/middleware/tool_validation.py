@@ -44,6 +44,7 @@ class ToolValidationConfig:
 
 
 class ToolValidationMiddleware(Middleware):
+    priority = 13
     """在 after_tool 阶段验证工具返回的数据。
 
     使用轻量 JSON Schema 子集校验（type / required / properties），

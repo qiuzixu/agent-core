@@ -114,6 +114,7 @@ class AuthConfig:
 
 
 class AuthMiddleware(Middleware):
+    priority = 3
     """认证中间件：验证请求身份，失败时短路。
 
     用法：

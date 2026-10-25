@@ -85,6 +85,7 @@ def check_answer(response: Any, config: SelfCheckConfig) -> list[str]:
 
 
 class SelfCheckMiddleware(Middleware):
+    priority = 35
     """Agent 层规则自检。"""
 
     def __init__(self, config: SelfCheckConfig | None = None) -> None:
