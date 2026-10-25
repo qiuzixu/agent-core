@@ -1,123 +1,37 @@
-"""通用人机协同审批队列。
+"""审批队列：状态机、异步等待与 CAS 收口的核心实现。
 
-Core 只负责审批状态机和异步等待，不负责 HTTP 路由、认证或具体业务动作。
+双模式设计、三条唤醒路径与过期收口竞态的处理见 ``ApprovalQueue`` docstring。
 """
 
 from __future__ import annotations
-import inspect
 
 import asyncio
+import inspect
 import logging
 import uuid
-from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from enum import Enum
-from typing import Any, Literal
+from typing import Any
 
 from agent_core.access import AccessContext
-from agent_core.middleware.base import (
-    Middleware,
-    MiddlewareAction,
-    MiddlewareContext,
-    MiddlewareResult,
-)
+from agent_core.hitl.models import ApprovalRequest, ApprovalStatus
 from agent_core.ports import ApprovalStore
 from agent_core.protocol.runtime import ApprovalRecord
 
 logger = logging.getLogger(__name__)
 
 
-class ApprovalStatus(Enum):
-    PENDING = "pending"
-    APPROVED = "approved"
-    REJECTED = "rejected"
-    TIMEOUT = "timeout"
-
-
-@dataclass
-class ApprovalRequest:
-    """一个等待外部决定的动作请求。"""
-
-    request_id: str
-    thread_id: str
-    tool_name: str
-    tool_args: dict[str, Any]
-    run_id: str = ""
-    user_id: str | None = None
-    tenant_id: str | None = None
-    status: ApprovalStatus = ApprovalStatus.PENDING
-    reason: str | None = None
-    expires_at: str | None = None
-    _event: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
-
-    @property
-    def approval_id(self) -> str:
-        return self.request_id
-
-    def to_record(self) -> ApprovalRecord:
-        status_by_request: dict[
-            ApprovalStatus,
-            Literal["pending", "approved", "rejected", "expired"],
-        ] = {
-            ApprovalStatus.PENDING: "pending",
-            ApprovalStatus.APPROVED: "approved",
-            ApprovalStatus.REJECTED: "rejected",
-            ApprovalStatus.TIMEOUT: "expired",
-        }
-        return ApprovalRecord(
-            approval_id=self.request_id,
-            thread_id=self.thread_id,
-            run_id=self.run_id,
-            action=self.tool_name,
-            arguments=dict(self.tool_args),
-            user_id=self.user_id,
-            tenant_id=self.tenant_id,
-            status=status_by_request[self.status],
-            reason=self.reason,
-            expires_at=self.expires_at,
-        )
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "request_id": self.request_id,
-            "thread_id": self.thread_id,
-            "run_id": self.run_id,
-            "user_id": self.user_id,
-            "tenant_id": self.tenant_id,
-            "tool_name": self.tool_name,
-            "tool_args": self.tool_args,
-            "status": self.status.value,
-            "reason": self.reason,
-            "expires_at": self.expires_at,
-        }
-
-    @classmethod
-    def from_record(cls, record: ApprovalRecord) -> ApprovalRequest:
-        """从持久化记录恢复审批请求。"""
-        request = cls(
-            request_id=record.approval_id,
-            thread_id=record.thread_id,
-            run_id=record.run_id,
-            tool_name=record.action,
-            tool_args=dict(record.arguments),
-            user_id=record.user_id,
-            tenant_id=record.tenant_id,
-            status={
-                "pending": ApprovalStatus.PENDING,
-                "approved": ApprovalStatus.APPROVED,
-                "rejected": ApprovalStatus.REJECTED,
-                "expired": ApprovalStatus.TIMEOUT,
-            }.get(record.status, ApprovalStatus.PENDING),
-            reason=record.reason,
-            expires_at=record.expires_at,
-        )
-        if request.status != ApprovalStatus.PENDING:
-            request._event.set()
-        return request
-
-
 class ApprovalQueue:
-    """进程内等待器，可选地把状态写入 ``ApprovalStore``。"""
+    """审批队列：进程内等待器，可选地把状态写入 ``ApprovalStore``。
+
+    双模式设计：
+    - 不配置 Store：纯进程内队列，适合测试与单实例场景；
+    - 配置 Store：审批持久化，跨进程可见可处理（多实例部署必需）。
+
+    等待 ``wait_for_decision`` 有三条唤醒路径：
+    1. 同进程决定 → ``asyncio.Event`` 立即唤醒（最快）；
+    2. 跨进程决定 → 按 ``poll_interval`` 轮询持久化记录；
+    3. 超时兜底   → 过期 CAS 收口，以数据库终态为准。
+    """
 
     def __init__(
         self,
@@ -130,11 +44,15 @@ class ApprovalQueue:
         # runtime_store 是旧 Vanilla 命名，保留它避免升级时破坏调用方。
         if approval_store is not None and runtime_store is not None:
             raise ValueError("approval_store 和 runtime_store 只能配置一个")
+        # 进程内活跃请求表：同进程等待/查看的快路径（跨进程不可见）。
         self._requests: dict[str, ApprovalRequest] = {}
+        # 可选持久化后端；为 None 时队列退化为纯进程内模式。
         self._approval_store = approval_store or runtime_store
+        # 严格 RBAC 开关：开启后所有读写操作强制要求 AccessContext。
         self._require_access = require_access
         if poll_interval_seconds <= 0:
             raise ValueError("poll_interval_seconds 必须大于 0")
+        # 跨进程决定的轮询间隔：也是 Event 等待的超时切片（见 wait_for_decision）。
         self._poll_interval = poll_interval_seconds
         # 可选的通知回调：审批创建/决定后调用，供 WebSocket 推送等外部消费者使用。
         self._notify: list[Any] = []
@@ -149,6 +67,7 @@ class ApprovalQueue:
         self._notify.append(callback)
 
     async def _fire_notify(self, event_type: str, data: dict[str, Any]) -> None:
+        """逐个触发通知回调；单个回调失败只记日志，不影响审批流程。"""
         for cb in self._notify:
             try:
                 result = cb(event_type, data)
@@ -226,6 +145,12 @@ class ApprovalQueue:
         request: ApprovalRequest,
         timeout_seconds: float = 300.0,
     ) -> ApprovalStatus:
+        """阻塞等待审批决定，返回终态（APPROVED/REJECTED/TIMEOUT）。
+
+        三条唤醒路径：同进程 Event 立即唤醒、跨进程轮询持久化记录、
+        超时后过期 CAS 收口。等待期间以数据库终态为准，防止
+        "deadline 刚到时决定恰好提交"的竞态被误判为超时。
+        """
         if timeout_seconds <= 0:
             raise ValueError("timeout_seconds 必须大于 0")
         loop = asyncio.get_running_loop()
@@ -241,6 +166,8 @@ class ApprovalQueue:
                 if stored is not None:
                     self._apply_record(request, stored)
         try:
+            # 主等待循环：先等同进程 Event；等不到就按 poll_interval
+            # 轮询持久化记录（跨进程的决定只能从库里读到）。
             while request.status == ApprovalStatus.PENDING:
                 if self._approval_store is not None:
                     stored = await self._approval_store.load_approval(request.request_id)
@@ -291,6 +218,11 @@ class ApprovalQueue:
         *,
         access: AccessContext | None = None,
     ) -> bool:
+        """批准请求：CAS 把 pending → approved，成功后唤醒同进程等待者。
+
+        返回 False 表示请求不存在、已处理（非 pending）或 CAS 失败
+        （如另一管理员刚刚处理过 / 已过期收口）。
+        """
         request = await self.load_request(request_id, access=access)
         if request is None or request.status != ApprovalStatus.PENDING:
             return False
@@ -311,6 +243,7 @@ class ApprovalQueue:
         *,
         access: AccessContext | None = None,
     ) -> bool:
+        """拒绝请求：CAS 把 pending → rejected 并记录原因，语义同 ``approve``。"""
         request = await self.load_request(request_id, access=access)
         if request is None or request.status != ApprovalStatus.PENDING:
             return False
@@ -326,20 +259,43 @@ class ApprovalQueue:
         await self._fire_notify("approval_rejected", request.to_dict())
         return True
 
-    def list_pending(
+    async def list_pending(
         self,
         *,
         access: AccessContext | None = None,
     ) -> list[dict[str, Any]]:
+        """列出可见的 pending 审批请求。
+
+        进程内请求与持久化记录合并去重（进程内优先），
+        因此其他进程/实例创建的审批也能出现在列表中。
+        """
         if self._require_access and access is None:
             raise PermissionError("该 ApprovalQueue 要求提供 AccessContext")
-        return [
-            request.to_dict()
-            for request in self._requests.values()
-            if request.status == ApprovalStatus.PENDING
-            and not (request.expires_at and self._is_past(request.expires_at))
-            and (access is None or access.can_access(request.user_id, request.tenant_id))
-        ]
+        merged: dict[str, dict[str, Any]] = {}
+        for request in self._requests.values():
+            if (
+                request.status is ApprovalStatus.PENDING
+                and not (request.expires_at and self._is_past(request.expires_at))
+                and (access is None or access.can_access(request.user_id, request.tenant_id))
+            ):
+                merged[request.request_id] = request.to_dict()
+        if self._approval_store is not None:
+            try:
+                records = await self._approval_store.list_approvals(status="pending")
+            except Exception:
+                logger.exception("读取持久化待审批列表失败，仅返回进程内请求")
+                records = []
+            for record in records:
+                if record.approval_id in merged:
+                    continue
+                if record.expires_at and self._is_past(record.expires_at):
+                    # 过期的持久化记录由 load_request 访问时再做 CAS 收口。
+                    continue
+                if access is not None and not access.can_access(record.user_id, record.tenant_id):
+                    continue
+                # 统一转换为请求字典结构，与进程内条目字段保持一致。
+                merged[record.approval_id] = ApprovalRequest.from_record(record).to_dict()
+        return list(merged.values())
 
     def get_request(
         self,
@@ -347,6 +303,7 @@ class ApprovalQueue:
         *,
         access: AccessContext | None = None,
     ) -> ApprovalRequest | None:
+        """只读查看进程内请求（跨进程恢复请用 ``load_request``）。"""
         request = self._requests.get(request_id)
         if request is not None:
             self._check_access(request, access)
@@ -422,6 +379,7 @@ class ApprovalQueue:
 
     @staticmethod
     def _apply_record(request: ApprovalRequest, record: ApprovalRecord) -> None:
+        """把持久化终态回写到进程内请求，终态时点亮信号灯。"""
         restored = ApprovalRequest.from_record(record)
         request.status = restored.status
         request.reason = restored.reason
@@ -431,10 +389,12 @@ class ApprovalQueue:
 
     @staticmethod
     def _record_expired(record: ApprovalRecord) -> bool:
+        """判断持久化记录是否已过过期时间（当前无调用方，保留待用）。"""
         return ApprovalQueue._is_past(record.expires_at)
 
     @staticmethod
     def _is_past(expires_at: str | None) -> bool:
+        """判断 ISO 时间串是否已过期；无过期时间视为永不过期。"""
         if not expires_at:
             return False
         expires = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
@@ -444,6 +404,7 @@ class ApprovalQueue:
 
     @staticmethod
     def _expires_at(timeout_seconds: float | None) -> str | None:
+        """把相对超时（秒）换算为绝对过期时间（ISO/UTC）；None 表示永不过期。"""
         if timeout_seconds is None:
             return None
         if timeout_seconds <= 0:
@@ -452,6 +413,7 @@ class ApprovalQueue:
 
     @staticmethod
     def _remaining_seconds(expires_at: str | None) -> float:
+        """计算距离过期还剩多少秒；永不过期返回 inf。"""
         if expires_at is None:
             return float("inf")
         parsed = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
@@ -464,6 +426,7 @@ class ApprovalQueue:
         request: ApprovalRequest,
         access: AccessContext | None,
     ) -> None:
+        """操作/查看前校验 RBAC：未提供身份、请求无归属、非本人均拒绝。"""
         if self._require_access and access is None:
             raise PermissionError("该 ApprovalQueue 要求提供 AccessContext")
         if self._require_access and (request.user_id is None or request.tenant_id is None):
@@ -476,73 +439,6 @@ class ApprovalQueue:
         user_id: str | None,
         tenant_id: str | None,
     ) -> None:
+        """创建前校验：严格 RBAC 模式下审批必须绑定用户与租户。"""
         if self._require_access and (user_id is None or tenant_id is None):
             raise PermissionError("严格访问模式要求审批绑定 user_id 和 tenant_id")
-
-
-class HumanInTheLoopMiddleware(Middleware):
-    """在工具执行前暂停，等待审批队列返回决定。"""
-
-    def __init__(
-        self,
-        queue: ApprovalQueue | None = None,
-        approval_needed: list[str] | None = None,
-        thread_id: str = "default",
-        auto_approve: bool = False,
-        approval_callback: Any | None = None,
-        timeout_seconds: float = 300.0,
-    ) -> None:
-        self._queue = queue or ApprovalQueue()
-        self._needed = set(approval_needed or ())
-        self._thread = thread_id
-        self._auto = auto_approve
-        self._callback = approval_callback
-        self._timeout = timeout_seconds
-
-    async def before_tool(self, context: MiddlewareContext) -> MiddlewareResult:
-        if context.tool_name not in self._needed or self._auto:
-            return MiddlewareResult(action=MiddlewareAction.CONTINUE)
-        if self._callback is not None:
-            try:
-                approved = await asyncio.wait_for(
-                    self._callback(context.tool_name, context.tool_args),
-                    timeout=self._timeout,
-                )
-            except TimeoutError:
-                return MiddlewareResult(
-                    action=MiddlewareAction.STOP,
-                    data={"reason": "approval_timeout", "tool": context.tool_name},
-                )
-            if approved:
-                return MiddlewareResult(action=MiddlewareAction.CONTINUE)
-            return MiddlewareResult(
-                action=MiddlewareAction.STOP,
-                data={"reason": "approval_denied", "tool": context.tool_name},
-            )
-        request = await self._queue.create_request_async(
-            thread_id=str(context.metadata.get("thread_id") or self._thread),
-            tool_name=context.tool_name or "unknown",
-            tool_args=dict(context.tool_args),
-            run_id=str(context.metadata.get("run_id") or ""),
-            user_id=context.metadata.get("user_id"),
-            tenant_id=context.metadata.get("tenant_id"),
-            timeout_seconds=self._timeout,
-        )
-        context.metadata["approval_request_id"] = request.request_id
-        status = await self._queue.wait_for_decision(request, timeout_seconds=self._timeout)
-        if status == ApprovalStatus.APPROVED:
-            return MiddlewareResult(action=MiddlewareAction.CONTINUE)
-        reason = request.reason or status.value
-        return MiddlewareResult(
-            action=MiddlewareAction.STOP,
-            data={"reason": reason, "tool": context.tool_name, "status": status.value},
-        )
-
-
-__all__ = [
-    "ApprovalQueue",
-    "ApprovalRequest",
-    "ApprovalStatus",
-    "HumanInTheLoopMiddleware",
-]
-

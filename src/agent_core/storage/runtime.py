@@ -47,7 +47,6 @@ class RuntimeStore(ABC):
     # 运行状态存储
     # ————————————————————————————————————#
     @abstractmethod
-    # TODO(debug): breakpoint suggestion #7 - save_run: RunContext persistence (this script uses MemoryRuntimeStore demo).
     async def save_run(self, context: RunContext) -> None: ...
 
     # ————————————————————————————————————#
@@ -229,6 +228,20 @@ class MemoryRuntimeStore(RuntimeStore):
                 return False
             self._approvals[approval.approval_id] = copy.deepcopy(approval.to_dict())
             return True
+
+    async def list_approvals(
+        self, *, status: str = "pending", limit: int = 100
+    ) -> list[ApprovalRecord]:
+        """按状态列出审批记录（跨进程可见的待审批列表来源）。"""
+        async with self._lock:
+            rows = [
+                copy.deepcopy(value)
+                for value in self._approvals.values()
+                if value.get("status") == status
+            ]
+        records = [record for record in map(_approval_from_dict, rows) if record is not None]
+        records.sort(key=lambda record: record.created_at, reverse=True)
+        return records[:limit]
 
 
 # ──────────────────────────────────────────────
@@ -585,20 +598,10 @@ class SqliteRuntimeStore(RuntimeStore):
 
         return await _run_in_thread(_op) == 1
 
-    async def load_approval(self, approval_id: str) -> ApprovalRecord | None:
-        def _op() -> Any:
-            with self._connect() as conn:
-                return conn.execute(
-                    """SELECT approval_id, thread_id, run_id, user_id, tenant_id,
-                    action, arguments, status, reason, created_at, expires_at
-                    FROM agent_approvals WHERE approval_id = ?""",
-                    (approval_id,),
-                ).fetchone()
-
-        row = await _run_in_thread(_op)
-        if row is None:
-            return None
-        return _approval_from_dict(
+    @staticmethod
+    def _approval_row_to_record(row: Any) -> ApprovalRecord:
+        """把 SQLite 查询行转换为审批记录。"""
+        record = _approval_from_dict(
             dict(
                 zip(
                     [
@@ -619,6 +622,41 @@ class SqliteRuntimeStore(RuntimeStore):
                 )
             )
         )
+        # 查询行必含主键，转换结果不可能为 None。
+        assert record is not None
+        return record
+
+    async def load_approval(self, approval_id: str) -> ApprovalRecord | None:
+        def _op() -> Any:
+            with self._connect() as conn:
+                return conn.execute(
+                    """SELECT approval_id, thread_id, run_id, user_id, tenant_id,
+                    action, arguments, status, reason, created_at, expires_at
+                    FROM agent_approvals WHERE approval_id = ?""",
+                    (approval_id,),
+                ).fetchone()
+
+        row = await _run_in_thread(_op)
+        if row is None:
+            return None
+        return self._approval_row_to_record(row)
+
+    async def list_approvals(
+        self, *, status: str = "pending", limit: int = 100
+    ) -> list[ApprovalRecord]:
+        """按状态列出审批记录（跨进程可见的待审批列表来源）。"""
+        def _op() -> list[ApprovalRecord]:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    """SELECT approval_id, thread_id, run_id, user_id, tenant_id,
+                    action, arguments, status, reason, created_at, expires_at
+                    FROM agent_approvals WHERE status = ?
+                    ORDER BY created_at DESC LIMIT ?""",
+                    (status, limit),
+                ).fetchall()
+            return [self._approval_row_to_record(row) for row in rows]
+
+        return await _run_in_thread(_op)
 
 
 # ──────────────────────────────────────────────
@@ -910,6 +948,19 @@ class PostgresRuntimeStore(RuntimeStore):
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow("SELECT * FROM agent_approvals WHERE approval_id=$1", approval_id)
         return _approval_from_dict(dict(row)) if row else None
+
+    async def list_approvals(
+        self, *, status: str = "pending", limit: int = 100
+    ) -> list[ApprovalRecord]:
+        """按状态列出审批记录（跨进程可见的待审批列表来源）。"""
+        self._check()
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM agent_approvals WHERE status=$1 ORDER BY created_at DESC LIMIT $2",
+                status,
+                limit,
+            )
+        return [record for record in (_approval_from_dict(dict(row)) for row in rows) if record]
 
 
 # ──────────────────────────────────────────────

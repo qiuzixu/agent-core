@@ -30,6 +30,15 @@ class ApprovalStore(Protocol):
         """仅当记录仍处于预期状态时保存新状态。"""
         ...
 
+    async def list_approvals(
+        self,
+        *,
+        status: str = "pending",
+        limit: int = 100,
+    ) -> list[ApprovalRecord]:
+        """按状态列出审批记录，用于跨进程展示待审批列表。"""
+        ...
+
 
 class RunStore(Protocol):
     """运行实例持久化协议。

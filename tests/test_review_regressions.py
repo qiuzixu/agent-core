@@ -5,16 +5,16 @@ from __future__ import annotations
 import asyncio
 import tempfile
 import unittest
-from datetime import timedelta
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
 from agent_core.access import AccessContext
-from agent_core.checkpoint import MemoryCheckpointer, TimeTravelCheckpointer
+from agent_core.checkpoint import TimeTravelCheckpointer
 from agent_core.documents import Document
 from agent_core.errors import CheckpointError, ModelInvocationError, ModelOutputValidationError
 from agent_core.guardrails import GuardrailsMiddleware, LengthGuard
@@ -27,7 +27,13 @@ from agent_core.middleware import (
     MiddlewareResult,
 )
 from agent_core.model import GovernedModelAdapter, ModelExecutionPolicy, OpenAIProvider, StreamChunk
-from agent_core.protocol import Message, RunContext, assistant_message, system_message, user_message
+from agent_core.protocol import (
+    ApprovalRecord,
+    Message,
+    RunContext,
+    assistant_message,
+    user_message,
+)
 from agent_core.retrieval import InMemoryVectorStore, VectorQuery, VectorRecord
 from agent_core.runtime import ReActAgent
 from agent_core.storage import (
@@ -501,7 +507,90 @@ class TestReviewFollowUpFixes(unittest.IsolatedAsyncioTestCase):
         queue = ApprovalQueue()
         queue.create_request("thread", "tool", {}, timeout_seconds=0.01)
         await asyncio.sleep(0.03)
-        self.assertEqual(queue.list_pending(), [])
+        self.assertEqual(await queue.list_pending(), [])
+
+    async def test_list_pending_merges_persisted_records_from_other_process(self) -> None:
+        """Store 中由其他进程创建的 pending 记录也应出现在 list_pending 中。"""
+        store = MemoryRuntimeStore()
+        queue = ApprovalQueue(store)
+        await store.save_approval(
+            ApprovalRecord(
+                thread_id="t-remote",
+                run_id="r-remote",
+                action="deploy_fleet",
+                arguments={"city": "深圳"},
+                approval_id="approval-remote-1",
+            )
+        )
+        pending = await queue.list_pending()
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["request_id"], "approval-remote-1")
+        self.assertEqual(pending[0]["tool_name"], "deploy_fleet")
+
+    async def test_list_pending_filters_expired_persisted_record(self) -> None:
+        """持久化的过期 pending 记录不应出现在 list_pending 中。"""
+        store = MemoryRuntimeStore()
+        queue = ApprovalQueue(store)
+        await store.save_approval(
+            ApprovalRecord(
+                thread_id="t-remote",
+                run_id="r-remote",
+                action="deploy_fleet",
+                approval_id="approval-expired-1",
+                created_at="2020-01-01T00:00:00+00:00",
+                expires_at="2020-01-01T00:01:00+00:00",
+            )
+        )
+        self.assertEqual(await queue.list_pending(), [])
+
+    async def test_list_pending_respects_access_filter_on_persisted_record(self) -> None:
+        """持久化记录同样受 RBAC 过滤（他人/他租户不可见）。"""
+        store = MemoryRuntimeStore()
+        queue = ApprovalQueue(store)
+        await store.save_approval(
+            ApprovalRecord(
+                thread_id="t-remote",
+                run_id="r-remote",
+                action="deploy_fleet",
+                approval_id="approval-owned-1",
+                user_id="alice",
+                tenant_id="acme",
+            )
+        )
+        other_user = AccessContext(user_id="bob", tenant_id="acme")
+        self.assertEqual(await queue.list_pending(access=other_user), [])
+        owner = AccessContext(user_id="alice", tenant_id="acme")
+        self.assertEqual(len(await queue.list_pending(access=owner)), 1)
+
+    async def test_sqlite_list_approvals_round_trip(self) -> None:
+        """SQLite 后端的 list_approvals 应能读回已保存的记录。"""
+        with tempfile.TemporaryDirectory() as directory:
+            store = SqliteRuntimeStore(Path(directory) / "runtime.db")
+            await store.save_approval(
+                ApprovalRecord(
+                    thread_id="t1",
+                    run_id="r1",
+                    action="deploy_fleet",
+                    arguments={"city": "深圳"},
+                    approval_id="approval-sqlite-1",
+                )
+            )
+            records = await store.list_approvals(status="pending")
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0].approval_id, "approval-sqlite-1")
+            self.assertEqual(records[0].arguments, {"city": "深圳"})
+            # 状态过滤：非 pending 状态不应列出
+            await store.save_approval(
+                ApprovalRecord(
+                    thread_id="t2",
+                    run_id="r2",
+                    action="deploy_fleet",
+                    approval_id="approval-sqlite-2",
+                    status="approved",
+                )
+            )
+            self.assertEqual(len(await store.list_approvals(status="pending")), 1)
+            self.assertEqual(len(await store.list_approvals(status="approved")), 1)
 
 
 class TestToolLoopGuard(unittest.IsolatedAsyncioTestCase):

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """MCP 客户端适配器（支持 stdio / HTTP / SSE 传输）。
 
 Core 提供标准 MCP 会话管理和工具调用，不包含任何业务语义。
@@ -20,7 +19,7 @@ import asyncio
 import json
 import logging
 import os
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Literal, Protocol, cast
@@ -62,6 +61,11 @@ class McpToolClient:
 
     支持三种传输方式：stdio（本地）、http（Streamable HTTP）、sse（Server-Sent Events）。
     会话断开后自动尝试重连（次数由 max_reconnects 控制）。
+
+    重连生命周期回调（可选）：
+    - on_reconnected: 重连成功后触发，上层可借此自动刷新工具清单；
+    - on_give_up: 重连预算耗尽（连续失败且不再尝试）时触发一次，
+      上层可借此把面板状态标记为 error，避免"僵尸在线"。
     """
 
     def __init__(
@@ -76,6 +80,8 @@ class McpToolClient:
         headers: Mapping[str, str] | None = None,
         max_reconnects: int = 3,
         reconnect_delay_seconds: float = 1.0,
+        on_reconnected: Callable[[], Awaitable[None]] | None = None,
+        on_give_up: Callable[[Exception], Awaitable[None]] | None = None,
     ) -> None:
         if timeout_seconds <= 0:
             raise ValueError("timeout_seconds 必须大于 0")
@@ -94,6 +100,10 @@ class McpToolClient:
         self._close_requested: asyncio.Event | None = None
         self._terminal_error: McpConnectionError | McpTimeoutError | None = None
         self._reconnect_count: int = 0
+        self._on_reconnected = on_reconnected
+        self._on_give_up = on_give_up
+        # 放弃通知只发一次，避免预算耗尽后每次调用都重复触发上层回调。
+        self._give_up_notified = False
         self._start_lock = asyncio.Lock()
 
     @property
@@ -240,12 +250,30 @@ class McpToolClient:
             except (McpConnectionError, McpTimeoutError):
                 logger.warning("MCP 重连失败（第 %d 次）", self._reconnect_count)
                 raise
+            # 重连成功：重置放弃通知标记，并通知上层（如自动刷新工具集）。
+            self._give_up_notified = False
+            if self._on_reconnected is not None:
+                try:
+                    await self._on_reconnected()
+                except Exception:
+                    logger.exception("MCP on_reconnected 回调执行失败")
         await self.start()
         if self._session is not None:
             return self._session
         if self._terminal_error is not None:
+            await self._notify_give_up(self._terminal_error)
             raise self._terminal_error
         raise McpConnectionError("MCP 会话初始化失败")
+
+    async def _notify_give_up(self, error: Exception) -> None:
+        """重连预算耗尽后一次性通知上层（例如把管理面板状态置为 error）。"""
+        if self._on_give_up is None or self._give_up_notified:
+            return
+        self._give_up_notified = True
+        try:
+            await self._on_give_up(error)
+        except Exception:
+            logger.exception("MCP on_give_up 回调执行失败")
 
     async def _run_session(self, ready: asyncio.Future[None], close_requested: asyncio.Event) -> None:
         """在同一协程内持有 MCP 的异步上下文，保证会话生命周期完整。"""
@@ -253,9 +281,9 @@ class McpToolClient:
         try:
             try:
                 from mcp import ClientSession, StdioServerParameters
+                from mcp.client.sse import sse_client
                 from mcp.client.stdio import stdio_client
                 from mcp.client.streamable_http import streamablehttp_client
-                from mcp.client.sse import sse_client
             except ImportError as exc:
                 raise McpConnectionError("MCP 适配器需要安装 agent-core[mcp]") from exc
 
@@ -332,8 +360,10 @@ class McpToolClient:
                 return f"\u8f93\u51fa\u7c7b\u578b\u4e0d\u5339\u914d\uff1a\u671f\u671b object\uff0c\u5b9e\u9645 {type(result).__name__}"
             return None
         properties = schema.get("properties", {})
-        if isinstance(properties, dict):
-            for key in schema.get("required", []):
+        # required 在 dict[str, object] 里类型为 object，先收窄为 list 再迭代（双端同步）。
+        required = schema.get("required", [])
+        if isinstance(properties, dict) and isinstance(required, list):
+            for key in required:
                 if isinstance(key, str) and key not in result:
                     return f"\u8f93\u51fa\u7f3a\u5c11\u5fc5\u9700\u5b57\u6bb5\uff1a{key}"
         return None

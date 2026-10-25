@@ -39,6 +39,11 @@ from pathlib import Path
 from typing import Any, cast
 
 from agent_core.access import AccessContext
+from agent_core.compaction.types import (
+    SUMMARY_CLOSE,
+    SUMMARY_OPEN,
+    SUMMARY_SOURCE,
+)
 from agent_core.model import ContextUsage
 from agent_core.protocol.messages import Message, assistant_message, user_message
 from agent_core.protocol.runtime import RunContext
@@ -65,6 +70,16 @@ def _msg_to_row(msg: Message) -> tuple[str, str, str | None, str | None, str]:
         msg.tool_call_id,
         json.dumps(msg.tool_calls, ensure_ascii=False) if msg.tool_calls else "[]",
     )
+
+
+def _extract_summary_body(content: str) -> str:
+    """从压缩 checkpoint 消息中提取摘要正文（SUMMARY 标签之间的内容）。"""
+    open_index = content.find(SUMMARY_OPEN)
+    close_index = content.find(SUMMARY_CLOSE)
+    if open_index != -1 and close_index > open_index:
+        return content[open_index + len(SUMMARY_OPEN) : close_index].strip()
+    # 无标签（历史数据或格式变化）时退回全文，保证上下文不丢
+    return content.strip()
 
 
 # ──────────────────────────────────────────────
@@ -813,9 +828,19 @@ class SessionManager:
         history = await self._store.load(thread_id, access=access)
         memory_context = self._build_context(history) if history else None
 
-        # 2. 裁剪过长历史（仅在内存中裁剪，下一步 append 写入的是新消息）
+        # 2. 裁剪过长历史（仅在内存中裁剪，下一步 append 写入的是新消息）。
+        #    裁剪不能越过最新摘要：摘要已 shadow 它之前的全部原文，
+        #    越过会把摘要裁掉、迫使下一轮回到全量重压。
         if len(history) > self._max_history:
-            history = history[-self._max_history :]
+            start = len(history) - self._max_history
+            latest_summary = None
+            for index in range(len(history) - 1, -1, -1):
+                if history[index].name == SUMMARY_SOURCE:
+                    latest_summary = index
+                    break
+            if latest_summary is not None and latest_summary < start:
+                start = latest_summary
+            history = history[start:]
             await self._store.save(thread_id, history, access=access)
 
         # 3. 调用 Agent
@@ -840,9 +865,21 @@ class SessionManager:
         return answer
 
     def _build_context(self, history: list[Message]) -> str:
-        """把历史消息转成字符串摘要注入 system prompt。"""
+        """把历史消息转成字符串摘要注入 system prompt。
+
+        历史中若存在压缩摘要 checkpoint（name=compaction_checkpoint），
+        以最新一条摘要为起点：摘要之前的原文已被"影子化"（仍在库中，
+        但不再进入模型上下文），之后只拼接摘要 + 增量消息。
+        """
         lines: list[str] = []
-        for msg in history:
+        start = 0
+        # 从后往前找最新摘要；找到则以"摘要 + 增量"替代全量重建
+        for index in range(len(history) - 1, -1, -1):
+            if history[index].name == SUMMARY_SOURCE:
+                lines.append(f"（早期会话摘要）\n{_extract_summary_body(history[index].content)}")
+                start = index + 1
+                break
+        for msg in history[start:]:
             if msg.role == "user":
                 lines.append(f"用户: {msg.content}")
             elif msg.role == "assistant":

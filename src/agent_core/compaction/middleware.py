@@ -60,6 +60,8 @@ logger = logging.getLogger(__name__)
 CountTokens = Callable[..., Awaitable[ContextUsage]]
 # 可观测事件上报钩子（独立使用中间件时的兜底；正常情况下走 ctx.emit）
 EmitHook = Callable[[str, dict[str, Any]], None]
+# 摘要持久化回调：参数为 (thread_id, checkpoint 消息, 压缩信息)，由应用层注入
+PersistSummary = Callable[[str, Message, dict[str, Any]], Awaitable[None]]
 
 # ctx.metadata 中记录"上下文超长重试"次数的键
 OVERFLOW_RETRY_KEY = "compaction_overflow_retries"
@@ -116,6 +118,7 @@ class CompactionMiddleware(Middleware):
         emit: EmitHook | None = None,
         summary_instruction: str = DEFAULT_COMPACTION_INSTRUCTION,
         summary_sections: tuple[str, ...] = DEFAULT_SUMMARY_SECTIONS,
+        persist_summary: PersistSummary | None = None,
     ) -> None:
         self._config = config or CompactionConfig()
         self._llm = llm
@@ -131,6 +134,11 @@ class CompactionMiddleware(Middleware):
         self._emit_hook = emit
         self._summary_instruction = summary_instruction
         self._summary_sections = summary_sections
+        # 压缩摘要持久化回调：压缩成功后把 checkpoint 消息写入会话存储，
+        # 下一轮对话即可从摘要继续，不必重新压缩全部历史（对齐 deepseek-harness 语义）。
+        self._persist_summary = persist_summary
+        # 去重：同一次 run 内多次触发压缩时避免重复写入相同摘要
+        self._last_persisted_summary: str | None = None
         # 最近一次量到的窗口大小：溢出恢复路径拿不到 usage 时用它兜底
         self._last_window: int | None = None
 
@@ -246,10 +254,45 @@ class CompactionMiddleware(Middleware):
         )
 
         context.messages = result.messages
+        await self._try_persist_summary(context, result)
         return MiddlewareResult(
             action=MiddlewareAction.MODIFY,
             data={"messages": result.messages, "compaction": result},
         )
+
+    async def _try_persist_summary(self, context: MiddlewareContext, result: CompactionResult) -> None:
+        """压缩成功后把摘要 checkpoint 持久化到会话存储（跨轮复用）。
+
+        摘要写回 sessions 表后，下一轮 load() 会带上它；SessionManager
+        构建记忆上下文时直接以最新摘要为起点，不再重新压缩全部历史。
+        prune-only（无摘要）与重复摘要会跳过；持久化失败只记日志，
+        不影响本次模型调用。
+        """
+        if self._persist_summary is None:
+            return
+        thread_id = context.metadata.get("thread_id")
+        if not thread_id:
+            return
+        checkpoint = next((m for m in result.messages if m.name == SUMMARY_SOURCE), None)
+        if checkpoint is None:
+            return
+        # 同一摘要文本不重复写库（同一次 run 内多次触发压缩时常见）
+        if checkpoint.content == self._last_persisted_summary:
+            return
+        try:
+            await self._persist_summary(
+                str(thread_id),
+                checkpoint,
+                {
+                    "before_tokens": result.before_tokens,
+                    "after_tokens": result.after_tokens,
+                    "cut": result.cut,
+                    "reason": result.reason,
+                },
+            )
+            self._last_persisted_summary = checkpoint.content
+        except Exception as exc:
+            logger.warning("[Compaction] 摘要持久化失败（不影响本次调用）：%s", exc)
 
     # ──────────────────────────────────────────────
     # 异常接管：模型报"上下文超长"时强制压缩后重试

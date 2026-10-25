@@ -2,7 +2,7 @@
 
 # 兼容旧导入路径；能力实现分别归属 hitl 和 compaction 领域模块。
 from agent_core.compaction.token_limit import TokenLimitMiddleware
-from agent_core.hitl.core import HumanInTheLoopMiddleware
+from agent_core.hitl.middleware import HumanInTheLoopMiddleware
 from agent_core.middleware.audit import AuditConfig, AuditMiddleware, AuditRecord
 from agent_core.middleware.auth import (
     AuthConfig,

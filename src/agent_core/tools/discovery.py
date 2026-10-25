@@ -1,5 +1,4 @@
-﻿# -*- coding: utf-8 -*-
-"""MCP 工具自动发现与注册。
+﻿"""MCP 工具自动发现与注册。
 
 把 MCP server 的所有工具（tools/list 返回的完整定义）自动翻译成
 OpenAI function calling 格式并注册到 ToolRegistry，实现"即插即用"。
@@ -14,10 +13,13 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
-from agent_core.mcp.client import McpToolCaller, JsonObject
+from agent_core.mcp.client import JsonObject, McpToolCaller
 from agent_core.tools.executor import ToolRegistry
+
+if TYPE_CHECKING:
+    from agent_core.tools.config import McpDiscoveryConfig
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +55,7 @@ async def auto_register_mcp_tools(
     exclude: list[str] | None = None,
     replace_tools: bool = False,
     parameters_override: Mapping[str, dict[str, Any]] | None = None,
+    descriptions_override: Mapping[str, str] | None = None,
 ) -> list[str]:
     """自动发现 MCP server 的所有工具并注册到 ToolRegistry。
 
@@ -68,6 +71,11 @@ async def auto_register_mcp_tools(
         exclude: 排除这些工具。
         replace_tools: 是否覆盖同名已注册工具（默认拒绝覆盖）。
         parameters_override: 按工具名覆盖参数 schema（可选）。
+        descriptions_override: 按工具名覆盖 description（可选）。
+
+            第三方 MCP server 的描述质量参差不齐，覆盖后可以
+            不改 server 就优化模型对该工具的调用准确率。
+            优先级：override > server 返回的 description。
 
     Returns:
         实际注册的工具名称列表。
@@ -82,6 +90,7 @@ async def auto_register_mcp_tools(
     include_set = set(include) if include else None
     exclude_set = set(exclude) if exclude else set()
     overrides = parameters_override or {}
+    description_overrides = descriptions_override or {}
 
     registered: list[str] = []
     for tool in definitions:
@@ -97,15 +106,21 @@ async def auto_register_mcp_tools(
 
         func = _make_mcp_wrapper(client, name)
 
-        # 优先用 override 的参数 schema
-        parameters = overrides.get(name) or tool.get("inputSchema") or {
-            "type": "object", "properties": {}, "required": []
-        }
+        # 优先用 override 的参数 schema；JSON Schema 本质都是字典，
+        # tool.get 返回 object，这里显式收窄（MCP 规范保证 inputSchema 是对象）。
+        parameters = cast(
+            dict[str, Any],
+            overrides.get(name)
+            or tool.get("inputSchema")
+            or {"type": "object", "properties": {}, "required": []},
+        )
 
+        # 描述优先级：显式覆盖 > server 返回值（见 descriptions_override）。
         registry.register(
             name=name,
             func=func,
-            description=str(tool.get("description", "")),
+            description=description_overrides.get(name)
+            or str(tool.get("description", "")),
             parameters=parameters,
             risk_level=risk_level,
             requires_approval=requires_approval,
@@ -144,7 +159,7 @@ def _make_mcp_wrapper(client: McpToolCaller, tool_name: str) -> Any:
 async def connect_mcp_server(
     client: McpToolCaller,
     registry: ToolRegistry,
-    config: "McpDiscoveryConfig | None" = None,
+    config: McpDiscoveryConfig | None = None,
     *,
     server_name: str = "",
 ) -> list[str]:
@@ -186,4 +201,5 @@ async def connect_mcp_server(
         include=cfg.include,
         exclude=cfg.exclude,
         replace_tools=cfg.replace_tools,
+        descriptions_override=cfg.descriptions_override,
     )
