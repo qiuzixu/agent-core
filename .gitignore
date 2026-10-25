@@ -15,7 +15,7 @@ site/
 *.sqlite3
 .venv/*
 
-# pytest ÁÙÊ±Ä¿Â¼ÓëÊ¾ÀıÔËĞĞ²úÎï
+# pytest ä¸´æ—¶ç›®å½•ä¸ç¤ºä¾‹è¿è¡Œäº§ç‰©
 .tmp/
 examples/starter/.starter_checkpoints/
 pytest-of-TYS/

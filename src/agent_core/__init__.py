@@ -192,10 +192,13 @@ from agent_core.protocol import (
 )
 from agent_core.retrieval import (
     ChromaVectorStore,
+    EmbeddingProvider,
     EmbeddingRetriever,
     Embeddings,
+    FaissVectorStore,
     InMemoryVectorStore,
     KeywordRetriever,
+    OpenAIEmbeddings,
     PgVectorStore,
     Reranker,
     RetrievalQuery,
@@ -207,6 +210,7 @@ from agent_core.retrieval import (
     VectorSearchResult,
     VectorStore,
     VectorStoreBackend,
+    create_embeddings,
     create_vector_store,
 )
 from agent_core.runtime import (
@@ -420,9 +424,11 @@ __all__ = [
     "NodeExecutionPolicy",
     "ObservabilityMiddleware",
     "OllamaProvider",
+    "OpenAIEmbeddings",
     "OpenAIProvider",
     "OutputFormatGuard",
     "PIIRedactionGuard",
+    "FaissVectorStore",
     "PgVectorStore",
     "PostgresContextStore",
     "PostgresMemoryStore",
@@ -528,6 +534,7 @@ __all__ = [
     "create_run_lease_store",
     "create_runtime_store",
     "create_session_store",
+    "create_embeddings",
     "create_vector_store",
     "create_workflow_execution_store",
     "current_node_execution",

@@ -49,6 +49,11 @@ chroma = [
   "chromadb>=1.0,<2",
 ]
 
+faiss = [
+  "faiss-cpu>=1.12,<2",
+  "numpy>=2.3,<3",
+]
+
 pgvector = [
   "asyncpg>=0.30,<1",
 ]
@@ -117,6 +122,8 @@ module = [
   "anthropic",
   "asyncpg",
   "chromadb",
+  "faiss",
+  "numpy",
   "dashscope.*",
   "google.*",
   "httpx",
