@@ -51,7 +51,7 @@ def _long_history() -> list[Message]:
 
 
 class _FakeModel:
-    """最小 ModelAdapter 替身：返回结构化摘要回复。"""
+    """最小 ModelAdapter 替身：返回结构化摘要回复（流式）。"""
 
     def __init__(self, reply: str = "## 任务目标\n压缩历史") -> None:
         self.reply = reply
@@ -62,10 +62,15 @@ class _FakeModel:
         self.chat_calls += 1
         return assistant_message(self.reply)
 
-    async def stream_chat(self, messages: list[Message], **kwargs: Any) -> AsyncIterator[StreamChunk]:
+    async def stream_chat(
+        self, messages: list[Message], **kwargs: Any
+    ) -> AsyncIterator[StreamChunk]:
         del messages, kwargs
-        raise AssertionError("压缩流程不应调用 stream_chat")
-        yield  # pragma: no cover
+        self.chat_calls += 1
+        reply = self.reply or ""
+        for i in range(0, len(reply), 50):
+            yield StreamChunk(text=reply[i : i + 50])
+        yield StreamChunk(finish_reason="stop")
 
     async def context_usage(self, messages: list[Message], **kwargs: Any) -> ContextUsage:
         del kwargs

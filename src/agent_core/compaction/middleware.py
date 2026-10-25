@@ -17,6 +17,7 @@ schema 变大等情况），无视阈值强制压一轮并让循环重试。
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -141,6 +142,9 @@ class CompactionMiddleware(Middleware):
         self._last_persisted_summary: str | None = None
         # 最近一次量到的窗口大小：溢出恢复路径拿不到 usage 时用它兜底
         self._last_window: int | None = None
+        # 摘要熔断状态：连续失败计数 + 熔断触发时间（monotonic 秒）
+        self._summary_failure_count = 0
+        self._summary_breaker_tripped_at: float | None = None
 
     # ──────────────────────────────────────────────
     # 窗口与输出预留
@@ -173,6 +177,71 @@ class CompactionMiddleware(Middleware):
             tool_definitions=self._tool_definitions,
             chars_per_token=self._config.chars_per_token,
         )
+
+    # ──────────────────────────────────────────────
+    # 摘要熔断与自适应输出上限
+    # ──────────────────────────────────────────────
+
+    def _summary_breaker_open(self) -> bool:
+        """判断摘要熔断是否处于打开状态。
+
+        连续失败达到 max_consecutive_failures 后熔断打开，跳过摘要只做瘦身；
+        冷却时间（failure_cooldown_seconds）结束后放行一次探测请求。
+        cooldown <= 0 表示不自动恢复，只有溢出强制路径成功时才复位。
+        """
+        threshold = self._config.max_consecutive_failures
+        if threshold <= 0 or self._summary_breaker_tripped_at is None:
+            return False
+        cooldown = self._config.failure_cooldown_seconds
+        if cooldown <= 0:
+            return True
+        elapsed = time.monotonic() - self._summary_breaker_tripped_at
+        if elapsed >= cooldown:
+            # 半开：冷却结束，放行一次探测
+            logger.info(
+                "[Compaction] 摘要熔断冷却结束（%.0f 秒），放行探测请求", elapsed
+            )
+            return False
+        return True
+
+    def _record_summary_success(self) -> None:
+        """摘要成功后复位熔断计数与触发时间。"""
+        if self._summary_failure_count > 0 or self._summary_breaker_tripped_at is not None:
+            logger.info("[Compaction] 摘要恢复正常，熔断计数复位")
+        self._summary_failure_count = 0
+        self._summary_breaker_tripped_at = None
+
+    def _record_summary_failure(self, ctx: MiddlewareContext | None = None) -> None:
+        """摘要失败后递增计数，达到阈值时触发熔断并上报事件。"""
+        self._summary_failure_count += 1
+        threshold = self._config.max_consecutive_failures
+        if threshold > 0 and self._summary_failure_count >= threshold and self._summary_breaker_tripped_at is None:
+            self._summary_breaker_tripped_at = time.monotonic()
+            logger.warning(
+                "[Compaction] 摘要连续失败 %d 次，熔断打开（冷却 %.0f 秒），"
+                "期间只做工具输出瘦身",
+                self._summary_failure_count,
+                self._config.failure_cooldown_seconds,
+            )
+            if ctx is not None:
+                self._emit(
+                    ctx,
+                    "compaction_breaker_tripped",
+                    consecutive_failures=self._summary_failure_count,
+                    cooldown_seconds=self._config.failure_cooldown_seconds,
+                )
+
+    def _resolve_summary_max_tokens(self, effective_window: int) -> int:
+        """解析摘要生成本身的输出上限。
+
+        配置值 > 0 时直接使用；0 表示自适应——按有效窗口的 10% 计算，
+        下限 2048、上限 8192，避免小窗口配出过大上限或大窗口配出过小上限。
+        """
+        configured = self._config.summary_max_tokens
+        if configured > 0:
+            return configured
+        return min(8192, max(2048, effective_window // 10))
+
 
     # ──────────────────────────────────────────────
     # 入口
@@ -209,6 +278,14 @@ class CompactionMiddleware(Middleware):
         if ratio < config.threshold_ratio:
             return MiddlewareResult(action=MiddlewareAction.CONTINUE)
 
+        # 摘要熔断打开时跳过摘要只做瘦身（学习 Claude Code：连续失败后止损）
+        allow_summary = not self._summary_breaker_open()
+        if not allow_summary:
+            logger.info(
+                "[Compaction] 摘要熔断中（连续失败 %d 次），本次只做工具输出瘦身",
+                self._summary_failure_count,
+            )
+
         self._emit(
             context,
             "compaction_started",
@@ -220,7 +297,13 @@ class CompactionMiddleware(Middleware):
         )
 
         try:
-            result = await self._compact(context.messages, window=window, before_tokens=before_tokens)
+            result = await self._compact(
+                context.messages,
+                window=window,
+                before_tokens=before_tokens,
+                ctx=context,
+                allow_summary=allow_summary,
+            )
         except Exception as exc:
             logger.warning("[Compaction] 压缩失败，降级到硬截断：%s", exc)
             self._emit(context, "compaction_failed", reason=str(exc))
@@ -251,6 +334,8 @@ class CompactionMiddleware(Middleware):
             after_tokens=result.after_tokens,
             cut=result.cut,
             ratio=round(result.after_tokens / effective_window, 4),
+            duration_ms=result.duration_ms,
+            summary_tokens=result.summary_tokens,
         )
 
         context.messages = result.messages
@@ -344,7 +429,9 @@ class CompactionMiddleware(Middleware):
             forced=True,
         )
         try:
-            result = await self._compact(ctx.messages, window=window, before_tokens=before_tokens)
+            result = await self._compact(
+                ctx.messages, window=window, before_tokens=before_tokens, ctx=ctx
+            )
         except Exception as compact_exc:
             logger.warning("[Compaction] 溢出恢复压缩失败：%s", compact_exc)
             self._emit(ctx, "compaction_failed", reason=str(compact_exc))
@@ -371,6 +458,8 @@ class CompactionMiddleware(Middleware):
             cut=result.cut,
             ratio=round(result.after_tokens / effective_window, 4),
             forced=True,
+            duration_ms=result.duration_ms,
+            summary_tokens=result.summary_tokens,
         )
         return True
 
@@ -384,15 +473,23 @@ class CompactionMiddleware(Middleware):
         *,
         window: int,
         before_tokens: int,
+        ctx: MiddlewareContext | None = None,
+        allow_summary: bool = True,
     ) -> CompactionResult:
         """压一轮（必要时按 max_retries 再压一轮），返回压缩结果。
 
         顺序是"先瘦身超长工具输出，再压摘要"：瘦身粒度细、零成本，
         摘要粒度粗、要调模型，先做便宜的能少调一次模型。
 
+        Args:
+            ctx: 中间件上下文，用于事件上报（可 None，独立调用时走 emit hook）。
+            allow_summary: 是否允许调用摘要模型；熔断打开时为 False，
+                只做瘦身。溢出强制路径（handle_exception）始终允许摘要。
+
         Raises:
             CompactionError: 摘要失败 / 结构不合规，由调用方降级处理。
         """
+        started = time.monotonic()
         config = self._config
         effective_window = self._effective_window(window)
         threshold_tokens = int(effective_window * config.threshold_ratio)
@@ -419,17 +516,32 @@ class CompactionMiddleware(Middleware):
         cut = 0
         after_tokens = max(before_tokens - pruned_saved, 0)
 
+        def _with_timing(result: CompactionResult) -> CompactionResult:
+            """给压缩结果附加总耗时（毫秒），所有返回点统一走这里。"""
+            result.duration_ms = round((time.monotonic() - started) * 1000, 2)
+            return result
+
         async def fallback(reason: str) -> CompactionResult:
             """摘要不可用时收口：瘦身有效则单独采纳，否则判定未压缩。"""
             if pruned_saved <= 0:
-                return CompactionResult(False, messages, before_tokens=before_tokens, reason=reason)
+                return _with_timing(
+                    CompactionResult(False, messages, before_tokens=before_tokens, reason=reason)
+                )
             measured = await self._remaining_tokens(pruned)
-            return CompactionResult(
-                True,
-                pruned,
-                before_tokens=before_tokens,
-                after_tokens=measured if measured is not None else after_tokens,
-                reason=f"prune_only:{reason}",
+            return _with_timing(
+                CompactionResult(
+                    True,
+                    pruned,
+                    before_tokens=before_tokens,
+                    after_tokens=measured if measured is not None else after_tokens,
+                    reason=f"prune_only:{reason}",
+                )
+            )
+
+        # 摘要熔断：跳过摘要只做瘦身，避免每次都等摘要模型失败
+        if not allow_summary:
+            return await fallback(
+                f"摘要熔断中，跳过摘要（连续失败 {self._summary_failure_count} 次）"
             )
 
         # 2. 摘要：压头部旧消息，必要时重复到低于阈值
@@ -466,21 +578,34 @@ class CompactionMiddleware(Middleware):
                 )
 
             try:
-                summary = await summarize(
-                    self._summarizer,
+                summary, cut = await self._summarize_head(
                     current,
-                    cut=cut,
-                    max_tokens=config.summary_max_tokens,
-                    instruction=self._summary_instruction,
-                    sections=self._summary_sections,
+                    cut,
+                    effective_window=effective_window,
+                    threshold_tokens=threshold_tokens,
+                    retain_tokens=retain_tokens,
                 )
             except CompactionError as exc:
                 logger.warning("[Compaction] 摘要失败：%s", exc)
+                self._record_summary_failure(ctx)
                 return await fallback(f"摘要失败:{exc}")
+            self._record_summary_success()
+
+            # 收缩重试可能改变切点：重算头部元数据，保证"摘要未变小"检查
+            # 和 after_tokens 推算基于最新的切点
+            head_messages = current[:cut]
+            head_tokens = estimate_tokens(head_messages, chars_per_token=config.chars_per_token)
+            origin_messages = [
+                m for m in head_messages if m.role != "system" and m.name != SUMMARY_SOURCE
+            ]
+            origin_tokens = estimate_tokens(origin_messages, chars_per_token=config.chars_per_token)
+            if origin_tokens <= 0:
+                return await fallback("收缩后头部没有可压原文")
 
             checkpoint = build_checkpoint(summary)
             checkpoint_tokens = estimate_tokens([checkpoint], chars_per_token=config.chars_per_token)
             if checkpoint_tokens >= origin_tokens:
+                # "摘要没变小"是策略性拒绝，不计入熔断
                 return await fallback("摘要未比原文更小")
 
             current = rebuild(current, cut, checkpoint)
@@ -493,7 +618,7 @@ class CompactionMiddleware(Middleware):
                 break
 
         reason = "ok" if pruned_count == 0 else f"ok(pruned {pruned_count} tool results)"
-        return CompactionResult(
+        result = CompactionResult(
             True,
             current,
             before_tokens=before_tokens,
@@ -501,6 +626,66 @@ class CompactionMiddleware(Middleware):
             cut=cut,
             reason=reason,
         )
+        result.summary_tokens = estimate_tokens(
+            [m for m in current if m.name == SUMMARY_SOURCE],
+            chars_per_token=config.chars_per_token,
+        ) or None
+        return _with_timing(result)
+
+    async def _summarize_head(
+        self,
+        messages: list[Message],
+        cut: int,
+        *,
+        effective_window: int,
+        threshold_tokens: int,
+        retain_tokens: int,
+    ) -> tuple[str, int]:
+        """调用摘要模型压缩 messages[:cut]。
+
+        摘要输入疑似超长（模型报 context length）时，按半数收缩切点重试
+        （学习 Codex / Claude Code 的 graceful degradation）：切点前移意味着
+        更少的原文进入摘要请求。收缩上限为 max_shrink_retries，耗尽后抛出
+        原始 CompactionError 由调用方降级。
+
+        Returns:
+            (摘要正文, 最终使用的切点)。收缩后切点会变，调用方需以返回值为准。
+
+        Raises:
+            CompactionError: 摘要调用失败（含收缩重试耗尽后的原始错误）。
+        """
+        config = self._config
+        shrink_left = config.max_shrink_retries
+        current_cut = cut
+        while True:
+            try:
+                summary = await summarize(
+                    self._summarizer,
+                    messages,
+                    cut=current_cut,
+                    max_tokens=self._resolve_summary_max_tokens(effective_window),
+                    instruction=self._summary_instruction,
+                    sections=self._summary_sections,
+                )
+                return summary, current_cut
+            except CompactionError as exc:
+                if not is_context_overflow_error(exc) or shrink_left <= 0 or current_cut < 4:
+                    raise
+                new_cut = balanced_cut(
+                    messages,
+                    max(current_cut // 2, 1),
+                )
+                if new_cut >= current_cut:
+                    # 已经缩到头了，放弃收缩
+                    raise
+                shrink_left -= 1
+                logger.info(
+                    "[Compaction] 摘要输入疑似超长，切点收缩重试：%d → %d（剩余 %d 次）",
+                    current_cut,
+                    new_cut,
+                    shrink_left,
+                )
+                current_cut = new_cut
 
     async def _remaining_tokens(self, messages: list[Message]) -> int | None:
         """压缩后再量一次真实占用；量不到就返回 None，由估算值兜底。"""

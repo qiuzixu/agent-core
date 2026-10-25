@@ -29,10 +29,17 @@ class CompactionConfig:
     Attributes:
         threshold_ratio: 窗口占用达到该比例即触发压缩。
         retain_ratio: 压缩后保留的尾部原文比例（占窗口，必须小于阈值）。
-        summary_max_tokens: 摘要生成本身的输出上限。
+        summary_max_tokens: 摘要生成本身的输出上限；0 表示自适应
+            （按有效窗口的 10% 计算，下限 2048、上限 8192）。
         max_retries: 压完仍超阈值的额外压缩轮数（0 表示只压一轮）。
         max_overflow_retries: 模型报"上下文超长"时的强制压缩重试上限
             （0 表示不接管该错误，交给上层抛出）。
+        max_consecutive_failures: 摘要连续失败多少次后熔断（跳过摘要只瘦身）；
+            0 表示禁用熔断。
+        failure_cooldown_seconds: 熔断后的半开冷却秒数，冷却结束放行一次探测；
+            0 表示不自动恢复（仅溢出强制路径成功时复位）。
+        max_shrink_retries: 摘要请求疑似输入超长时，按半数收缩切点重试的次数
+            上限（0 表示不收缩重试，直接降级）。
         enabled: 总开关，关闭后中间件直接放行。
         chars_per_token: 无精确计数时的字符/token 估算比例（用于尾部预算
             与"摘要是否更小"的判断）。
@@ -44,12 +51,15 @@ class CompactionConfig:
 
     threshold_ratio: float = 0.75
     retain_ratio: float = 0.20
-    summary_max_tokens: int = 2048
+    summary_max_tokens: int = 0
     max_retries: int = 1
     max_overflow_retries: int = 1
     enabled: bool = True
     chars_per_token: int = 4
     reserved_output_tokens: int = 0
+    max_consecutive_failures: int = 3
+    failure_cooldown_seconds: float = 300.0
+    max_shrink_retries: int = 1
     """为模型输出预留的 token 数。
 
     窗口按“输入 + 输出”共享计算：请求里还要放本次生成的内容，
@@ -73,12 +83,18 @@ class CompactionConfig:
                 "compaction retain_ratio 必须大于 0 且小于 threshold_ratio，"
                 f"当前 retain={self.retain_ratio}, threshold={self.threshold_ratio}"
             )
-        if self.summary_max_tokens <= 0:
-            raise ValueError("compaction summary_max_tokens 必须为正整数")
+        if self.summary_max_tokens < 0:
+            raise ValueError("compaction summary_max_tokens 不能为负数（0 表示自适应）")
         if self.max_retries < 0:
             raise ValueError("compaction max_retries 不能为负数")
         if self.max_overflow_retries < 0:
             raise ValueError("compaction max_overflow_retries 不能为负数")
+        if self.max_consecutive_failures < 0:
+            raise ValueError("compaction max_consecutive_failures 不能为负数（0 表示禁用熔断）")
+        if self.failure_cooldown_seconds < 0:
+            raise ValueError("compaction failure_cooldown_seconds 不能为负数")
+        if self.max_shrink_retries < 0:
+            raise ValueError("compaction max_shrink_retries 不能为负数")
         if self.chars_per_token <= 0:
             raise ValueError("compaction chars_per_token 必须为正整数")
         if self.reserved_output_tokens < 0:
@@ -96,6 +112,8 @@ class CompactionResult:
         after_tokens: 压缩后窗口占用（按字符估算的缩减量推算）。
         cut: 被压成摘要的头部条数（压缩边界）。
         reason: 未压缩或失败原因，供日志与降级事件使用。
+        duration_ms: 本次压缩总耗时（毫秒，含瘦身与摘要调用）。
+        summary_tokens: 摘要检查点自身的 token 估算（prune-only 时为 None）。
     """
 
     compacted: bool
@@ -104,6 +122,8 @@ class CompactionResult:
     after_tokens: int = 0
     cut: int = 0
     reason: str = ""
+    duration_ms: float | None = None
+    summary_tokens: int | None = None
 
 
 class CompactionError(RuntimeError):

@@ -232,7 +232,7 @@ class TestSummarizer(unittest.IsolatedAsyncioTestCase):
             await summarize(model, [user_message("历史")], cut=1, max_tokens=256)
 
     async def test_summarize_wraps_model_failure(self) -> None:
-        model = _FakeModel(error=RuntimeError("网络中断"))
+        model = _FakeModel(stream_error=RuntimeError("网络中断"))
 
         with self.assertRaises(CompactionError):
             await summarize(model, [user_message("历史")], cut=1, max_tokens=256)
@@ -248,29 +248,51 @@ class TestSummarizer(unittest.IsolatedAsyncioTestCase):
 
 
 class _FakeModel:
-    """最小 ModelAdapter 替身：可注入摘要回复或异常。"""
+    """最小 ModelAdapter 替身：可注入摘要回复、异常或流式行为。"""
 
     def __init__(
         self,
         *,
         reply: str | None = None,
         error: Exception | None = None,
+        finish_reason: str | None = "stop",
+        stream_tool_calls: bool = False,
+        stream_error: Exception | None = None,
+        error_when_prompt_chars_above: int | None = None,
     ) -> None:
         self.reply = reply
         self.error = error
-        self.chat_calls = 0
+        self.finish_reason = finish_reason
+        self.stream_tool_calls = stream_tool_calls
+        self.stream_error = stream_error
+        self.error_when_prompt_chars_above = error_when_prompt_chars_above
+        self.summary_calls = 0
+        self.prompts: list[list[Message]] = []
 
     async def chat(self, messages: list[Message], **kwargs: Any) -> Message:
         del kwargs
-        self.chat_calls += 1
+        self.summary_calls += 1
         if self.error is not None:
             raise self.error
         return assistant_message(self.reply or "")
 
-    async def stream_chat(self, messages: list[Message], **kwargs: Any) -> AsyncIterator[StreamChunk]:
-        del messages, kwargs
-        raise AssertionError("压缩流程不应调用 stream_chat")
-        yield  # pragma: no cover - 保证成为异步生成器
+    async def stream_chat(
+        self, messages: list[Message], **kwargs: Any
+    ) -> AsyncIterator[StreamChunk]:
+        self.prompts.append(list(messages))
+        self.summary_calls += 1
+        del kwargs
+        if self.stream_error is not None:
+            raise self.stream_error
+        if self.error is not None:
+            raise self.error
+        reply = self.reply or ""
+        # 分片输出，模拟真实流式
+        for i in range(0, len(reply), 50):
+            yield StreamChunk(text=reply[i : i + 50])
+        if self.stream_tool_calls:
+            yield StreamChunk(tool_calls=[{"id": "c1", "type": "function", "name": "x", "args": {}}])
+        yield StreamChunk(finish_reason=self.finish_reason)
 
     async def context_usage(self, messages: list[Message], **kwargs: Any) -> ContextUsage:
         del kwargs
@@ -330,7 +352,7 @@ class TestCompactionMiddleware(unittest.IsolatedAsyncioTestCase):
         result = await middleware.before_model(ctx)
 
         self.assertEqual(result.action, MiddlewareAction.CONTINUE)
-        self.assertEqual(model.chat_calls, 0)
+        self.assertEqual(model.summary_calls, 0)
         self.assertEqual(events, [])
 
     async def test_unavailable_usage_continues(self) -> None:
@@ -355,7 +377,7 @@ class TestCompactionMiddleware(unittest.IsolatedAsyncioTestCase):
         result = await middleware.before_model(ctx)
 
         self.assertEqual(result.action, MiddlewareAction.CONTINUE)
-        self.assertEqual(model.chat_calls, 0)
+        self.assertEqual(model.summary_calls, 0)
 
     async def test_disabled_config_continues(self) -> None:
         model = _FakeModel(reply="## 任务目标\n压缩历史")
@@ -368,7 +390,7 @@ class TestCompactionMiddleware(unittest.IsolatedAsyncioTestCase):
         result = await middleware.before_model(ctx)
 
         self.assertEqual(result.action, MiddlewareAction.CONTINUE)
-        self.assertEqual(model.chat_calls, 0)
+        self.assertEqual(model.summary_calls, 0)
 
     async def test_threshold_reached_compacts_head_into_checkpoint(self) -> None:
         model = _FakeModel(reply="## 任务目标\n查询机场并返回结果")
@@ -523,7 +545,7 @@ class TestCompactionMiddleware(unittest.IsolatedAsyncioTestCase):
         result = await middleware.before_model(ctx)
 
         self.assertEqual(result.action, MiddlewareAction.CONTINUE)
-        self.assertEqual(model.chat_calls, 0)
+        self.assertEqual(model.summary_calls, 0)
 
     async def test_configured_window_enables_estimation(self) -> None:
         """Provider 既不给计数也不给窗口时，显式配置窗口仍可启用估算兜底。"""
@@ -567,6 +589,278 @@ class TestCompactionMiddleware(unittest.IsolatedAsyncioTestCase):
         )
         second = await with_reserve.before_model(MiddlewareContext(messages=list(messages)))
         self.assertEqual(second.action, MiddlewareAction.MODIFY)
+
+
+class TestSummaryTruncationGuard(unittest.IsolatedAsyncioTestCase):
+    """摘要防截断校验（学 pi：finish_reason 拒绝落库 + 启发式兜底）。"""
+
+    async def test_length_finish_reason_rejected(self) -> None:
+        """finish_reason=length 表示输出被截断，拒绝写入残缺摘要。"""
+        model = _FakeModel(reply="## 任务目标\n太长的摘要", finish_reason="length")
+        with self.assertRaises(CompactionError) as ctx:
+            await summarize(model, [user_message("历史")], cut=1, max_tokens=256)
+        self.assertIn("截断", str(ctx.exception))
+
+    async def test_max_tokens_finish_reason_rejected(self) -> None:
+        """部分端点用 max_tokens 表示截断，同样拒绝。"""
+        model = _FakeModel(reply="## 任务目标\n截断", finish_reason="max_tokens")
+        with self.assertRaises(CompactionError):
+            await summarize(model, [user_message("历史")], cut=1, max_tokens=256)
+
+    async def test_tool_call_stream_rejected(self) -> None:
+        """流中出现工具调用说明模型没有按摘要指令输出，拒绝。"""
+        model = _FakeModel(reply="## 任务目标\n摘要", stream_tool_calls=True)
+        with self.assertRaises(CompactionError) as ctx:
+            await summarize(model, [user_message("历史")], cut=1, max_tokens=256)
+        self.assertIn("工具调用", str(ctx.exception))
+
+    async def test_no_finish_reason_near_limit_rejected(self) -> None:
+        """适配器不上报 finish_reason 时用启发式：估算 ≥ 95% 上限视为疑似截断。"""
+        # 300 字符 ASCII 回复 ≈ 75 tokens ≥ 64 × 0.95 = 60
+        model = _FakeModel(reply="## 任务目标\n" + "x" * 300, finish_reason=None)
+        with self.assertRaises(CompactionError) as ctx:
+            await summarize(model, [user_message("历史")], cut=1, max_tokens=64)
+        self.assertIn("疑似被截断", str(ctx.exception))
+
+    async def test_normal_summary_passes(self) -> None:
+        """正常 stop 结束的结构化摘要不受影响。"""
+        model = _FakeModel(reply="## 任务目标\n压缩历史")
+        summary = await summarize(model, [user_message("历史")], cut=1, max_tokens=256)
+        self.assertIn("## 任务目标", summary)
+
+
+class TestCompactionBreaker(unittest.IsolatedAsyncioTestCase):
+    """摘要熔断（学 Claude Code：连续失败 ≥3 跳过摘要只做瘦身）。"""
+
+    def _long_history_no_tool(self) -> list[Message]:
+        """没有工具输出的长历史，瘦身不生效，必须依赖摘要。"""
+        return [system_message("sys"), *(user_message(_big_text(100, f"u{i}")) for i in range(30))]
+
+    async def test_breaker_trips_after_consecutive_failures(self) -> None:
+        """连续失败 3 次后，第 4 次不再调用摘要模型。"""
+        model = _FakeModel(reply="自由发挥，没有小节")
+        config = CompactionConfig(
+            threshold_ratio=0.5,
+            retain_ratio=0.2,
+            max_consecutive_failures=3,
+            failure_cooldown_seconds=0,
+        )
+        middleware = CompactionMiddleware(model, config=config)
+        # 3 次触发
+        for _ in range(3):
+            ctx = MiddlewareContext(messages=self._long_history_no_tool())
+            result = await middleware.before_model(ctx)
+            self.assertEqual(result.action, MiddlewareAction.CONTINUE)
+        self.assertEqual(model.summary_calls, 3)
+        # 第 4 次：熔断打开，跳过摘要
+        ctx = MiddlewareContext(messages=self._long_history_no_tool())
+        result = await middleware.before_model(ctx)
+        self.assertEqual(result.action, MiddlewareAction.CONTINUE)
+        self.assertEqual(model.summary_calls, 3)
+        # reason 含"熔断"
+        events: list[tuple[str, dict[str, Any]]] = []
+        middleware2 = CompactionMiddleware(
+            model, config=config,
+            emit=lambda t, p: events.append((t, p)),
+        )
+        # （上面的 middleware2 是新的，不复用熔断状态；直接检查原始 middleware）
+        # 熔断事件在 _record_summary_failure 中发出（需要 ctx），无 ctx 时走 emit hook
+        middleware3 = CompactionMiddleware(
+            model, config=config,
+            emit=lambda t, p: events.append((t, p)),
+        )
+        # 触发 3 次
+        for _ in range(3):
+            ctx = MiddlewareContext(messages=self._long_history_no_tool())
+            await middleware3.before_model(ctx)
+        types = [t for t, _ in events]
+        self.assertIn("compaction_breaker_tripped", types)
+
+    async def test_breaker_cooldown_half_open_probe(self) -> None:
+        """冷却结束后放行一次探测（半开）。"""
+        import time as _time
+        model = _FakeModel(reply="自由发挥，没有小节")
+        config = CompactionConfig(
+            threshold_ratio=0.5,
+            retain_ratio=0.2,
+            max_consecutive_failures=2,
+            failure_cooldown_seconds=0.01,
+        )
+        middleware = CompactionMiddleware(model, config=config)
+        for _ in range(2):
+            ctx = MiddlewareContext(messages=self._long_history_no_tool())
+            await middleware.before_model(ctx)
+        self.assertTrue(middleware._summary_breaker_open())
+        _time.sleep(0.02)
+        self.assertFalse(middleware._summary_breaker_open())
+
+    async def test_breaker_resets_on_success(self) -> None:
+        """摘要成功后熔断计数复位。"""
+        model = _FakeModel(reply="自由发挥，没有小节")
+        config = CompactionConfig(
+            threshold_ratio=0.5,
+            retain_ratio=0.2,
+            max_consecutive_failures=2,
+            failure_cooldown_seconds=0,
+        )
+        middleware = CompactionMiddleware(model, config=config)
+        # 失败 1 次
+        ctx = MiddlewareContext(messages=self._long_history_no_tool())
+        await middleware.before_model(ctx)
+        self.assertEqual(middleware._summary_failure_count, 1)
+        # 换一个成功模型
+        ok_model = _FakeModel(reply="## 任务目标\n压缩历史")
+        middleware._summarizer = ok_model
+        ctx = MiddlewareContext(messages=self._long_history_no_tool())
+        await middleware.before_model(ctx)
+        self.assertEqual(middleware._summary_failure_count, 0)
+        self.assertIsNone(middleware._summary_breaker_tripped_at)
+
+    async def test_breaker_not_applied_to_forced_path(self) -> None:
+        """溢出强制路径（handle_exception）不受熔断限制。"""
+        model = _FakeModel(reply="自由发挥，没有小节")
+        config = CompactionConfig(
+            threshold_ratio=0.5,
+            retain_ratio=0.2,
+            max_consecutive_failures=1,
+            failure_cooldown_seconds=0,
+        )
+        middleware = CompactionMiddleware(model, config=config)
+        # 先失败 1 次触发熔断
+        ctx = MiddlewareContext(messages=self._long_history_no_tool())
+        await middleware.before_model(ctx)
+        self.assertTrue(middleware._summary_breaker_open())
+        # 溢出路径仍然会尝试摘要
+        ctx2 = MiddlewareContext(messages=self._long_history_no_tool())
+        result = await middleware.handle_exception(Exception("prompt is too long: 9999 tokens"), ctx2)
+        # 摘要又失败了（reply 没变），所以返回 False
+        self.assertFalse(result)
+        self.assertEqual(model.summary_calls, 2)
+
+
+class TestSummaryShrinkRetry(unittest.IsolatedAsyncioTestCase):
+    """摘要输入超长时按半数收缩切点重试（学 Codex / Claude Code）。"""
+
+    async def test_shrink_retry_on_overflow(self) -> None:
+        """摘要输入超长 → 切点减半重试 → 第二次成功。"""
+        call_count = 0
+
+        class ShrinkModel:
+            def __init__(self) -> None:
+                self.calls = 0
+                self.prompts: list[list[Message]] = []
+
+            async def stream_chat(self, messages, **kwargs):
+                self.calls += 1
+                self.prompts.append(list(messages))
+                prompt_chars = sum(len(m.content or "") for m in messages)
+                if self.calls == 1 and prompt_chars > 1500:
+                    raise RuntimeError("prompt is too long: 5000 tokens > 4000 limit")
+                yield StreamChunk(text="## 任务目标\n收缩后摘要")
+                yield StreamChunk(finish_reason="stop")
+
+            async def chat(self, messages, **kwargs):
+                raise NotImplementedError
+
+            async def context_usage(self, messages, **kwargs):
+                del kwargs
+                return ContextUsage(
+                    input_tokens=estimate_tokens(messages),
+                    context_window_tokens=WINDOW_TOKENS,
+                    exact=True,
+                    source="test",
+                )
+
+        model = ShrinkModel()
+        config = CompactionConfig(threshold_ratio=0.5, retain_ratio=0.2, max_shrink_retries=1)
+        middleware = CompactionMiddleware(model, config=config)
+        messages = [system_message("sys"), *(user_message("x" * 100 + str(i)) for i in range(30))]
+        ctx = MiddlewareContext(messages=messages)
+
+        result = await middleware.before_model(ctx)
+
+        self.assertEqual(result.action, MiddlewareAction.MODIFY)
+        self.assertEqual(model.calls, 3)  # 1 超长 + 1 收缩成功 + 1 下一轮压缩
+        self.assertTrue(result.data["compaction"].compacted)
+        # 第二次的 prompt 应该更短
+        first_chars = sum(len(m.content or "") for m in model.prompts[0])
+        second_chars = sum(len(m.content or "") for m in model.prompts[1])
+        self.assertLess(second_chars, first_chars)
+
+    async def test_shrink_exhausted_falls_back(self) -> None:
+        """收缩重试耗尽后放弃，走降级路径。"""
+        model = _FakeModel(stream_error=RuntimeError("prompt is too long: 99999 tokens"))
+        config = CompactionConfig(threshold_ratio=0.5, retain_ratio=0.2, max_shrink_retries=1)
+        middleware = CompactionMiddleware(model, config=config)
+        messages = [system_message("sys"), *(user_message(_big_text(100, f"u{i}")) for i in range(30))]
+        ctx = MiddlewareContext(messages=messages)
+
+        result = await middleware.before_model(ctx)
+
+        self.assertEqual(result.action, MiddlewareAction.CONTINUE)
+        # 初始 + 收缩 1 次 = 2 次
+        self.assertEqual(model.summary_calls, 2)
+
+
+class TestAdaptiveSummaryTokens(unittest.IsolatedAsyncioTestCase):
+    """summary_max_tokens 自适应（默认 0 → 按窗口 10% 计算）。"""
+
+    async def test_adaptive_returns_2048_for_small_window(self) -> None:
+        """窗口 1000 → effective_window ~1000 → max(2048, 100) = 2048。"""
+        middleware = CompactionMiddleware(
+            _FakeModel(reply="## 任务目标\n摘要"),
+            config=CompactionConfig(threshold_ratio=0.5, retain_ratio=0.2, summary_max_tokens=0),
+            context_window_tokens=WINDOW_TOKENS,
+        )
+        self.assertEqual(middleware._resolve_summary_max_tokens(1000), 2048)
+
+    async def test_adaptive_capped_at_8192(self) -> None:
+        """超大窗口 → min(8192, max(2048, ...)) = 8192。"""
+        middleware = CompactionMiddleware(
+            _FakeModel(reply="## 任务目标\n摘要"),
+            config=CompactionConfig(threshold_ratio=0.5, retain_ratio=0.2, summary_max_tokens=0),
+            context_window_tokens=200000,
+        )
+        self.assertEqual(middleware._resolve_summary_max_tokens(200000), 8192)
+
+    async def test_explicit_value_passes_through(self) -> None:
+        """显式配置 > 0 时直接使用。"""
+        middleware = CompactionMiddleware(
+            _FakeModel(reply="## 任务目标\n摘要"),
+            config=CompactionConfig(threshold_ratio=0.5, retain_ratio=0.2, summary_max_tokens=512),
+            context_window_tokens=WINDOW_TOKENS,
+        )
+        self.assertEqual(middleware._resolve_summary_max_tokens(1000), 512)
+
+    async def test_negative_summary_max_tokens_raises(self) -> None:
+        """负数配置直接拒绝。"""
+        with self.assertRaises(ValueError):
+            CompactionConfig(summary_max_tokens=-1)
+
+
+class TestCompactionObservability(unittest.IsolatedAsyncioTestCase):
+    """埋点：duration_ms / summary_tokens 出现在 compaction_succeeded 事件中。"""
+
+    async def test_succeeded_event_has_timing_and_tokens(self) -> None:
+        model = _FakeModel(reply="## 任务目标\n压缩历史")
+        events: list[tuple[str, dict[str, Any]]] = []
+        middleware = CompactionMiddleware(
+            model,
+            config=CompactionConfig(threshold_ratio=0.5, retain_ratio=0.2),
+            emit=lambda t, p: events.append((t, p)),
+        )
+        messages = _long_history_with_tool_output()
+        ctx = MiddlewareContext(messages=messages)
+
+        await middleware.before_model(ctx)
+
+        succeeded = [p for t, p in events if t == "compaction_succeeded"]
+        self.assertTrue(succeeded)
+        payload = succeeded[0]
+        self.assertIn("duration_ms", payload)
+        self.assertIsInstance(payload["duration_ms"], float)
+        self.assertIn("summary_tokens", payload)
+        self.assertIsInstance(payload["summary_tokens"], int)
 
 
 if __name__ == "__main__":

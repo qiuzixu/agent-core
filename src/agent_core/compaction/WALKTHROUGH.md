@@ -197,3 +197,118 @@ CompactionMiddleware(persist_summary=回调)   ← agent-core 侧新增参数
 | `storage/session.py` | `_build_context` 摘要复用、裁剪保摘要 |
 | `tests/test_compaction_core.py` | 切点/瘦身/中间件阈值测试 |
 | `tests/test_compaction_persistence.py` | 持久化/复用/裁剪保标测试 |
+
+
+## 10. 开源框架压缩机制调研（2026-10-25）
+
+调研对象：`D:/ttzx/open-agent/` 下五个开源 Agent 的压缩实现。
+结论先行：五家全部是“LLM 摘要式压缩”，没有一家只做截断；差异集中在
+触发校准、摘要整合策略、失败防御和持久化语义上。
+
+### 10.1 各家机制速览
+
+#### Codex（Rust，codex-rs/core/src/compact*.rs）
+
+- 压缩 = 一个独立 turn：全量历史 + 摘要 prompt 作为一次请求
+- 触发：AutoCompactWindow 窗口链（UUIDv7 串 first/previous/window_id，
+  window_number 递增）+ 手动 /compact
+- 摘要请求自身爆上下文 → 从头部删最老历史项重试（保住前缀缓存）
+- 摘要整合：保留用户原话（事实记录），剔除旧摘要，只压缩 assistant/tool 内容
+- pre-turn/manual 压缩后下一轮完整重注入初始上下文；mid-turn 则插到
+  最后一条 user 消息上方
+- PreCompact/PostCompact 钩子可中断；完整 CompactionEvent 埋点
+  （trigger/reason/phase/status/前后 token/缓存 token）
+
+#### Claude Code（TS，services/compact/）
+
+- 触发：有效窗口 = 窗口 − min(maxOutput, 20K 摘要预留)；阈值再减 13K 缓冲
+- 熔断器：连续失败 3 次停止自动压缩（注释记录了真实事故：
+  1279 个会话每天浪费 25 万次 API 调用）
+- 摘要请求 prompt too long → 截掉最老 API 轮次组重试（最多 3 次）
+- fork 子 agent 生成摘要（共享 prompt cache，省缓存写入）
+- microCompact 独立机制：老工具结果（Read/Bash/Grep/WebFetch 等）原位替换
+  为 `[Old tool result content cleared]`，保留最近 5 条，零 LLM 成本
+- 压缩后状态重建最重：重建文件附件、plan mode、skills、MCP 指令、
+  延迟加载工具的广播
+
+#### ZCode（TS，apps/zcode-cli/packages/core/src/compact/）
+
+- 结构同源 Claude Code（常量一一对应），三处改良：
+  1. token 决策来源可切换：`estimate`（兜底）/ `provider_usage`（优先，
+     含 cache read/write 真实值）
+  2. token 估算把工具入参 JSON 计入（大参数工具纯文本估算会漏掉）
+  3. 压缩是正式 turn：TurnStarted/TurnComplete 事件流 + usage 观测 +
+     boundary payload（summarized/kept 数量、preservedSegment、
+     lastSummarizedMessageId）完整审计
+- microcompact：阈值 = 自动压缩阈值 × 0.9 或 −2K 取小，最小节省 256 token
+
+#### Zoo-Code（TS，src/core/context-management/ + condense/）
+
+- 触发：contextPercent ≥ 配置阈值（5%~100%，按 profile 覆盖）或超
+  90% 硬线（窗口 × 0.9 − 输出预留）
+- LLM 浓缩失败 → 降级为滑动窗口截断（0.5 比例）
+- 非破坏性设计（独家）：
+  - 浓缩：旧消息全部打 `condenseParent` 标签（不删除），追加 `isSummary`
+    摘要消息，生效历史 = 只有摘要（fresh start）
+  - 截断：打 `truncationParent` 标签 + 插入截断标记，第一条消息必留
+  - 用户 rewind 到压缩点之前时孤儿标签被清理，被压缩的消息可恢复
+- 摘要前兼容处理：tool_use/tool_result 转纯文本（Bedrock 不带 tools
+  参数也能摘要）、孤儿 toolCall 补合成结果、文件 tree-sitter 折叠
+
+#### pi（open-code/pi，packages/coding-agent/src/core/compaction/）
+
+- 触发：contextTokens > 窗口 − 16384；token 锚点机制：最后一条
+  assistant 的 provider 真实 usage 做基数，之后的新消息才 chars/4 估算
+  （图片按 4800 字符计）
+- 滚动合并显式规则（与我们同款但更成熟）：有旧摘要时换 UPDATE prompt，
+  规则写死——PRESERVE 所有已有信息、ADD 新进度、UPDATE Progress 分区、
+  保留精确文件路径/函数名/错误信息；结构化六分区
+  （Goal/Constraints/Progress/Key Decisions/Next Steps/Critical Context）
+- 摘要防御性校验（五家最严格）：
+  - `stopReason: length` → 拒绝落库（截断摘要是不完整摘要，宁败不落脏数据）
+  - 摘要响应含 toolCall → 报错（模型试图继续干活而不是总结）
+  - LLM 调用套统一 retry policy
+- 切点算法（独家）：保留最近 20K token，切点只能落在 user/assistant/
+  turn 开始处，永不切在 toolResult 上；切在 turn 中间时拆成
+  “前缀摘要 + 后缀保留”两段（split turn），前缀单独小预算摘要后拼进主摘要
+- 文件操作追踪：从工具调用提取 readFiles/modifiedFiles（累积跨压缩），
+  追加到摘要尾部——压缩后模型立刻知道文件状态
+- 分支摘要：session 树状结构，切换分支时给被离开的分支生成摘要
+- 缓存策略：摘要请求 cacheRetention="none"，多次摘要 usage 合并统计
+
+### 10.2 五方对比表
+
+| 维度 | Codex | Claude Code | ZCode | Zoo-Code | pi | 本模块 |
+|---|---|---|---|---|---|---|
+| 触发 | 窗口链 | 窗口−20K−13K | 同CC+usage校准 | 百分比阈值 | usage锚点+尾部估算 | 阈值比例 |
+| 摘要整合 | 保用户消息 | 全量重摘 | 全量重摘 | fresh start | 滚动合并+结构化 | 滚动合并+六节模板 |
+| 切点保护 | 删最老重试 | 截轮次重试 | 保留段 | 第一条必留 | turn完整性+split-turn | 尾部预算+工具配对 |
+| 失败防御 | hook可中断 | 3次熔断 | 3次熔断 | 降级截断 | length拒绝+toolCall校验 | 结构校验+硬截断兜底 |
+| 工具结果 | — | microCompact | microCompact+入参计token | 转text进摘要 | — | 瘦身+spill分页 |
+| 持久化 | rollout | transcript | session事件 | condenseParent打标 | CompactionEntry+指针 | compaction_checkpoint落库 |
+
+### 10.3 借鉴升级点（按优先级）
+
+1. **P1 摘要防御性校验**（学 pi）：`length` 截断的摘要拒绝落库；
+   摘要响应含 toolCall 视为失败重试。目前我们只有结构校验（六节模板），
+   这两条是增量，成本低收益高
+2. **P1 token 锚点**（学 pi）：最后一条 assistant 真实 usage 做基数 +
+   尾部估算，替代全量估算，决策更准
+3. **P1 压缩失败熔断**（学 Claude Code/ZCode）：连续 3 次失败停止自动
+   压缩，防止每轮都对着爆掉的上下文撞墙
+4. **P2 token 决策用 provider usage 校准**（学 ZCode）：estimate 为兜底、
+   usage 优先的 override 模式
+5. **P2 microCompact**（学 Claude Code/ZCode）：老工具结果原位替换占位符，
+   与 spill 互补（spill 管“可找回”，microCompact 管“零成本瘦身”）
+6. **P2 文件/实体操作清单入摘要**（学 pi）：摘要尾部附“读过/改过哪些文件”，
+   低空场景可类比为“查过哪些航线/实体”
+7. **P3 压缩埋点**（学 Codex）：trigger/前后 token/耗时的事件记录
+
+### 10.4 结论修正
+
+- 滚动合并并非本模块独家：pi 是同款且更成熟（显式 UPDATE 规则 +
+  防御校验 + 结构化分区），但“摘要落库复用 + 裁剪从摘要起点构建上下文”
+  的完整链路已对齐 pi，差距在防御校验和 token 锚点
+- 我们的独家优势：spill 分页回读（五家都没有按页取回被截断工具输出的机制）
+- 本模块已对齐的：六节结构模板（≈pi 的结构化分区）、结构校验拒写
+  （≈pi 的防御思想）、尾部预算切点（≈pi 的切点算法，但缺 turn 完整性约束）
