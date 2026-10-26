@@ -11,8 +11,9 @@ from agent_core.retrieval.faiss import FaissVectorStore
 from agent_core.retrieval.memory import InMemoryVectorStore
 from agent_core.retrieval.openai import OpenAIEmbeddings
 from agent_core.retrieval.pgvector import PgVectorStore
+from agent_core.retrieval.qdrant import QdrantVectorStore
 
-VectorStoreBackend = Literal["memory", "chroma", "faiss", "pgvector"]
+VectorStoreBackend = Literal["memory", "chroma", "faiss", "pgvector", "qdrant"]
 
 # 目前所有内置 Embedding 适配器都走 OpenAI-compatible /embeddings 协议；
 # 这能覆盖 OpenAI、DashScope/Qwen、Ollama、vLLM、SiliconFlow 等常见服务。
@@ -46,7 +47,11 @@ def create_vector_store(
     backend: str | None = None,
     chroma_path: str | Path = "./chroma_db",
     faiss_path: str | Path = "./faiss_db",
+    qdrant_path: str | Path = "./qdrant_db",
     chroma_client: Any | None = None,
+    qdrant_client: Any | None = None,
+    qdrant_url: str | None = None,
+    qdrant_api_key: str | None = None,
     postgres_url: str | None = None,
     dimension: int | None = None,
     collection_name: str = "agent_core",
@@ -78,6 +83,16 @@ def create_vector_store(
             collection_name=collection_name,
             dimension=dimension,
             require_access=require_access,
+        )
+    if selected == "qdrant":
+        return QdrantVectorStore(
+            qdrant_path,
+            collection_name=collection_name,
+            require_access=require_access,
+            client=qdrant_client,
+            url=qdrant_url,
+            api_key=qdrant_api_key,
+            dimension=dimension,
         )
     if selected == "pgvector":
         if not postgres_url:

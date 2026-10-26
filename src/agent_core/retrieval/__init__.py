@@ -17,6 +17,7 @@ from agent_core.retrieval.faiss import FaissVectorStore
 from agent_core.retrieval.memory import EmbeddingRetriever, InMemoryVectorStore, KeywordRetriever
 from agent_core.retrieval.openai import OpenAIEmbeddings
 from agent_core.retrieval.pgvector import PgVectorStore
+from agent_core.retrieval.qdrant import QdrantVectorStore
 from agent_core.retrieval.types import (
     RetrievalQuery,
     RetrievalResult,
@@ -36,6 +37,7 @@ __all__ = [
     "KeywordRetriever",
     "OpenAIEmbeddings",
     "PgVectorStore",
+    "QdrantVectorStore",
     "Reranker",
     "RetrievalQuery",
     "RetrievalResult",

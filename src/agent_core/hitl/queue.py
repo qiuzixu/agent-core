@@ -9,8 +9,9 @@ import asyncio
 import inspect
 import logging
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 from agent_core.access import AccessContext
 from agent_core.hitl.models import ApprovalRequest, ApprovalStatus
@@ -195,8 +196,11 @@ class ApprovalQueue:
 
             expired = request.to_record()
             expired.status = "expired"
+            # 超时收口同样是"决定"，记录时间便于审计；决定人为系统（None）。
+            expired.decided_at = self._now_iso()
             if await self._transition(expired):
                 request.status = ApprovalStatus.TIMEOUT
+                request.decided_at = expired.decided_at
                 request._event.set()
                 return request.status
 
@@ -226,12 +230,20 @@ class ApprovalQueue:
         request = await self.load_request(request_id, access=access)
         if request is None or request.status != ApprovalStatus.PENDING:
             return False
+        # 审计字段：批准人取自 AccessContext，决定时间取 UTC ISO 串；
+        # 配置存储时 CAS 成功后随终态一起持久化，纯内存模式只回写进程内对象。
+        decided_by = access.user_id if access is not None else None
+        decided_at = self._now_iso()
         if self._approval_store:
             approved = request.to_record()
             approved.status = "approved"
+            approved.decided_by = decided_by
+            approved.decided_at = decided_at
             if not await self._transition(approved):
                 return False
         request.status = ApprovalStatus.APPROVED
+        request.decided_by = decided_by
+        request.decided_at = decided_at
         request._event.set()
         await self._fire_notify("approval_approved", request.to_dict())
         return True
@@ -247,14 +259,21 @@ class ApprovalQueue:
         request = await self.load_request(request_id, access=access)
         if request is None or request.status != ApprovalStatus.PENDING:
             return False
+        # 审计字段语义与 approve 完全一致。
+        decided_by = access.user_id if access is not None else None
+        decided_at = self._now_iso()
         if self._approval_store:
             rejected = request.to_record()
             rejected.status = "rejected"
             rejected.reason = reason
+            rejected.decided_by = decided_by
+            rejected.decided_at = decided_at
             if not await self._transition(rejected):
                 return False
         request.status = ApprovalStatus.REJECTED
         request.reason = reason
+        request.decided_by = decided_by
+        request.decided_at = decided_at
         request._event.set()
         await self._fire_notify("approval_rejected", request.to_dict())
         return True
@@ -348,8 +367,11 @@ class ApprovalQueue:
             return
         expired = request.to_record()
         expired.status = "expired"
+        # 访问触发的过期收口与 wait_for_decision 保持同一审计语义。
+        expired.decided_at = self._now_iso()
         if await self._transition(expired):
             request.status = ApprovalStatus.TIMEOUT
+            request.decided_at = expired.decided_at
             request._event.set()
         else:
             latest = await self._approval_store.load_approval(request.request_id)
@@ -384,13 +406,45 @@ class ApprovalQueue:
         request.status = restored.status
         request.reason = restored.reason
         request.expires_at = restored.expires_at
+        request.decided_by = restored.decided_by
+        request.decided_at = restored.decided_at
         if request.status != ApprovalStatus.PENDING:
             request._event.set()
 
+    async def purge_terminal_approvals(self, older_than_days: float = 30.0) -> int:
+        """清理超过保留期的终态审批记录，防止表无限膨胀。
+
+        只清理 approved/rejected/expired 三种终态，pending 记录永不清理；
+        返回删除的行数。未配置持久化存储时只清进程内终态请求并返回 0
+        （进程内终态请求在等待结束时就已摘除，正常情况下这里无残留）。
+        """
+        if older_than_days <= 0:
+            raise ValueError("older_than_days 必须大于 0")
+        cutoff = (
+            datetime.now(UTC) - timedelta(days=older_than_days)
+        ).isoformat()
+        for request in list(self._requests.values()):
+            if (
+                request.status is not ApprovalStatus.PENDING
+                and request.decided_at is not None
+                and request.decided_at <= cutoff
+            ):
+                self._requests.pop(request.request_id, None)
+        if self._approval_store is None:
+            return 0
+        purge = getattr(self._approval_store, "purge_approvals", None)
+        if not callable(purge):
+            # 未实现清理接口的外部 Store：诚实跳过而不是假装清理成功。
+            return 0
+        # getattr 的返回值类型检查器只能推成 object，这里显式声明契约：
+        # purge_approvals(cutoff) -> Awaitable[int]。
+        purge_impl = cast("Callable[[str], Awaitable[int]]", purge)
+        return int(await purge_impl(cutoff))
+
     @staticmethod
-    def _record_expired(record: ApprovalRecord) -> bool:
-        """判断持久化记录是否已过过期时间（当前无调用方，保留待用）。"""
-        return ApprovalQueue._is_past(record.expires_at)
+    def _now_iso() -> str:
+        """当前 UTC 时间的 ISO 串（决定时间/清理基准统一格式）。"""
+        return datetime.now(UTC).isoformat()
 
     @staticmethod
     def _is_past(expires_at: str | None) -> bool:

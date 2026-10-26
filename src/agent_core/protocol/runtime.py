@@ -104,6 +104,9 @@ class ApprovalRecord:
     reason: str | None = None
     created_at: str = field(default_factory=_now)
     expires_at: str | None = None
+    # 审计字段：终态时记录"谁"批准/拒绝（决定方身份）与"何时"决定。
+    decided_by: str | None = None
+    decided_at: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -118,6 +121,8 @@ class ApprovalRecord:
             "reason": self.reason,
             "created_at": self.created_at,
             "expires_at": self.expires_at,
+            "decided_by": self.decided_by,
+            "decided_at": self.decided_at,
         }
 
     @classmethod
@@ -134,6 +139,8 @@ class ApprovalRecord:
             reason=value.get("reason"),
             created_at=str(value.get("created_at") or _now()),
             expires_at=value.get("expires_at"),
+            decided_by=value.get("decided_by"),
+            decided_at=value.get("decided_at"),
         )
 
 

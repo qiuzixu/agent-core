@@ -7,6 +7,7 @@ import math
 import os
 import tempfile
 import unittest
+from types import SimpleNamespace
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -16,6 +17,7 @@ from agent_core import (
     Document,
     InMemoryVectorStore,
     PgVectorStore,
+    QdrantVectorStore,
     VectorQuery,
     VectorRecord,
     create_vector_store,
@@ -120,6 +122,120 @@ class _FakeChromaClient:
     def get_or_create_collection(self, *, name: str, metadata: Mapping[str, object]) -> _FakeCollection:
         del metadata
         return self.collections.setdefault(name, _FakeCollection())
+
+
+class _FakeQdrantClient:
+    """按 qdrant-client 同步接口实现的内存假客户端，只覆盖适配器用到的方法。"""
+
+    def __init__(self) -> None:
+        self.collections: dict[str, dict[str, dict[str, Any]]] = {}
+        self.dimensions: dict[str, int] = {}
+        self.closed = False
+
+    def collection_exists(self, collection_name: str) -> bool:
+        return collection_name in self.collections
+
+    def create_collection(self, collection_name: str, *, vectors_config: Mapping[str, Any]) -> None:
+        self.collections[collection_name] = {}
+        self.dimensions[collection_name] = int(vectors_config["size"])
+
+    def upsert(
+        self,
+        collection_name: str,
+        *,
+        points: Sequence[Mapping[str, Any]],
+        wait: bool,
+    ) -> None:
+        del wait
+        records = self.collections[collection_name]
+        for point in points:
+            records[str(point["id"])] = {
+                "vector": list(point["vector"]),
+                "payload": dict(point["payload"]),
+            }
+
+    def retrieve(
+        self,
+        collection_name: str,
+        *,
+        ids: Sequence[str],
+        with_payload: bool,
+        with_vectors: bool,
+    ) -> list[Any]:
+        del with_payload, with_vectors
+        records = self.collections[collection_name]
+        return [
+            SimpleNamespace(id=record_id, payload=record["payload"], vector=record["vector"])
+            for record_id, record in sorted(records.items())
+            if record_id in set(ids)
+        ]
+
+    def delete(self, collection_name: str, *, points_selector: Sequence[str], wait: bool) -> None:
+        del wait
+        records = self.collections[collection_name]
+        for point_id in points_selector:
+            records.pop(str(point_id), None)
+
+    def query_points(
+        self,
+        collection_name: str,
+        *,
+        query: Sequence[float],
+        limit: int,
+        query_filter: Mapping[str, Any] | None,
+        with_payload: bool,
+        with_vectors: bool,
+    ) -> Any:
+        del with_payload, with_vectors
+        records = self.collections[collection_name]
+        scored: list[tuple[float, str, dict[str, Any], list[float]]] = []
+        for point_id, record in records.items():
+            payload = record["payload"]
+            if not _matches_qdrant_filter(payload, query_filter):
+                continue
+            embedding = record["vector"]
+            dot = sum(float(left) * float(right) for left, right in zip(query, embedding, strict=True))
+            query_norm = math.sqrt(sum(float(value) ** 2 for value in query))
+            record_norm = math.sqrt(sum(float(value) ** 2 for value in embedding))
+            similarity = dot / (query_norm * record_norm)
+            scored.append((similarity, point_id, payload, embedding))
+        scored.sort(key=lambda item: (-item[0], item[1]))
+        points = [
+            SimpleNamespace(
+                id=point_id,
+                score=score,
+                payload=payload,
+                vector=embedding,
+            )
+            for score, point_id, payload, embedding in scored[:limit]
+        ]
+        return SimpleNamespace(points=points)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _matches_qdrant_filter(payload: Mapping[str, Any], where: Mapping[str, Any] | None) -> bool:
+    """校验 payload 是否满足适配器下推的 Qdrant must/should 过滤结构。"""
+    if not where:
+        return True
+    for clause_key in ("must", "should"):
+        clauses = where.get(clause_key)
+        if not clauses:
+            continue
+        results = [_matches_qdrant_condition(payload, item) for item in clauses]
+        if clause_key == "must" and not all(results):
+            return False
+        if clause_key == "should" and not any(results):
+            return False
+    return True
+
+
+def _matches_qdrant_condition(payload: Mapping[str, Any], condition: Mapping[str, Any]) -> bool:
+    if "must" in condition or "should" in condition:
+        return _matches_qdrant_filter(payload, condition)
+    key = str(condition["key"])
+    return payload.get(key) == condition["match"]["value"]
 
 
 class VectorStoreAdapterTests(unittest.IsolatedAsyncioTestCase):
@@ -239,6 +355,56 @@ class VectorStoreAdapterTests(unittest.IsolatedAsyncioTestCase):
             await reopened.delete(["rule-1"], access=bob)
         self.assertEqual(await reopened.delete(["rule-1"], access=alice), 1)
 
+    async def test_qdrant_persists_filters_and_enforces_access(self) -> None:
+        """Qdrant 适配器契约：持久化、metadata 过滤、访问控制与删除。"""
+        client = _FakeQdrantClient()
+        alice = AccessContext(user_id="alice", tenant_id="tenant-a")
+        bob = AccessContext(user_id="bob", tenant_id="tenant-a")
+        store = QdrantVectorStore(client=client, require_access=True)
+        record = VectorRecord(
+            record_id="rule-1",
+            vector=(1.0, 0.0),
+            document=Document(content="机场净空规则", metadata={"category": "rule"}),
+            namespace="manual",
+            metadata={"version": 1},
+        )
+
+        self.assertEqual(await store.upsert([record], access=alice), ["rule-1"])
+        # 业务 metadata 存在 payload JSON 里，检索时在 Python 侧精确过滤
+        results = await store.search(
+            VectorQuery(
+                vector=(1.0, 0.0),
+                namespace="manual",
+                metadata_filter={"category": "rule", "version": 1},
+                access=alice,
+            )
+        )
+        hidden = await store.search(VectorQuery(vector=(1.0, 0.0), namespace="manual", access=bob))
+
+        self.assertEqual(results[0].record.record_id, "rule-1")
+        self.assertEqual(results[0].record.document.content, "机场净空规则")
+        self.assertAlmostEqual(results[0].score, 1.0)
+        self.assertEqual(hidden, [])
+        with self.assertRaises(PermissionError):
+            await store.delete(["rule-1"], access=bob)
+        self.assertEqual(await store.delete(["rule-1"], access=alice), 1)
+        self.assertEqual(await store.search(VectorQuery(vector=(1.0, 0.0), namespace="manual", access=alice)), [])
+
+    async def test_qdrant_reuses_injected_client_and_closes_owned_client(self) -> None:
+        """注入的 client 不负责关闭；自建 client 关闭时释放。"""
+        injected = _FakeQdrantClient()
+        store = QdrantVectorStore(client=injected)
+        await store.close()
+        self.assertFalse(injected.closed)
+
+        # 自建 client 的关闭路径：本地嵌入式模式需要 qdrant-client 才能构造，
+        # 这里直接翻转归属标记验证 close 分支行为
+        owned = _FakeQdrantClient()
+        owned_store = QdrantVectorStore(client=owned)
+        owned_store._owns_client = True
+        await owned_store.close()
+        self.assertTrue(owned.closed)
+
     async def test_upsert_cannot_replace_another_users_record(self) -> None:
         alice = AccessContext(user_id="alice", tenant_id="tenant-a")
         bob = AccessContext(user_id="bob", tenant_id="tenant-a")
@@ -271,6 +437,10 @@ class VectorStoreAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(
             create_vector_store("production", backend="memory"),
             InMemoryVectorStore,
+        )
+        self.assertIsInstance(
+            create_vector_store("production", backend="qdrant", qdrant_client=_FakeQdrantClient()),
+            QdrantVectorStore,
         )
 
         with self.assertRaisesRegex(ValueError, "PostgreSQL"):

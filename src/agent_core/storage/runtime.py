@@ -98,6 +98,13 @@ class RuntimeStore(ABC):
         expected_status: str = "pending",
     ) -> bool: ...
 
+    async def purge_approvals(self, before: str) -> int:
+        """清理早于 before（ISO 串）的终态审批记录；pending 永不清理。
+
+        返回删除的行数；实现可选（队列侧用 getattr 探测，缺失时诚实跳过）。
+        """
+        ...
+
     # ————————————————————————————————————#
     # 运行审批记录加载
     # ————————————————————————————————————#
@@ -243,6 +250,21 @@ class MemoryRuntimeStore(RuntimeStore):
         records.sort(key=lambda record: record.created_at, reverse=True)
         return records[:limit]
 
+    async def purge_approvals(self, before: str) -> int:
+        """清理早于 before 的终态审批记录（内存版：终态且决定时间早于基准）。"""
+        terminal = {"approved", "rejected", "expired"}
+        async with self._lock:
+            stale = [
+                approval_id
+                for approval_id, value in self._approvals.items()
+                if value.get("status") in terminal
+                and (value.get("decided_at") or value.get("created_at") or "")
+                <= before
+            ]
+            for approval_id in stale:
+                self._approvals.pop(approval_id, None)
+        return len(stale)
+
 
 # ──────────────────────────────────────────────
 # 3. SQLite 后端（开发环境）
@@ -283,7 +305,9 @@ class SqliteRuntimeStore(RuntimeStore):
         status TEXT NOT NULL,
         reason TEXT,
         created_at TEXT NOT NULL,
-        expires_at TEXT
+        expires_at TEXT,
+        decided_by TEXT,
+        decided_at TEXT
     );
     CREATE TABLE IF NOT EXISTS agent_threads (
         thread_id TEXT PRIMARY KEY,
@@ -318,7 +342,12 @@ class SqliteRuntimeStore(RuntimeStore):
             if name not in columns:
                 conn.execute(f"ALTER TABLE agent_runs ADD COLUMN {name} {definition}")
         approval_columns = {row[1] for row in conn.execute("PRAGMA table_info(agent_approvals)")}
-        for name, definition in {"user_id": "TEXT", "tenant_id": "TEXT"}.items():
+        for name, definition in {
+            "user_id": "TEXT",
+            "tenant_id": "TEXT",
+            "decided_by": "TEXT",
+            "decided_at": "TEXT",
+        }.items():
             if name not in approval_columns:
                 conn.execute(f"ALTER TABLE agent_approvals ADD COLUMN {name} {definition}")
         # SQLite 把 NULL 视为互不相等，表达式索引把匿名作用域归一化后才能真正幂等。
@@ -552,10 +581,12 @@ class SqliteRuntimeStore(RuntimeStore):
                 conn.execute(
                     """INSERT INTO agent_approvals
                     (approval_id, thread_id, run_id, user_id, tenant_id, action,
-                     arguments, status, reason, created_at, expires_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     arguments, status, reason, created_at, expires_at, decided_by, decided_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(approval_id) DO UPDATE SET
-                        status=excluded.status, reason=excluded.reason, expires_at=excluded.expires_at
+                        status=excluded.status, reason=excluded.reason,
+                        expires_at=excluded.expires_at,
+                        decided_by=excluded.decided_by, decided_at=excluded.decided_at
                     WHERE agent_approvals.status='pending'""",
                     (
                         approval.approval_id,
@@ -569,6 +600,8 @@ class SqliteRuntimeStore(RuntimeStore):
                         approval.reason,
                         approval.created_at,
                         approval.expires_at,
+                        approval.decided_by,
+                        approval.decided_at,
                     ),
                 )
 
@@ -584,12 +617,14 @@ class SqliteRuntimeStore(RuntimeStore):
             with self._connect() as conn:
                 cursor = conn.execute(
                     """UPDATE agent_approvals
-                    SET status=?, reason=?, expires_at=?
+                    SET status=?, reason=?, expires_at=?, decided_by=?, decided_at=?
                     WHERE approval_id=? AND status=?""",
                     (
                         approval.status,
                         approval.reason,
                         approval.expires_at,
+                        approval.decided_by,
+                        approval.decided_at,
                         approval.approval_id,
                         expected_status,
                     ),
@@ -616,6 +651,8 @@ class SqliteRuntimeStore(RuntimeStore):
                         "reason",
                         "created_at",
                         "expires_at",
+                        "decided_by",
+                        "decided_at",
                     ],
                     row,
                     strict=True,
@@ -631,7 +668,8 @@ class SqliteRuntimeStore(RuntimeStore):
             with self._connect() as conn:
                 return conn.execute(
                     """SELECT approval_id, thread_id, run_id, user_id, tenant_id,
-                    action, arguments, status, reason, created_at, expires_at
+                    action, arguments, status, reason, created_at, expires_at,
+                    decided_by, decided_at
                     FROM agent_approvals WHERE approval_id = ?""",
                     (approval_id,),
                 ).fetchone()
@@ -649,12 +687,27 @@ class SqliteRuntimeStore(RuntimeStore):
             with self._connect() as conn:
                 rows = conn.execute(
                     """SELECT approval_id, thread_id, run_id, user_id, tenant_id,
-                    action, arguments, status, reason, created_at, expires_at
+                    action, arguments, status, reason, created_at, expires_at,
+                    decided_by, decided_at
                     FROM agent_approvals WHERE status = ?
                     ORDER BY created_at DESC LIMIT ?""",
                     (status, limit),
                 ).fetchall()
             return [self._approval_row_to_record(row) for row in rows]
+
+        return await _run_in_thread(_op)
+
+    async def purge_approvals(self, before: str) -> int:
+        """清理早于 before 的终态审批记录；pending 永不清理。"""
+        def _op() -> int:
+            with self._connect() as conn:
+                cursor = conn.execute(
+                    """DELETE FROM agent_approvals
+                    WHERE status IN ('approved', 'rejected', 'expired')
+                    AND COALESCE(decided_at, created_at) <= ?""",
+                    (before,),
+                )
+            return cursor.rowcount
 
         return await _run_in_thread(_op)
 
@@ -696,7 +749,8 @@ class PostgresRuntimeStore(RuntimeStore):
                     approval_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, run_id TEXT NOT NULL,
                     user_id TEXT, tenant_id TEXT,
                     action TEXT NOT NULL, arguments JSONB NOT NULL DEFAULT '{}'::jsonb,
-                    status TEXT NOT NULL, reason TEXT, created_at TEXT NOT NULL, expires_at TEXT
+                    status TEXT NOT NULL, reason TEXT, created_at TEXT NOT NULL, expires_at TEXT,
+                    decided_by TEXT, decided_at TEXT
                 );
                 CREATE TABLE IF NOT EXISTS agent_threads (
                     thread_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, tenant_id TEXT NOT NULL,
@@ -710,6 +764,8 @@ class PostgresRuntimeStore(RuntimeStore):
                 ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS checkpoint JSONB NOT NULL DEFAULT '{}'::jsonb;
                 ALTER TABLE agent_approvals ADD COLUMN IF NOT EXISTS user_id TEXT;
                 ALTER TABLE agent_approvals ADD COLUMN IF NOT EXISTS tenant_id TEXT;
+                ALTER TABLE agent_approvals ADD COLUMN IF NOT EXISTS decided_by TEXT;
+                ALTER TABLE agent_approvals ADD COLUMN IF NOT EXISTS decided_at TEXT;
                 DROP INDEX IF EXISTS idx_agent_runs_idempotency;
             """)
             # 旧索引允许 (NULL, NULL, key) 重复；先预检归一化后的重复行再建唯一索引。
@@ -904,11 +960,11 @@ class PostgresRuntimeStore(RuntimeStore):
             await conn.execute(
                 """INSERT INTO agent_approvals (
                     approval_id,thread_id,run_id,user_id,tenant_id,action,
-                    arguments,status,reason,created_at,expires_at
+                    arguments,status,reason,created_at,expires_at,decided_by,decided_at
                 )
-                VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,$11)
+                VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,$11,$12,$13)
                 ON CONFLICT (approval_id) DO UPDATE SET
-                    status=$8, reason=$9, expires_at=$11
+                    status=$8, reason=$9, expires_at=$11, decided_by=$12, decided_at=$13
                 WHERE agent_approvals.status='pending'""",
                 approval.approval_id,
                 approval.thread_id,
@@ -921,6 +977,8 @@ class PostgresRuntimeStore(RuntimeStore):
                 approval.reason,
                 approval.created_at,
                 approval.expires_at,
+                approval.decided_by,
+                approval.decided_at,
             )
 
     async def transition_approval(
@@ -933,12 +991,14 @@ class PostgresRuntimeStore(RuntimeStore):
         async with self._pool.acquire() as conn:
             command = await conn.execute(
                 """UPDATE agent_approvals
-                SET status=$2, reason=$3, expires_at=$4
-                WHERE approval_id=$1 AND status=$5""",
+                SET status=$2, reason=$3, expires_at=$4, decided_by=$5, decided_at=$6
+                WHERE approval_id=$1 AND status=$7""",
                 approval.approval_id,
                 approval.status,
                 approval.reason,
                 approval.expires_at,
+                approval.decided_by,
+                approval.decided_at,
                 expected_status,
             )
         return bool(command == "UPDATE 1")
@@ -961,6 +1021,19 @@ class PostgresRuntimeStore(RuntimeStore):
                 limit,
             )
         return [record for record in (_approval_from_dict(dict(row)) for row in rows) if record]
+
+    async def purge_approvals(self, before: str) -> int:
+        """清理早于 before 的终态审批记录；pending 永不清理。"""
+        self._check()
+        async with self._pool.acquire() as conn:
+            command = await conn.execute(
+                """DELETE FROM agent_approvals
+                WHERE status IN ('approved', 'rejected', 'expired')
+                AND COALESCE(decided_at, created_at) <= $1""",
+                before,
+            )
+        tag = command.split()[-1] if command else "0"
+        return int(tag) if tag.isdigit() else 0
 
 
 # ──────────────────────────────────────────────

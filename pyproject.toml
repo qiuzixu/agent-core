@@ -58,6 +58,10 @@ pgvector = [
   "asyncpg>=0.30,<1",
 ]
 
+qdrant = [
+  "qdrant-client>=1.12,<2",
+]
+
 mcp = [
   "mcp>=1.27,<2",
 ]
@@ -123,6 +127,7 @@ module = [
   "asyncpg",
   "chromadb",
   "faiss",
+  "qdrant_client",
   "numpy",
   "dashscope.*",
   "google.*",

@@ -53,6 +53,9 @@ class ApprovalRequest:
     reason: str | None = None
     # ISO 格式的过期时间；超过后允许任何一方做"过期收口"。
     expires_at: str | None = None
+    # 审计字段：终态时记录决定人身份与决定时间（进程内回显/API 响应用）。
+    decided_by: str | None = None
+    decided_at: str | None = None
     # 同进程唤醒信号灯：approve/reject 成功后 set()，等待者立即醒来。
     # repr=False 避免把 Event 内部锁打进日志。
     _event: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
@@ -84,6 +87,8 @@ class ApprovalRequest:
             status=status_by_request[self.status],
             reason=self.reason,
             expires_at=self.expires_at,
+            decided_by=self.decided_by,
+            decided_at=self.decided_at,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -99,6 +104,8 @@ class ApprovalRequest:
             "status": self.status.value,
             "reason": self.reason,
             "expires_at": self.expires_at,
+            "decided_by": self.decided_by,
+            "decided_at": self.decided_at,
         }
 
     @classmethod
@@ -120,6 +127,8 @@ class ApprovalRequest:
             }.get(record.status, ApprovalStatus.PENDING),
             reason=record.reason,
             expires_at=record.expires_at,
+            decided_by=record.decided_by,
+            decided_at=record.decided_at,
         )
         # 已有终态的记录恢复时直接点亮信号灯，避免等待者傻等。
         if request.status != ApprovalStatus.PENDING:

@@ -200,6 +200,7 @@ from agent_core.retrieval import (
     KeywordRetriever,
     OpenAIEmbeddings,
     PgVectorStore,
+    QdrantVectorStore,
     Reranker,
     RetrievalQuery,
     RetrievalResult,
