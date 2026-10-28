@@ -382,3 +382,28 @@ Checkpoint、状态机和 Middleware。上层 API 可以据此统一映射 HTTP 
 | 能力 | agent-core 模块 | vanilla 接线 | 说明 |
 |---|---|---|---|
 | 通用图谱存储 | ports/knowledge_graph.py、storage/knowledge_graph.py | core/knowledge_graph_service.py | 提供 GraphEntity、GraphRelation、KnowledgeGraphStore 协议与 InMemoryKnowledgeGraphStore；不引入 Neo4j，业务实体类型和关系投影仍留在应用层。 |
+
+## 2026-10-26 文档增量同步
+
+本节补齐 2026-10-22 之后已经进入 Core 但未及时写入文档的能力。
+
+| 能力 | 模块位置 | 说明 |
+| --- | --- | --- |
+| 工具注册冲突治理 | `tools/registry.py`、`tools/config.py` | 支持显式覆盖工具注册；重复注册时可按策略处理，避免隐式吞掉或崩溃 |
+| MCP 工具描述覆盖 | `tools/mcp.py`、`tools/config.py` | 支持 `descriptions_override`，在接入外部 MCP 时用稳定业务文案覆盖原始工具描述 |
+| MCP 工具发现策略 | `tools/discovery.py`、`tools/config.py` | 支持多种接入模式与自动注册；可按配置启用/禁用发现策略 |
+| MCP 客户端重连回调 | `mcp/client.py` | 连接状态变化、工具集刷新与错误标记支持生命周期回调 |
+| Admin 动态注入 | `runtime/registry.py`、`api/deps.py` 接线 | 上层 Admin 面板可运行时注入 Skill / MCP 工具，Core 负责通用注册与冲突边界 |
+| Admin 状态持久化多后端 | `storage/admin.py` | 支持多后端持久化 Admin / MCP / Skill 运行状态 |
+| 可恢复运行存储协议 | `ports/runtime.py`、`storage/runtime.py` | 补充可恢复 Run 存储协议与状态机；Run 状态流转可由上层接入恢复服务 |
+| 运行时上下文窗口查询 | `runtime/context.py`、`model/profile.py` | 增加官方 profile 层与进程内缓存，降低重复查询 |
+| 压缩摘要持久化 | `compaction/` | 支持跨轮复用压缩摘要，避免每轮重新生成 |
+| 压缩熔断与自适应上限 | `compaction/` | 增加摘要熔断与自适应 token 限制，压缩失败不再拖垮主流程 |
+| HITL 审批跨进程合并 | `hitl/core.py` | 审批列表支持跨进程合并查询；Core 继续保持通用状态语义 |
+| HITL 模块拆分 | `hitl/` | `core.py` 按职责拆分，审批队列、状态机与存储职责更清晰 |
+| 中间件优先级与超时 | `middleware/` | 各中间件支持声明式优先级和超时设置，便于稳定排序与慢路径隔离 |
+| 向量存储适配器工厂 | `retrieval/factory.py`、`storage/vector.py` | 增加多向量存储适配器工厂，Qdrant 适配器可用作外部扩展 |
+| Qdrant 适配器 | `retrieval/qdrant.py`、`storage/vector.py` | 支持 namespace、访问范围和 metadata 过滤的 Qdrant 外部扩展 |
+| 审批审计与保留清理 | `hitl/`、`middleware/retention.py` | 审批事件可进入审计流并接入 TTL / Retention 清理，双端语义保持一致 |
+
+> 说明：这些能力仍未改变 Core 的分层边界。HTTP Admin、业务实体投影和具体部署配置仍属于上层 Agent。
