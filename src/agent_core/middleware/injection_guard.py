@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -80,8 +81,17 @@ class InjectionGuardMiddleware(Middleware):
     after_tool:   检查工具结果中的注入尝试（工具返回的外部数据可能被污染）
     """
 
-    def __init__(self, config: InjectionGuardConfig | None = None) -> None:
+    def __init__(
+        self,
+        config: InjectionGuardConfig | None = None,
+        emit: Callable[..., Any] | None = None,
+    ) -> None:
         self._config = config or InjectionGuardConfig()
+        self._emit_hook = emit
+
+    def set_custom_patterns(self, patterns: list[re.Pattern[str]]) -> None:
+        """热更新自定义注入模式（配置中心 on_change 回调可调用）。"""
+        self._config.custom_patterns = list(patterns)
 
     def _detect(self, text: str) -> list[str]:
         """检测文本中的注入模式。返回匹配到的模式描述列表。"""
@@ -100,9 +110,19 @@ class InjectionGuardMiddleware(Middleware):
     def _sanitize(self, text: str) -> str:
         """从文本中剥离可疑内容（替换为 [FILTERED]）。"""
         result = text
-        for pattern in _INJECTION_PATTERNS:
+        for pattern in [*self._config.custom_patterns, *_INJECTION_PATTERNS]:
             result = pattern.sub("[FILTERED]", result)
         return result
+
+    def _emit(self, ctx: MiddlewareContext, event_type: str, **payload: Any) -> None:
+        """上报可观测事件；上报本身出问题不影响主流程（对齐 compaction 模式）。"""
+        try:
+            if ctx.emit is not None:
+                ctx.emit(event_type, **payload)
+            elif self._emit_hook is not None:
+                self._emit_hook(event_type, payload)
+        except Exception as exc:
+            logger.debug("[InjectionGuard] 事件上报失败：%s", exc)
 
     def _handle_detection(
         self, context: MiddlewareContext, source: str, detections: list[str]
@@ -112,6 +132,14 @@ class InjectionGuardMiddleware(Middleware):
         logger.warning(warning)
         context.metadata.setdefault("injection_warnings", []).extend(
             [{"source": source, "patterns": detections}]
+        )
+        self._emit(
+            context,
+            "injection_detected",
+            source=source,
+            count=len(detections),
+            samples=detections[:3],
+            strict=self._config.strict,
         )
         if self._config.strict:
             return MiddlewareResult(
@@ -135,6 +163,41 @@ class InjectionGuardMiddleware(Middleware):
         return MiddlewareResult(action=MiddlewareAction.CONTINUE)
 
     async def after_model(self, context: MiddlewareContext) -> MiddlewareResult:
+        if not self._config.enabled:
+            return MiddlewareResult(action=MiddlewareAction.CONTINUE)
+        response = context.llm_response
+        content = str(getattr(response, "content", "") or "") if response is not None else ""
+        if not content:
+            return MiddlewareResult(action=MiddlewareAction.CONTINUE)
+        detections = self._detect(content)
+        if not detections:
+            return MiddlewareResult(action=MiddlewareAction.CONTINUE)
+        # 模型输出可能复述工具结果里的注入指令；宽松模式剥离可疑片段后放行，
+        # 严格模式直接拦截整轮输出。
+        logger.warning(
+            "[InjectionGuard] model_output 检测到 %d 个注入模式: %s",
+            len(detections),
+            detections[:3],
+        )
+        context.metadata.setdefault("injection_warnings", []).extend(
+            [{"source": "model_output", "patterns": detections}]
+        )
+        self._emit(
+            context,
+            "injection_detected",
+            source="model_output",
+            count=len(detections),
+            samples=detections[:3],
+            strict=self._config.strict,
+        )
+        if self._config.strict:
+            return MiddlewareResult(
+                action=MiddlewareAction.STOP,
+                error="检测到疑似 Prompt Injection (model_output)，已阻断",
+            )
+        sanitized = self._sanitize(content)
+        if sanitized != content and response is not None:
+            response.content = sanitized
         return MiddlewareResult(action=MiddlewareAction.CONTINUE)
 
     async def before_tool(self, context: MiddlewareContext) -> MiddlewareResult:
