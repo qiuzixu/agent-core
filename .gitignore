@@ -19,3 +19,4 @@ site/
 .tmp/
 examples/starter/.starter_checkpoints/
 pytest-of-TYS/
+mkdocs_*/
