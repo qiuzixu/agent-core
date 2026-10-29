@@ -191,8 +191,33 @@ class KeywordRetriever:
         self._documents = list(documents or ())
         self._require_access = require_access
 
-    def add_documents(self, documents: Iterable[Document]) -> None:
-        self._documents.extend(documents)
+    def add_documents(
+        self,
+        documents: Iterable[Document],
+        *,
+        namespace: str = "default",
+        access: AccessContext | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> list[str]:
+        """追加文档；namespace/access/metadata 为组合检索器保留统一接口。
+
+        KeywordRetriever 自身只按 document.metadata 过滤，扩展参数不会覆盖
+        已写入 Document 的信息，因此这里仅记录并返回文档 ID。
+        """
+        items = list(documents)
+        self._documents.extend(items)
+        return [item.document_id for item in items]
+
+    def delete_documents(self, document_ids: Sequence[str]) -> int:
+        """按 document_id 删除文档；返回实际删除的条数。
+
+        关键词检索器是内存 list，这里直接原地去重删除，
+        供上层在持久化删除时同步清理内存索引。
+        """
+        removed = set(document_ids)
+        before = len(self._documents)
+        self._documents = [item for item in self._documents if item.document_id not in removed]
+        return before - len(self._documents)
 
     async def retrieve(self, query: RetrievalQuery) -> list[RetrievalResult]:
         if query.search_type != SearchType.KEYWORD:

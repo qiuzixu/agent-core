@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Awaitable, Sequence
 from typing import Protocol, runtime_checkable
 
 from agent_core.access import AccessContext
+from agent_core.documents import Document
 from agent_core.retrieval.types import (
     RetrievalQuery,
     RetrievalResult,
@@ -29,6 +30,31 @@ class Retriever(Protocol):
     """根据查询返回排好序的文档。"""
 
     async def retrieve(self, query: RetrievalQuery) -> list[RetrievalResult]: ...
+
+
+@runtime_checkable
+class Retriever(Protocol):
+    """根据查询返回排好序的文档。"""
+
+    async def retrieve(self, query: RetrievalQuery) -> list[RetrievalResult]: ...
+
+
+@runtime_checkable
+class WritableRetriever(Retriever, Protocol):
+    """支持统一写入接口的组合检索器协议。
+
+    返回值兼容同步 ID 列表与异步协程，方便 Keyword/Embedding 两类实现
+    在同一个组合层（Hybrid/Rerank）中使用。
+    """
+
+    def add_documents(
+        self,
+        documents: Sequence[Document],
+        *,
+        namespace: str = "default",
+        access: AccessContext | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> Sequence[str] | Awaitable[Sequence[str]]: ...
 
 
 @runtime_checkable

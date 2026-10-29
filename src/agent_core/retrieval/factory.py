@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    from agent_core.retrieval.rerank import RerankClient
 
 from agent_core.retrieval.chroma import ChromaVectorStore
 from agent_core.retrieval.core import Embeddings, VectorStore
@@ -160,9 +163,54 @@ def create_embeddings(
     )
 
 
+
+# Rerank 服务默认地址（OpenAI 兼容 /rerank 端点）。
+_RERANK_DEFAULT_BASE_URLS: dict[str, str] = {
+    "siliconflow": "https://api.siliconflow.cn/v1",
+    "jina": "https://api.jina.ai/v1",
+    "cohere": "https://api.cohere.com/compatibility/v1",
+    "dashscope": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "custom": "http://127.0.0.1:8000/v1",
+}
+
+RerankProvider = Literal["siliconflow", "jina", "cohere", "dashscope", "custom"]
+
+
+def create_reranker(
+    provider: str = "siliconflow",
+    *,
+    model: str,
+    api_key: str,
+    base_url: str | None = None,
+    timeout: float | None = None,
+    fallback_on_error: bool = True,
+) -> RerankClient:
+    """创建 Rerank 客户端的统一入口（与 create_embeddings 同套路）。
+
+    各厂商默认地址见 _RERANK_DEFAULT_BASE_URLS；显式传入 base_url 始终优先。
+    """
+    from agent_core.retrieval.rerank import RerankClient
+
+    normalized = provider.strip().lower()
+    if normalized not in _RERANK_DEFAULT_BASE_URLS:
+        raise ValueError(f"不支持的 rerank provider：{provider}")
+    if not model.strip():
+        raise ValueError("rerank model 不能为空")
+    if not api_key.strip():
+        raise ValueError(f"使用 {normalized} rerank 服务需要配置 api_key")
+    return RerankClient(
+        api_key=api_key,
+        model=model,
+        base_url=base_url or _RERANK_DEFAULT_BASE_URLS[normalized],
+        timeout=timeout,
+        fallback_on_error=fallback_on_error,
+    )
+
 __all__ = [
     "EmbeddingProvider",
     "VectorStoreBackend",
     "create_embeddings",
+    "RerankProvider",
+    "create_reranker",
     "create_vector_store",
 ]

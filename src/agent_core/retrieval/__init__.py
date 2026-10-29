@@ -6,6 +6,7 @@ from agent_core.retrieval.core import (
     Reranker,
     Retriever,
     VectorStore,
+    WritableRetriever,
 )
 from agent_core.retrieval.factory import (
     EmbeddingProvider,
@@ -14,10 +15,12 @@ from agent_core.retrieval.factory import (
     create_vector_store,
 )
 from agent_core.retrieval.faiss import FaissVectorStore
+from agent_core.retrieval.hybrid import HybridRetriever
 from agent_core.retrieval.memory import EmbeddingRetriever, InMemoryVectorStore, KeywordRetriever
 from agent_core.retrieval.openai import OpenAIEmbeddings
 from agent_core.retrieval.pgvector import PgVectorStore
 from agent_core.retrieval.qdrant import QdrantVectorStore
+from agent_core.retrieval.rerank import RerankClient, RerankingRetriever
 from agent_core.retrieval.types import (
     RetrievalQuery,
     RetrievalResult,
@@ -32,12 +35,15 @@ __all__ = [
     "EmbeddingProvider",
     "EmbeddingRetriever",
     "FaissVectorStore",
+    "HybridRetriever",
     "Embeddings",
     "InMemoryVectorStore",
     "KeywordRetriever",
     "OpenAIEmbeddings",
     "PgVectorStore",
     "QdrantVectorStore",
+    "RerankClient",
+    "RerankingRetriever",
     "Reranker",
     "RetrievalQuery",
     "RetrievalResult",
@@ -47,6 +53,7 @@ __all__ = [
     "VectorRecord",
     "VectorSearchResult",
     "VectorStore",
+    "WritableRetriever",
     "VectorStoreBackend",
     "create_embeddings",
     "create_vector_store",
