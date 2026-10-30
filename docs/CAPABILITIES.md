@@ -340,6 +340,41 @@ Checkpoint、状态机和 Middleware。上层 API 可以据此统一映射 HTTP 
 5. HTTP、SSE、WebSocket、CLI 或其他应用入口；
 6. 前端页面和业务交互。
 
+## 14.5 任务编排（tasks）
+
+### 模块位置
+
+`agent_core/tasks/`
+
+### 对外边界
+
+提供持久化任务队列、Worker 消费循环、重试调度与死信对账。
+不绑定任何具体消息中间件（Memory / RabbitMQ 双实现）。
+上层 Agent 只需注册业务 handler 和提供配置对象。
+
+### 核心类
+
+| 类 | 说明 |
+|---|---|
+| `TaskEnvelope` | 任务信封（task_id / intent / payload / retry_count / attempt_id） |
+| `AgentTask` | 持久化任务视图（status / lease_expires_at / next_retry_at） |
+| `AgentTaskStore` | 任务存储协议（Memory / SQLite / PostgreSQL 三实现） |
+| `TaskQueue` | 队列协议（Memory / RabbitMQ 双实现） |
+| `AgentTaskWorker` | Worker 消费循环（心跳 / 租约 / 超时 / 并发控制） |
+| `AgentTaskRetryScheduler` | 重试调度器（将到期任务重新入队） |
+| `make_task_router` | intent → handler 路由器 |
+
+### 使用场景
+
+- Agent 需要执行长时间任务（工作流、批量处理）
+- 需要服务重启后恢复任务
+- 需要失败重试和死信兜底
+- 需要多实例并发消费
+
+### 是否影响既有依赖方向
+
+不影响。`tasks/` 只依赖 `agent_core.storage`（SQLite 工具）和 `agent_core.access`（身份重建）。
+
 ## 15. 当前不属于 Core 的能力
 
 以下内容应留在具体 Agent 项目中：
@@ -407,3 +442,4 @@ Checkpoint、状态机和 Middleware。上层 API 可以据此统一映射 HTTP 
 | 审批审计与保留清理 | `hitl/`、`middleware/retention.py` | 审批事件可进入审计流并接入 TTL / Retention 清理，双端语义保持一致 |
 
 > 说明：这些能力仍未改变 Core 的分层边界。HTTP Admin、业务实体投影和具体部署配置仍属于上层 Agent。
+

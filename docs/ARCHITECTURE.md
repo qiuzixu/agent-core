@@ -413,6 +413,38 @@ flowchart LR
 两者读取同一套共享 Skill 清单和指令，但分别注入自己的 Function 与 MCP 客户端，
 并分别运行应用 API 和 MCP Server，避免进程与端口冲突。
 
+## 6.5 任务编排（tasks）模块架构
+
+```
+API 层（vanilla / 上层 Agent）
+  │  TaskEnvelope（intent + payload）
+  ▼
+TaskQueue.publish() ────────────► RabbitMQ / Memory
+  │
+  ▼
+AgentTaskWorker._process()
+  │
+  ├── TaskStore.claim()  ←── 原子抢占（lease + attempt_id）
+  ├── handler(envelope)  ←── 业务逻辑（上层注册）
+  │     ├── 成功 → TaskStore.complete()
+  │     ├── 临时失败 → TaskStore.fail() → 重试计数+1
+  │     └── 永久失败 → TaskStore.mark_dead() → DLQ
+  │
+  └── 心跳循环：renew_leases() 每 10s
+       └── 租约过期 → reclaim_stale() → waiting_retry
+
+AgentTaskRetryScheduler（可选）
+  └── 定时扫描 waiting_retry → reschedule → 重新入队
+```
+
+### 存储后端
+
+| 环境 | 实现 |
+|---|---|
+| test | `MemoryAgentTaskStore` + `MemoryTaskQueue` |
+| development | `SqliteAgentTaskStore` + `MemoryTaskQueue` |
+| production | `PostgresAgentTaskStore` + `RabbitMQTaskQueue` |
+
 ## 7. 架构图维护待办
 
 - [ ] **持续任务，不关闭：** 每次修改 `agent-core/src/agent_core/**` 后，在同一提交中检查并更新本文。
@@ -476,3 +508,4 @@ flowchart LR
 | 2026-10-20 | 轻量知识图谱内核 | 新增 ports/knowledge_graph.py 定义 GraphEntity、GraphRelation、KnowledgeGraphStore 协议；新增 storage/knowledge_graph.py 提供 InMemoryKnowledgeGraphStore。通用实体/关系/子图查询进入 Core，业务实体投影仍由上层 Agent 负责；不引入 Neo4j，模块边界与调用方向无需修改 Mermaid 图。 |
 
 | 2026-10-26 | 文档补齐（10-22 ~ 10-26） | 补充工具注册冲突治理、MCP 发现策略 / 描述覆盖 / 重连回调、Admin 动态注入、Admin 状态多后端、可恢复运行存储、运行时 profile 缓存、压缩持久化与熔断、HITL 拆分 / 跨进程合并、中间件优先级与超时、向量存储工厂与 Qdrant 适配器。未改变 Runtime / Tools / Storage / Middleware 的既有依赖方向，模块关系图不变。 |
+
