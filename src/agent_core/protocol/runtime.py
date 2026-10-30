@@ -24,6 +24,31 @@ RunStatus = Literal[
     "cancelled",
 ]
 
+# 运行时状态白名单：Literal 只作用于静态检查，这里用于运行时兜底校验。
+RUN_STATUSES: frozenset[str] = frozenset(
+    {
+        "queued",
+        "running",
+        "waiting_approval",
+        "waiting_clarification",
+        "waiting_retry",
+        "interrupted",
+        "completed",
+        "failed",
+        "cancelled",
+    }
+)
+
+# 审批状态白名单：与 protocol 保持一致，供 ApprovalRecord 构造时校验。
+APPROVAL_STATUSES: frozenset[str] = frozenset(
+    {
+        "pending",
+        "approved",
+        "rejected",
+        "expired",
+    }
+)
+
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
@@ -40,6 +65,8 @@ class RunEvent:
     run_id: str
     thread_id: str
     sequence: int
+    # 协议版本：用于持久化事件结构演进时的兼容判断。
+    schema_version: int = 1
     payload: dict[str, Any] = field(default_factory=dict)
     timestamp: str = field(default_factory=_now)
     event_id: str = field(default_factory=lambda: str(uuid.uuid4()))
@@ -57,6 +84,7 @@ class RunEvent:
             "run_id": self.run_id,
             "thread_id": self.thread_id,
             "sequence": self.sequence,
+            "schema_version": self.schema_version,
             "payload": self.payload,
             "timestamp": self.timestamp,
             "event_id": self.event_id,
@@ -76,6 +104,7 @@ class RunEvent:
             run_id=str(value["run_id"]),
             thread_id=str(value["thread_id"]),
             sequence=int(value["sequence"]),
+            schema_version=int(value.get("schema_version", 1)),
             payload=dict(value.get("payload") or {}),
             timestamp=str(value.get("timestamp") or _now()),
             event_id=str(value.get("event_id") or uuid.uuid4()),
@@ -107,6 +136,11 @@ class ApprovalRecord:
     # 审计字段：终态时记录"谁"批准/拒绝（决定方身份）与"何时"决定。
     decided_by: str | None = None
     decided_at: str | None = None
+
+    def __post_init__(self) -> None:
+        """校验审批状态，避免非法状态进入存储或事件流。"""
+        if self.status not in APPROVAL_STATUSES:
+            raise ValueError(f"非法的审批状态: {self.status!r}")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -202,6 +236,8 @@ class RunContext:
     parent_run_id: str | None = None
     tags: list[str] = field(default_factory=list)
     status: RunStatus = "queued"
+    # 协议版本：用于持久化上下文结构演进时的兼容判断。
+    schema_version: int = 1
     version: int = 0
     idempotency_key: str | None = None
     iteration: int = 0
@@ -214,6 +250,11 @@ class RunContext:
     checkpoint: dict[str, Any] = field(default_factory=dict)
     checkpoint_callback: Any = field(default=None, repr=False, compare=False)
     events: list[RunEvent] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        """校验运行状态，避免非法状态进入存储或事件流。"""
+        if self.status not in RUN_STATUSES:
+            raise ValueError(f"非法的运行状态: {self.status!r}")
 
     def emit(
         self,
@@ -258,6 +299,7 @@ class RunContext:
             "parent_run_id": self.parent_run_id,
             "tags": list(self.tags),
             "status": self.status,
+            "schema_version": self.schema_version,
             "version": self.version,
             "idempotency_key": self.idempotency_key,
             "iteration": self.iteration,
@@ -283,6 +325,7 @@ class RunContext:
             parent_run_id=value.get("parent_run_id"),
             tags=[str(tag) for tag in value.get("tags", [])],
             status=value.get("status", "queued"),
+            schema_version=int(value.get("schema_version", 1)),
             version=int(value.get("version", 0)),
             idempotency_key=value.get("idempotency_key"),
             iteration=int(value.get("iteration", 0)),
