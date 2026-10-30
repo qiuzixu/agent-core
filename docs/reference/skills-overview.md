@@ -87,6 +87,10 @@ vanilla 应用中有两条 Skill 注入路径：
 同名覆盖白名单：Skill 想复用已有同名工具，必须满足 `kind == "function"` 且
 `target == name`。否则拒绝，避免 Skill 静默替换业务工具或把 MCP 调用伪装成本地函数。
 
+动态 MCP 同名冲突：管理面板 MCP 工具进入运行时注册表时使用 `replace=False`；
+如果和本地 Function Calling、静态 Skill 或其他已有工具同名，会抛出
+`ToolRegistrationError`，不会静默覆盖。
+
 ## 与 LangGraph 端的关系
 
 LangGraph 端有独立的 `low_altitude_agent.skills` 实现，保持对外行为一致：清单加载、
