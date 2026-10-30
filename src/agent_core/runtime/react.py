@@ -37,6 +37,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 from agent_core.checkpoint import Checkpointer
+from agent_core.compaction.region import estimate_input_tokens
 from agent_core.errors import (
     ModelInvocationError,
     ModelOutputValidationError,
@@ -48,7 +49,6 @@ from agent_core.middleware import (
     MiddlewareManager,
     ParallelToolPolicy,
 )
-from agent_core.compaction.region import estimate_input_tokens
 from agent_core.model import ContextUsage, ModelAdapter, StreamChunk
 from agent_core.protocol.messages import (
     Message,
@@ -134,10 +134,12 @@ class ReActAgent:
         thread_id: str = "default",
         max_repeated_tool_calls: int = 3,
         parallel_policy: ParallelToolPolicy | None = None,
+        memory_context_template: str | None = None,
     ) -> None:
         self._llm = llm
         self._tool_executor = tool_executor
         self._system_prompt = system_prompt
+        self._memory_context_template = memory_context_template
         self._tool_definitions = tool_definitions
         self._max_iterations = max_iterations
         self._max_tool_calls = max_tool_calls
@@ -613,11 +615,22 @@ class ReActAgent:
         user_input: str,
         memory_context: str | None,
     ) -> list[Message]:
-        """构造初始消息列表。"""
+        """构造初始消息列表。
+
+        memory_context_template 来自 PromptRegistry（memory_context_prefix），
+        未传入时使用内置默认格式保持向后兼容。
+        """
         msgs: list[Message] = [system_message(self._system_prompt)]
-        user_content = (
-            f"会话相关记忆：\n{memory_context}\n\n用户问题：{user_input}" if memory_context else user_input
-        )
+        if memory_context:
+            if self._memory_context_template:
+                user_content = self._memory_context_template.format(
+                    memory_context=memory_context,
+                    user_input=user_input,
+                )
+            else:
+                user_content = f"会话相关记忆：\n{memory_context}\n\n用户问题：{user_input}"
+        else:
+            user_content = user_input
         msgs.append(user_message(user_content))
         return msgs
 

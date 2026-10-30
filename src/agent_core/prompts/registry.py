@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from agent_core.prompts.templates import PromptTemplate
+from agent_core.protocol.messages import Message
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +67,9 @@ class PromptRegistry:
     def __init__(self, storage_path: str | Path = "./prompts.json") -> None:
         self._path = Path(storage_path)
         self._entries: dict[str, PromptEntry] = {}
+        self._mtimes: dict[str, float] = {}
         self._load()
+        self._refresh_mtime_baseline()
 
     def register(
         self,
@@ -79,6 +82,9 @@ class PromptRegistry:
         """注册提示词；同名提示词会创建新版本。"""
         if name in self._entries:
             return self.update(name, content, description=description, defaults=defaults)
+        # 注册时校验模板语法（fail fast），而不是等到渲染时才报错。
+        # 校验模板语法（fail fast），变量列表不需要使用。
+        _validated = PromptTemplate(content, defaults=dict(defaults or {})).variables
         version = PromptVersion(
             version=1,
             content=content,
@@ -102,6 +108,9 @@ class PromptRegistry:
         entry = self._entries.get(name)
         if entry is None:
             raise KeyError(f"提示词不存在：{name}，请先调用 register()")
+        # 更新时同样校验模板语法。
+        # 校验模板语法（fail fast），变量列表不需要使用。
+        _validated = PromptTemplate(content, defaults=dict(defaults or {})).variables
         version = PromptVersion(
             version=max(item.version for item in entry.versions) + 1,
             content=content,
@@ -128,6 +137,30 @@ class PromptRegistry:
     def render(self, prompt_name: str, **kwargs: Any) -> str:
         """渲染当前版本。"""
         return self._get_entry(prompt_name).current.render(**kwargs)
+
+    def render_messages(
+        self,
+        prompt_name: str,
+        *,
+        system_variables: dict[str, Any] | None = None,
+        user_variables: dict[str, Any] | None = None,
+        history: list[Message] | None = None,
+    ) -> list[Message]:
+        """把当前版本渲染为消息列表（system + history + user）。
+
+        这是 ChatPromptTemplate 的运行时入口：调用方只需要提供变量和历史
+        消息，不需要手动构造 Message 对象。
+        """
+        content = self._get_entry(prompt_name).current.render(**(system_variables or {}))
+        messages: list[Message] = [Message(role="system", content=content)]
+        if history:
+            messages.extend(history)
+        if user_variables:
+            user_content = ", ".join(
+                f"{key}={value}" for key, value in user_variables.items()
+            )
+            messages.append(Message(role="user", content=user_content))
+        return messages
 
     def get(self, prompt_name: str) -> str:
         """读取当前版本的原始模板。"""
@@ -198,6 +231,7 @@ class PromptRegistry:
         finally:
             if temporary_path is not None and temporary_path.exists():
                 temporary_path.unlink(missing_ok=True)
+        self._refresh_mtime_baseline()
 
     def _load(self) -> None:
         if not self._path.exists():
@@ -231,6 +265,47 @@ class PromptRegistry:
         if entry is None:
             raise KeyError(f"提示词不存在：{name}")
         return entry
+
+    def _refresh_mtime_baseline(self) -> None:
+        """记录当前文件的 mtime，作为热重载的变更检测基线。"""
+        try:
+            stat = self._path.stat()
+            self._mtimes[str(self._path)] = stat.st_mtime
+        except OSError:
+            self._mtimes.pop(str(self._path), None)
+
+    def check_for_changes(self) -> bool:
+        """检测存储文件是否被外部修改（mtime 变化）。
+
+        返回 True 表示文件有变化，需要调用 reload_changed() 重新加载。
+        """
+        try:
+            stat = self._path.stat()
+        except OSError:
+            return str(self._path) in self._mtimes
+        baseline = self._mtimes.get(str(self._path))
+        if baseline is None:
+            return True
+        return stat.st_mtime != baseline
+
+    def reload_changed(self) -> int:
+        """检测文件变化并重新加载；返回新加载的提示词数量。
+
+        与 skills registry 一致：先加载，成功后才替换内存状态。
+        文件损坏时保留当前内存数据并输出 WARNING。
+        """
+        if not self.check_for_changes():
+            return 0
+        try:
+            old_count = len(self._entries)
+            self._load()
+            self._refresh_mtime_baseline()
+            new_count = len(self._entries)
+            logger.info("[Prompt] 热重载成功：%d -> %d 个提示词", old_count, new_count)
+            return new_count
+        except Exception as exc:
+            logger.warning("[Prompt] 热重载失败，保留当前内存数据（原因：%s）", exc)
+            return 0
 
 
 __all__ = ["PromptEntry", "PromptRegistry", "PromptVersion"]
