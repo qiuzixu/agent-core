@@ -443,3 +443,12 @@ Checkpoint、状态机和 Middleware。上层 API 可以据此统一映射 HTTP 
 
 > 说明：这些能力仍未改变 Core 的分层边界。HTTP Admin、业务实体投影和具体部署配置仍属于上层 Agent。
 
+
+
+## 2026-10-30 协议演进钩子
+
+| 能力 | 模块位置 | 说明 |
+| --- | --- | --- |
+| 协议版本 | `protocol/runtime.py` | `RunEvent` / `RunContext` 增加 `schema_version`，旧数据恢复时默认回填 `1`，为后续协议迁移留出版本钩子 |
+| 运行时状态白名单 | `protocol/runtime.py` | 新增 `RUN_STATUSES` / `APPROVAL_STATUSES`；构造 `RunContext` / `ApprovalRecord` 时校验非法状态，坏数据更早暴露 |
+| 协议总览文档 | `docs/reference/protocol-overview.md` | 汇总 protocol 数据契约、生命周期、序列化边界和演进钩子 |

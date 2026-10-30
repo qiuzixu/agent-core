@@ -509,3 +509,5 @@ AgentTaskRetryScheduler（可选）
 
 | 2026-10-26 | 文档补齐（10-22 ~ 10-26） | 补充工具注册冲突治理、MCP 发现策略 / 描述覆盖 / 重连回调、Admin 动态注入、Admin 状态多后端、可恢复运行存储、运行时 profile 缓存、压缩持久化与熔断、HITL 拆分 / 跨进程合并、中间件优先级与超时、向量存储工厂与 Qdrant 适配器。未改变 Runtime / Tools / Storage / Middleware 的既有依赖方向，模块关系图不变。 |
 
+
+| 2026-10-30 | 协议演进钩子 | protocol/runtime.py 为 RunEvent / RunContext 增加 schema_version，并为 Run / Approval 状态增加运行时白名单校验。属于协议字段与运行时兜底增强，模块边界、依赖方向和图形关系不变，无需修改 Mermaid 图。 |

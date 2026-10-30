@@ -52,6 +52,7 @@ nav:
       - 可观测性与 Guardrails: guide/observability-and-guardrails.md
   - 参考:
       - 系统架构: ARCHITECTURE.md
+      - 协议总览: reference/protocol-overview.md
       - 公共 API: reference/public-api.md
       - 配置参考: reference/configuration.md
       - 异常体系: reference/exceptions.md
