@@ -215,7 +215,13 @@ class GuardrailsMiddleware(Middleware):
         self._pii_guard = PIIRedactionGuard() if pii_redact else None
 
     def _emit(self, ctx: MiddlewareContext, event_type: str, **payload: Any) -> None:
-        """上报可观测事件；上报本身出问题不影响主流程。"""
+        """上报可观测事件；上报本身出问题不影响主流程。
+
+        事件会走两条通路：
+        1. ctx.emit / _emit_hook —— 进入运行时事件序列（审计、tracing）；
+        2. agent_stats.record_guard_event —— 进入进程级护栏计数，
+           供 /observability/stats 展示"这个会话被防护拦了几次"。
+        """
         try:
             if ctx.emit is not None:
                 ctx.emit(event_type, **payload)
@@ -223,6 +229,14 @@ class GuardrailsMiddleware(Middleware):
                 self._emit_hook(event_type, payload)
         except Exception as exc:
             logger.debug("[Guard] 事件上报失败：%s", exc)
+        # 统计登记独立于事件上报：即使没接 emit 也计数。
+        try:
+            from agent_core.observability import agent_stats
+
+            thread_id = str(ctx.metadata.get("thread_id") or "default")
+            agent_stats.record_guard_event(thread_id, event_type)
+        except Exception as exc:
+            logger.debug("[Guard] 护栏统计登记失败：%s", exc)
 
     async def before_model(self, context: MiddlewareContext) -> MiddlewareResult:
         user_text = next(

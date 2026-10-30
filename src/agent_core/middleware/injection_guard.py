@@ -115,7 +115,11 @@ class InjectionGuardMiddleware(Middleware):
         return result
 
     def _emit(self, ctx: MiddlewareContext, event_type: str, **payload: Any) -> None:
-        """上报可观测事件；上报本身出问题不影响主流程（对齐 compaction 模式）。"""
+        """上报可观测事件；上报本身出问题不影响主流程（对齐 compaction 模式）。
+
+        与 guardrails 一致：事件走 ctx.emit 的同时登记到 agent_stats
+        护栏计数，供 /observability/stats 展示。
+        """
         try:
             if ctx.emit is not None:
                 ctx.emit(event_type, **payload)
@@ -123,6 +127,13 @@ class InjectionGuardMiddleware(Middleware):
                 self._emit_hook(event_type, payload)
         except Exception as exc:
             logger.debug("[InjectionGuard] 事件上报失败：%s", exc)
+        try:
+            from agent_core.observability import agent_stats
+
+            thread_id = str(ctx.metadata.get("thread_id") or "default")
+            agent_stats.record_guard_event(thread_id, event_type)
+        except Exception as exc:
+            logger.debug("[InjectionGuard] 护栏统计登记失败：%s", exc)
 
     def _handle_detection(
         self, context: MiddlewareContext, source: str, detections: list[str]

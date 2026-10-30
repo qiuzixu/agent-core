@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Any
@@ -12,22 +13,28 @@ from agent_core.skills.loader import SkillLoader
 from agent_core.skills.types import SkillActivation, SkillSpec, SkillToolSpec
 from agent_core.tools import ToolRegistry
 
+logger = logging.getLogger(__name__)
+
 
 class SkillRegistry:
     """管理 Skill，并把激活 Skill 的工具安装到统一工具注册表。"""
 
     def __init__(self) -> None:
         self._skills: dict[str, SkillSpec] = {}
+        # 记录每个 Skill 清单文件的 mtime，供 check_for_changes / reload_changed 使用。
+        self._mtimes: dict[str, float] = {}
 
     def register(self, skill: SkillSpec, *, replace: bool = False) -> None:
         """注册一个 Skill；默认拒绝无意覆盖同名版本。"""
         if skill.name in self._skills and not replace:
             raise SkillRegistrationError(f"Skill 已注册：{skill.name}")
         self._skills[skill.name] = skill
+        self._refresh_mtime(skill.name)
 
     def unregister(self, name: str) -> None:
         """移除一个 Skill。"""
         self._skills.pop(name, None)
+        self._mtimes.pop(name, None)
 
     def get(self, name: str) -> SkillSpec | None:
         """按名称查询 Skill。"""
@@ -150,26 +157,31 @@ class SkillRegistry:
         )
 
     def check_for_changes(self) -> list[str]:
-        """\u68c0\u67e5\u5df2\u6ce8\u518c Skill \u7684\u6e90\u6587\u4ef6\u662f\u5426\u6709\u53d8\u5316\u3002
+        """检查已注册 Skill 的源文件是否发生变化。
 
-        \u8fd4\u56de\u9700\u8981\u91cd\u65b0\u52a0\u8f7d\u7684 Skill \u540d\u79f0\u5217\u8868\u3002
-        \u901a\u8fc7\u6bd4\u8f83 manifest \u6587\u4ef6\u7684 mtime \u5b9e\u73b0\u8f6e\u8be2\u5f0f\u70ed\u91cd\u8f7d\u3002
+        返回需要重新加载的 Skill 名称列表。首次检查只建立基线，不把刚注册的
+        Skill 当作变更；后续通过比较 ``skill.json`` 的 mtime 发现修改。
         """
         changed: list[str] = []
         for name, skill in self._skills.items():
             if skill.source is None or not skill.source.is_file():
                 continue
             current_mtime = skill.source.stat().st_mtime
-            cached = getattr(self, "_mtimes", {})
-            if name in cached and cached[name] != current_mtime:
+            cached = self._mtimes.get(name)
+            if cached is not None and cached != current_mtime:
+                # 变更基线只在成功 reload 后刷新，避免调用方先 check 再 reload 时丢失变更。
                 changed.append(name)
-            cached[name] = current_mtime
-        if not hasattr(self, "_mtimes"):
-            self._mtimes = {name: (skill.source.stat().st_mtime if skill.source and skill.source.is_file() else 0) for name, skill in self._skills.items()}
+            else:
+                self._mtimes[name] = current_mtime
         return changed
 
-    def reload_changed(self, *, tool_registry: ToolRegistry | None = None, **kwargs: object) -> list[str]:
-        """\u91cd\u65b0\u52a0\u8f7d\u5df2\u53d8\u5316\u7684 Skill\uff0c\u8fd4\u56de\u91cd\u65b0\u52a0\u8f7d\u7684\u540d\u79f0\u5217\u8868\u3002"""
+    def reload_changed(self) -> list[str]:
+        """重新加载源文件发生变化的 Skill。
+
+        旧实现先从注册表移除旧 Skill 再加载新文件；如果清单损坏，Skill 会被
+        静默吞掉。现在采用“先加载候选版本，成功后再替换”的顺序，加载失败时
+        保留旧版本并输出警告日志。
+        """
         changed = self.check_for_changes()
         reloaded: list[str] = []
         for name in changed:
@@ -177,12 +189,33 @@ class SkillRegistry:
             if skill is None or skill.source is None:
                 continue
             try:
-                self._skills.pop(name, None)
-                self.load(skill.source)
+                # 先生成完整候选对象；加载失败时不会影响注册表中的旧版本。
+                candidate = SkillLoader().load(skill.source)
+                self.register(candidate, replace=True)
                 reloaded.append(name)
-            except Exception:
-                pass
+                logger.info(
+                    "Skill 热重载成功：%s（%s -> %s）",
+                    name,
+                    skill.version,
+                    candidate.version,
+                )
+            except Exception as exc:
+                logger.warning("Skill 热重载失败，保留旧版本：%s（%s）", name, exc)
         return reloaded
+
+    def _snapshot_mtime(self, name: str, skill: SkillSpec) -> float:
+        """返回 Skill 清单 mtime；源文件不存在时记为 0。"""
+        if skill.source is None or not skill.source.is_file():
+            return 0.0
+        return skill.source.stat().st_mtime
+
+    def _refresh_mtime(self, name: str) -> None:
+        """注册或移除 Skill 后刷新 mtime 基线。"""
+        skill = self._skills.get(name)
+        if skill is None:
+            self._mtimes.pop(name, None)
+            return
+        self._mtimes[name] = self._snapshot_mtime(name, skill)
 
     def _select(self, names: str | Iterable[str] | None) -> tuple[SkillSpec, ...]:
         if names is None:

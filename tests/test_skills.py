@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from collections.abc import Mapping
@@ -104,6 +105,38 @@ class TestSkillSystem(unittest.IsolatedAsyncioTestCase):
             )
             self.assertTrue(result.success)
             self.assertEqual(result.value, "北京:sunny")
+
+    async def test_reload_changed_updates_manifest_when_file_changes(self) -> None:
+        """清单变化后可热重载，且新版本进入注册表。"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = _write_skill(Path(directory) / "reload", name="reload", tools=[])
+            skills = SkillRegistry()
+            skills.load(path)
+
+            data = json.loads(path.read_text(encoding="utf-8"))
+            data["version"] = "2.0.0"
+            path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+            os.utime(path, (1_000_000, 1_000_000))
+
+            self.assertEqual(skills.check_for_changes(), ["reload"])
+            self.assertEqual(skills.reload_changed(), ["reload"])
+            self.assertEqual(skills.get("reload").version, "2.0.0")
+
+    async def test_reload_failure_keeps_previous_skill_and_logs(self) -> None:
+        """清单损坏时热重载必须保留旧 Skill，并不再静默吞错。"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = _write_skill(Path(directory) / "broken", name="broken", tools=[])
+            skills = SkillRegistry()
+            original = skills.load(path)
+
+            path.write_text("{invalid json", encoding="utf-8")
+            os.utime(path, (1_000_001, 1_000_001))
+
+            self.assertEqual(skills.check_for_changes(), ["broken"])
+            with self.assertLogs("agent_core.skills.registry", level="WARNING") as logs:
+                self.assertEqual(skills.reload_changed(), [])
+            self.assertIn("Skill 热重载失败", "\n".join(logs.output))
+            self.assertEqual(skills.get("broken"), original)
 
     async def test_activate_mcp_skill_calls_declared_server_and_target(self) -> None:
         """MCP Skill 使用 server 选择客户端，并调用 target 指定的远端工具。"""
