@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import uuid
-from typing import Protocol, runtime_checkable
+from dataclasses import dataclass
+from typing import Any, Protocol, runtime_checkable
 
 from agent_core.documents.types import Document, DocumentChunk, DocumentLocator
 
@@ -69,6 +70,37 @@ class RecursiveCharacterTextSplitter:
                 )
         return chunks
 
+    def split_documents_with_stats(
+        self, documents: list[Document]
+    ) -> tuple[list[DocumentChunk], SplitStats]:
+        """切分并返回统计结果。
+
+        oversized_chunks 达到上限通常意味着语料里缺少分隔符（如整段压缩文本），
+        应考虑调整 chunk_size 或补充分隔符，而不是盲目调大 overlap。
+        """
+        chunks = self.split_documents(documents)
+        if chunks:
+            lengths = [len(chunk.content) for chunk in chunks]
+            total_chars = sum(lengths)
+            stats = SplitStats(
+                document_count=len(documents),
+                chunk_count=len(chunks),
+                total_chars=total_chars,
+                average_chunk_chars=total_chars / len(chunks),
+                max_chunk_chars=max(lengths),
+                oversized_chunks=sum(1 for length in lengths if length >= self._chunk_size),
+            )
+        else:
+            stats = SplitStats(
+                document_count=len(documents),
+                chunk_count=0,
+                total_chars=0,
+                average_chunk_chars=0.0,
+                max_chunk_chars=0,
+                oversized_chunks=0,
+            )
+        return chunks, stats
+
     def _split_offsets(self, text: str) -> list[tuple[int, int]]:
         if not text:
             return []
@@ -92,3 +124,26 @@ class RecursiveCharacterTextSplitter:
                 break
             start = max(start + 1, end - self._chunk_overlap)
         return offsets
+
+
+@dataclass(frozen=True)
+class SplitStats:
+    """切分统计结果，用于入库前评估切分质量。"""
+
+    document_count: int
+    chunk_count: int
+    total_chars: int
+    average_chunk_chars: float
+    max_chunk_chars: int
+    # 长度达到 chunk_size 上限的片段数（说明内容密集、找不到自然边界被硬切）
+    oversized_chunks: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "document_count": self.document_count,
+            "chunk_count": self.chunk_count,
+            "total_chars": self.total_chars,
+            "average_chunk_chars": self.average_chunk_chars,
+            "max_chunk_chars": self.max_chunk_chars,
+            "oversized_chunks": self.oversized_chunks,
+        }

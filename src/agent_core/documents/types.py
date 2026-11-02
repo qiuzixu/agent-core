@@ -12,6 +12,22 @@ def _sha256(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
+def _verify_content_checksum(content: str, checksum: str, kind: str) -> str:
+    """校验并返回有效的内容 checksum。
+
+    - checksum 为空：视为旧数据，自动计算并返回（向后兼容）；
+    - checksum 非空：必须与 sha256(content) 一致，否则判定内容被篡改并抛出异常。
+    """
+    actual = _sha256(content.encode("utf-8"))
+    if not checksum:
+        return actual
+    if checksum != actual:
+        raise ValueError(
+            f"{kind} checksum 校验失败：预期 {checksum}，实际 {actual}，内容可能被篡改"
+        )
+    return checksum
+
+
 @dataclass(frozen=True)
 class DocumentLocator:
     """文档中的稳定位置，用于引用、续读和追踪切分来源。"""
@@ -100,8 +116,12 @@ class Document:
     def __post_init__(self) -> None:
         if not self.document_id.strip():
             raise ValueError("document_id 不能为空")
-        if not self.checksum:
-            object.__setattr__(self, "checksum", _sha256(self.content.encode("utf-8")))
+        # checksum 非空时严格校验（防篡改），为空时自动计算（向后兼容旧数据）
+        object.__setattr__(
+            self,
+            "checksum",
+            _verify_content_checksum(self.content, self.checksum, "Document"),
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -149,8 +169,12 @@ class DocumentChunk:
             raise ValueError("parent_document_id 不能为空")
         if not self.document_id.strip():
             raise ValueError("document_id 不能为空")
-        if not self.checksum:
-            object.__setattr__(self, "checksum", _sha256(self.content.encode("utf-8")))
+        # checksum 非空时严格校验（防篡改），为空时自动计算（向后兼容旧数据）
+        object.__setattr__(
+            self,
+            "checksum",
+            _verify_content_checksum(self.content, self.checksum, "DocumentChunk"),
+        )
 
     def to_document(self) -> Document:
         metadata = {
@@ -195,3 +219,4 @@ class DocumentChunk:
             locator=DocumentLocator.from_dict(locator) if isinstance(locator, dict) else None,
             checksum=str(value.get("checksum", "")),
         )
+
