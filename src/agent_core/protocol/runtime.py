@@ -49,6 +49,9 @@ APPROVAL_STATUSES: frozenset[str] = frozenset(
     }
 )
 
+# 审批状态静态别名：端口和存储实现统一使用，避免到处写裸字符串。
+ApprovalStatus = Literal["pending", "approved", "rejected", "expired"]
+
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
@@ -129,7 +132,7 @@ class ApprovalRecord:
     user_id: str | None = None
     tenant_id: str | None = None
     approval_id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    status: Literal["pending", "approved", "rejected", "expired"] = "pending"
+    status: ApprovalStatus = "pending"
     reason: str | None = None
     created_at: str = field(default_factory=_now)
     expires_at: str | None = None

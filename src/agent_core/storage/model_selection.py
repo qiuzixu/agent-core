@@ -31,6 +31,21 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+class ModelSelectionConcurrencyError(RuntimeError):
+    """模型选择的乐观锁版本冲突。"""
+
+
+def _validate_expected_version(previous: ModelSelection | None, expected_version: int | None) -> None:
+    """校验乐观锁期望版本；不存在记录时版本约定为 0。"""
+    if expected_version is None:
+        return
+    current_version = previous.version if previous else 0
+    if current_version != expected_version:
+        raise ModelSelectionConcurrencyError(
+            f"模型选择版本冲突：期望 {expected_version}，实际 {current_version}"
+        )
+
+
 def _validate_scope(scope: ModelSelectionScope, user_id: str | None, tenant_id: str | None) -> None:
     if scope == "user" and not user_id:
         raise ValueError("用户级模型选择需要 user_id")
@@ -75,11 +90,13 @@ class MemoryModelSelectionStore:
         scope: ModelSelectionScope,
         user_id: str | None,
         tenant_id: str | None,
+        expected_version: int | None = None,
     ) -> ModelSelection:
         _validate_scope(scope, user_id, tenant_id)
         async with self._lock:
             key = (scope, user_id if scope == "user" else "", tenant_id or "")
             previous = self._data.get(key)
+            _validate_expected_version(previous, expected_version)
             value = ModelSelection(
                 provider=provider.strip().lower(),
                 model=model.strip(),
@@ -177,6 +194,7 @@ class SqliteModelSelectionStore:
         scope: ModelSelectionScope,
         user_id: str | None,
         tenant_id: str | None,
+        expected_version: int | None = None,
     ) -> ModelSelection:
         _validate_scope(scope, user_id, tenant_id)
         key_user = user_id if scope == "user" else ""
@@ -188,7 +206,12 @@ class SqliteModelSelectionStore:
                     "WHERE scope=? AND user_id IS ? AND tenant_id=?",
                     (scope, key_user, tenant_id),
                 ).fetchone()
-                version = int(row[0]) + 1 if row else 1
+                current_version = int(row[0]) if row else 0
+                if expected_version is not None and current_version != expected_version:
+                    raise ModelSelectionConcurrencyError(
+                        f"模型选择版本冲突：期望 {expected_version}，实际 {current_version}"
+                    )
+                version = current_version + 1
                 value = ModelSelection(
                     provider.strip().lower(), model.strip(), scope, key_user, tenant_id, version, _now()
                 )
@@ -295,11 +318,25 @@ class PostgresModelSelectionStore:
         scope: ModelSelectionScope,
         user_id: str | None,
         tenant_id: str | None,
+        expected_version: int | None = None,
     ) -> ModelSelection:
         _validate_scope(scope, user_id, tenant_id)
         self._check()
         key_user = user_id if scope == "user" else ""
         async with self._pool.acquire() as conn:
+            # 先读取当前版本做乐观锁检查；expected_version 为 None 时保持兼容行为。
+            current = await conn.fetchrow(
+                """SELECT version FROM agent_model_selections
+                WHERE scope=$1 AND user_id IS NOT DISTINCT FROM $2 AND tenant_id=$3""",
+                scope,
+                key_user,
+                tenant_id,
+            )
+            current_version = int(current["version"]) if current else 0
+            if expected_version is not None and current_version != expected_version:
+                raise ModelSelectionConcurrencyError(
+                    f"模型选择版本冲突：期望 {expected_version}，实际 {current_version}"
+                )
             row = await conn.fetchrow(
                 """INSERT INTO agent_model_selections(
                     scope,user_id,tenant_id,provider,model,version,updated_at
@@ -352,6 +389,7 @@ def create_model_selection_store(
 __all__ = [
     "MemoryModelSelectionStore",
     "ModelSelection",
+    "ModelSelectionConcurrencyError",
     "ModelSelectionScope",
     "ModelSelectionStore",
     "PostgresModelSelectionStore",

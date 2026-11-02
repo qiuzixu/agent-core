@@ -36,7 +36,7 @@ Agent Core 是一套零外部平台绑定的手写 Agent 运行时内核。
 | `prompts` | 安全文本/聊天模板、消息占位符、partial、Prompt 版本和历史查询 | `PromptTemplate`、`ChatPromptTemplate`、`PromptRegistry` |
 | `observability` | 并发隔离的模型/工具耗时、调用计数、Thread/Agent 统计和可选 OTel | `ObservabilityMiddleware`、`setup_tracing` |
 | `access` | 用户和租户访问上下文，共享的严格模式/归属/身份访问校验 | `AccessContext`、`enforce_access` |
-| `ports` | 存储、审批、事件和长期记忆等依赖倒置接口 | `RunStore`、`SessionStore`、`ContextStore`、`MemoryStore`、`EventSink` |
+| `ports` | 存储、审批、事件、模型选择、图谱、服务注册和配置中心等依赖倒置接口 | `RunStore`、`SessionStore`、`WorkflowExecutionData`、`GraphSubgraph`、`ModelSelectionStore`、`ConfigCenter`、`EventSink` |
 | `acp` | ACP JSON-RPC/stdio、会话、提示、更新、取消和审批请求 | `AcpStdioServer`、`AcpBackend` |
 
 ## 3. Agent Loop 和运行生命周期
@@ -452,3 +452,25 @@ Checkpoint、状态机和 Middleware。上层 API 可以据此统一映射 HTTP 
 | 协议版本 | `protocol/runtime.py` | `RunEvent` / `RunContext` 增加 `schema_version`，旧数据恢复时默认回填 `1`，为后续协议迁移留出版本钩子 |
 | 运行时状态白名单 | `protocol/runtime.py` | 新增 `RUN_STATUSES` / `APPROVAL_STATUSES`；构造 `RunContext` / `ApprovalRecord` 时校验非法状态，坏数据更早暴露 |
 | 协议总览文档 | `docs/reference/protocol-overview.md` | 汇总 protocol 数据契约、生命周期、序列化边界和演进钩子 |
+
+
+## 2026-10-30 ports 契约增强
+
+| 能力 | 模块位置 | 说明 |
+| --- | --- | --- |
+| 工作流执行结构化协议 | `ports/storage.py` | `WorkflowStore` 从 `Any` 收紧为 `WorkflowExecutionData`，`ports` 不反向依赖具体存储实现 |
+| 模型选择乐观锁 | `ports/model_selection.py`、`storage/model_selection.py` | `save()` 支持 `expected_version`；不传保持旧行为，传版本时冲突抛 `ModelSelectionConcurrencyError` |
+| 配置变更取消订阅 | `ports/platform.py`、`middleware/dynamic_config.py` | `ConfigCenter.on_change()` 返回取消订阅函数；Core 与双端 Apollo 适配器行为一致 |
+| 审批状态静态别名 | `protocol/runtime.py`、`ports/storage.py`、`storage/runtime.py` | 新增 `ApprovalStatus` Literal，审批条件转换不再散落裸字符串 |
+| 图谱返回值统一 | `ports/knowledge_graph.py`、`storage/knowledge_graph.py` | `KnowledgeGraphStore` 统一返回 `GraphEntity` / `GraphRelation` / `GraphSubgraph`；上层 API 可自行序列化为 dict |
+
+
+## 2026-11-02 serialization 增强
+
+| 能力 | 模块位置 | 说明 |
+| --- | --- | --- |
+| 序列化白名单扩展 | serialization/registry.py、ports/knowledge_graph.py、ports/model_selection.py | 新增 GraphEntity / GraphRelation / GraphSubgraph / ModelSelection / AlertPayload / DeadLetterRecord 默认 codec；图谱与模型选择对象补 rom_dict() |
+| Blob checksum 严格校验 | serialization/registry.py | 反序列化时校验 sha256 checksum，缺失或不匹配拒绝恢复，防数据篡改 |
+| AccessContext 严格校验 | serialization/registry.py | user_id / tenant_id 必须非空字符串，roles 必须是可迭代非空集合，不再静默降级 |
+| envelope schema 语义澄清 | serialization/registry.py | docstring 区分信封序列化格式版本与协议对象内部 schema_version |
+| 序列化参考文档 | docs/reference/serialization-overview.md | 新增设计原则、白名单、迁移规则、codec 新增指南 |

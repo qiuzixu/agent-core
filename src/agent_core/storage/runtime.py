@@ -20,6 +20,7 @@ from typing import Any
 
 from agent_core.protocol.runtime import (
     ApprovalRecord,
+    ApprovalStatus,
     RunContext,
 )
 from agent_core.runtime.state import transition_run_status
@@ -95,7 +96,7 @@ class RuntimeStore(ABC):
         self,
         approval: ApprovalRecord,
         *,
-        expected_status: str = "pending",
+        expected_status: ApprovalStatus = "pending",
     ) -> bool: ...
 
     async def purge_approvals(self, before: str) -> int:
@@ -227,7 +228,7 @@ class MemoryRuntimeStore(RuntimeStore):
         self,
         approval: ApprovalRecord,
         *,
-        expected_status: str = "pending",
+        expected_status: ApprovalStatus = "pending",
     ) -> bool:
         async with self._lock:
             current = self._approvals.get(approval.approval_id)
@@ -611,7 +612,7 @@ class SqliteRuntimeStore(RuntimeStore):
         self,
         approval: ApprovalRecord,
         *,
-        expected_status: str = "pending",
+        expected_status: ApprovalStatus = "pending",
     ) -> bool:
         def _op() -> int:
             with self._connect() as conn:
@@ -985,7 +986,7 @@ class PostgresRuntimeStore(RuntimeStore):
         self,
         approval: ApprovalRecord,
         *,
-        expected_status: str = "pending",
+        expected_status: ApprovalStatus = "pending",
     ) -> bool:
         self._check()
         async with self._pool.acquire() as conn:

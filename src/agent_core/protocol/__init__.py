@@ -10,6 +10,7 @@ from agent_core.protocol.messages import (
 )
 from agent_core.protocol.runtime import (
     ApprovalRecord,
+    ApprovalStatus,
     RunContext,
     RunEvent,
     RunStatus,
@@ -19,6 +20,7 @@ from agent_core.protocol.runtime import (
 __all__ = [
     "AgentCapabilities",
     "ApprovalRecord",
+    "ApprovalStatus",
     "Message",
     "RunContext",
     "RunEvent",

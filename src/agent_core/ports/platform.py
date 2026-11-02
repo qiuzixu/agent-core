@@ -10,8 +10,12 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
+# 配置变更订阅的取消函数；调用后不再接收后续变更。
+Unsubscribe = Callable[[], None]
+
 __all__ = [
     "ConfigCenter",
+    "Unsubscribe",
     "AlertPayload",
     "AlertSink",
     "DeadLetterRecord",
@@ -39,8 +43,11 @@ class ConfigCenter(Protocol):
         """返回全部配置项快照。"""
         ...
 
-    def on_change(self, callback: Callable[[dict[str, Any]], None]) -> None:
-        """注册配置变更回调（可选实现，默认 no-op）。"""
+    def on_change(
+        self,
+        callback: Callable[[dict[str, Any]], None],
+    ) -> Unsubscribe:
+        """注册配置变更回调，返回取消订阅函数。"""
         ...
 
 

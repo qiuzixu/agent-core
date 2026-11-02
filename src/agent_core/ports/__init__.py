@@ -4,6 +4,7 @@ from agent_core.ports.knowledge_graph import (
     Direction,
     GraphEntity,
     GraphRelation,
+    GraphSubgraph,
     KnowledgeGraphStore,
 )
 from agent_core.ports.memory import MemoryRecord, MemorySearchResult, MemoryStore
@@ -28,6 +29,7 @@ from agent_core.ports.storage import (
     RecoverableRunStore,
     RunStore,
     SessionStore,
+    WorkflowExecutionData,
     WorkflowStore,
 )
 
@@ -43,6 +45,7 @@ __all__ = [
     "EventSink",
     "GraphEntity",
     "GraphRelation",
+    "GraphSubgraph",
     "KnowledgeGraphStore",
     "MemoryRecord",
     "MemorySearchResult",
@@ -56,6 +59,7 @@ __all__ = [
     "ToolCacheStore",
     "ServiceInstance",
     "ServiceRegistry",
+    "WorkflowExecutionData",
     "WorkflowStore",
 ]
 

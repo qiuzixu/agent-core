@@ -12,6 +12,8 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+import hashlib
+
 from agent_core.access import AccessContext
 from agent_core.documents import Blob, Document, DocumentChunk, DocumentLocator
 from agent_core.errors import (
@@ -19,6 +21,9 @@ from agent_core.errors import (
     UnknownSerializedTypeError,
     UnsupportedSchemaVersionError,
 )
+from agent_core.ports.knowledge_graph import GraphEntity, GraphRelation, GraphSubgraph
+from agent_core.ports.model_selection import ModelSelection
+from agent_core.ports.platform import AlertPayload, DeadLetterRecord
 from agent_core.protocol import ApprovalRecord, Message, RunContext, RunEvent, ToolResult
 
 Encoder = Callable[[Any], dict[str, Any]]
@@ -28,7 +33,16 @@ Migration = Callable[[dict[str, Any]], dict[str, Any]]
 
 @dataclass(frozen=True)
 class SerializedEnvelope:
-    """持久化对象的类型和 Schema 版本信封。"""
+    """持久化对象的类型和 Schema 版本信封。
+
+    注意区分两种版本号：
+
+    - 本信封的 ``schema_version`` 是**序列化格式版本**，表示 payload 字段结构
+      的演进版本，由 :class:`SerializerRegistry` 负责迁移；
+    - ``RunEvent`` / ``RunContext`` 等协议对象内部的 ``schema_version``
+      是**运行协议版本**，属于 payload 内容的一部分，两者互不影响。
+      即使未来协议对象升级到 2，信封格式仍可保持 1。
+    """
 
     type_id: str
     schema_version: int
@@ -185,18 +199,28 @@ def _encode_blob(value: Blob) -> dict[str, Any]:
 
 
 def _decode_blob(value: dict[str, Any]) -> Blob:
+    """从 base64 恢复 Blob，并严格校验 sha256 checksum 防止数据被篡改。"""
+
     if value.get("data_encoding") != "base64":
         raise SerializationError("Blob 只接受 base64 数据")
     try:
         data = base64.b64decode(str(value.get("data", "")), validate=True)
     except (ValueError, binascii.Error) as exc:
         raise SerializationError("Blob 包含无效 base64 数据") from exc
+    checksum = str(value.get("checksum", "")).strip().lower()
+    if not checksum:
+        raise SerializationError("Blob 缺少 checksum，拒绝恢复（防篡改校验必须开启）")
+    actual = hashlib.sha256(data).hexdigest()
+    if actual != checksum:
+        raise SerializationError(
+            f"Blob checksum 不匹配：预期 {checksum}，实际 {actual}"
+        )
     return Blob(
         data=data,
         source=value.get("source"),
         mime_type=value.get("mime_type"),
         metadata=dict(value.get("metadata") or {}),
-        checksum=str(value.get("checksum", "")),
+        checksum=checksum,
     )
 
 
@@ -205,10 +229,77 @@ def _decode_message(value: dict[str, Any]) -> Message:
 
 
 def _decode_access(value: dict[str, Any]) -> AccessContext:
-    return AccessContext(
-        user_id=str(value.get("user_id", "anonymous")),
-        tenant_id=str(value.get("tenant_id", "default")),
-        roles=frozenset(str(role) for role in value.get("roles", ["user"])),
+    """恢复访问上下文；关键字段必须有效，不接受静默降级。"""
+
+    user_id = value.get("user_id")
+    tenant_id = value.get("tenant_id")
+    if not isinstance(user_id, str) or not user_id.strip():
+        raise SerializationError("AccessContext.user_id 必须是非空字符串")
+    if not isinstance(tenant_id, str) or not tenant_id.strip():
+        raise SerializationError("AccessContext.tenant_id 必须是非空字符串")
+    raw_roles = value.get("roles", ["user"])
+    if not isinstance(raw_roles, (list, tuple, set, frozenset)):
+        raise SerializationError("AccessContext.roles 必须是可迭代集合")
+    roles = frozenset()
+    for role in raw_roles:
+        text = str(role).strip()
+        if not text:
+            raise SerializationError("AccessContext.roles 不能包含空角色")
+        roles = frozenset([*roles, text])
+    return AccessContext(user_id=user_id, tenant_id=tenant_id, roles=roles)
+
+
+def _encode_graph_entity(value: GraphEntity) -> dict[str, Any]:
+    return value.to_dict()
+
+
+def _encode_graph_relation(value: GraphRelation) -> dict[str, Any]:
+    return value.to_dict()
+
+
+def _encode_graph_subgraph(value: GraphSubgraph) -> dict[str, Any]:
+    return value.to_dict()
+
+
+def _encode_alert_payload(value: AlertPayload) -> dict[str, Any]:
+    return {
+        "key": value.key,
+        "message": value.message,
+        "severity": value.severity,
+        "timestamp": value.timestamp,
+        "metadata": dict(value.metadata),
+    }
+
+
+def _decode_alert_payload(value: dict[str, Any]) -> AlertPayload:
+    return AlertPayload(
+        key=str(value["key"]),
+        message=str(value["message"]),
+        severity=str(value.get("severity", "warning")),
+        timestamp=float(value.get("timestamp", 0.0)),
+        metadata=dict(value.get("metadata") or {}),
+    )
+
+
+def _encode_dead_letter_record(value: DeadLetterRecord) -> dict[str, Any]:
+    return {
+        "timestamp": value.timestamp,
+        "tool_name": value.tool_name,
+        "args_summary": value.args_summary,
+        "error": value.error,
+        "session_id": value.session_id,
+        "user_id": value.user_id,
+    }
+
+
+def _decode_dead_letter_record(value: dict[str, Any]) -> DeadLetterRecord:
+    return DeadLetterRecord(
+        timestamp=float(value["timestamp"]),
+        tool_name=str(value["tool_name"]),
+        args_summary=str(value["args_summary"]),
+        error=str(value["error"]),
+        session_id=str(value.get("session_id", "")),
+        user_id=str(value.get("user_id", "")),
     )
 
 
@@ -283,6 +374,48 @@ def _build_default_registry() -> SerializerRegistry:
         schema_version=1,
         encoder=AccessContext.to_dict,
         decoder=_decode_access,
+    )
+    registry.register(
+        "agent_core.graph_entity",
+        GraphEntity,
+        schema_version=1,
+        encoder=_encode_graph_entity,
+        decoder=GraphEntity.from_dict,
+    )
+    registry.register(
+        "agent_core.graph_relation",
+        GraphRelation,
+        schema_version=1,
+        encoder=_encode_graph_relation,
+        decoder=GraphRelation.from_dict,
+    )
+    registry.register(
+        "agent_core.graph_subgraph",
+        GraphSubgraph,
+        schema_version=1,
+        encoder=_encode_graph_subgraph,
+        decoder=GraphSubgraph.from_dict,
+    )
+    registry.register(
+        "agent_core.model_selection",
+        ModelSelection,
+        schema_version=1,
+        encoder=ModelSelection.to_dict,
+        decoder=ModelSelection.from_dict,
+    )
+    registry.register(
+        "agent_core.alert_payload",
+        AlertPayload,
+        schema_version=1,
+        encoder=_encode_alert_payload,
+        decoder=_decode_alert_payload,
+    )
+    registry.register(
+        "agent_core.dead_letter_record",
+        DeadLetterRecord,
+        schema_version=1,
+        encoder=_encode_dead_letter_record,
+        decoder=_decode_dead_letter_record,
     )
     return registry
 

@@ -6,7 +6,7 @@ SQLite、PostgreSQL 或专用图数据库中。业务实体类型和关系类型
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal, Protocol, runtime_checkable
@@ -43,6 +43,21 @@ class GraphEntity:
             "updated_at": self.updated_at,
         }
 
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "GraphEntity":
+        """从字典恢复实体对象。"""
+
+        return cls(
+            entity_id=str(value["entity_id"]),
+            entity_type=str(value["entity_type"]),
+            value=str(value["value"]),
+            display_name=str(value.get("display_name", "")),
+            properties=dict(value.get("properties") or {}),
+            source=str(value.get("source", "")),
+            created_at=str(value.get("created_at", "")),
+            updated_at=str(value.get("updated_at", "")),
+        )
+
 
 @dataclass
 class GraphRelation:
@@ -69,6 +84,54 @@ class GraphRelation:
             "updated_at": self.updated_at,
         }
 
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "GraphRelation":
+        """从字典恢复关系对象。"""
+
+        return cls(
+            relation_id=str(value["relation_id"]),
+            source_entity_id=str(value["source_entity_id"]),
+            target_entity_id=str(value["target_entity_id"]),
+            relation_type=str(value["relation_type"]),
+            properties=dict(value.get("properties") or {}),
+            source=str(value.get("source", "")),
+            created_at=str(value.get("created_at", "")),
+            updated_at=str(value.get("updated_at", "")),
+        )
+
+
+@dataclass
+class GraphSubgraph:
+    """受控子图查询结果。
+
+    端口层统一返回结构化对象；上层 HTTP/API 需要序列化时自行调用
+    ``to_dict()`` 或转换成 JSON-safe dict。
+    """
+
+    start_entity_id: str
+    entities: list[GraphEntity] = field(default_factory=list)
+    relations: list[GraphRelation] = field(default_factory=list)
+    hops: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "start_entity_id": self.start_entity_id,
+            "entities": [item.to_dict() for item in self.entities],
+            "relations": [item.to_dict() for item in self.relations],
+            "hops": self.hops,
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "GraphSubgraph":
+        """从字典恢复子图对象。"""
+
+        return cls(
+            start_entity_id=str(value["start_entity_id"]),
+            entities=[GraphEntity.from_dict(item) for item in value.get("entities") or []],
+            relations=[GraphRelation.from_dict(item) for item in value.get("relations") or []],
+            hops=int(value.get("hops", 0)),
+        )
+
 
 @runtime_checkable
 class KnowledgeGraphStore(Protocol):
@@ -90,7 +153,7 @@ class KnowledgeGraphStore(Protocol):
         thread_id: str | None = None,
         user_id: str | None = None,
         tenant_id: str | None = None,
-    ) -> dict[str, Any]: ...
+    ) -> GraphEntity: ...
 
     async def add_relation(
         self,
@@ -103,14 +166,14 @@ class KnowledgeGraphStore(Protocol):
         thread_id: str | None = None,
         user_id: str | None = None,
         tenant_id: str | None = None,
-    ) -> dict[str, Any]: ...
+    ) -> GraphRelation: ...
 
     async def get_entity(
         self,
         entity_id: str,
         *,
         tenant_id: str | None = None,
-    ) -> dict[str, Any] | None: ...
+    ) -> GraphEntity | None: ...
 
     async def query_subgraph(
         self,

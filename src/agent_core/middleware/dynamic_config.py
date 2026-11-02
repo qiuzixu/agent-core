@@ -66,12 +66,21 @@ class FileConfigCenter:
             self._write()
         self._notify_change()
 
-    def on_change(self, callback: Any) -> None:
-        """注册配置变更回调。"""
+    def on_change(self, callback: Callable[[dict[str, Any]], None]) -> Callable[[], None]:
+        """注册配置变更回调，返回取消订阅函数。"""
         self._callbacks.append(callback)
 
+        def unsubscribe() -> None:
+            try:
+                self._callbacks.remove(callback)
+            except ValueError:
+                pass
+
+        return unsubscribe
+
     def _notify_change(self) -> None:
-        for cb in self._callbacks:
+        # 复制后遍历，避免回调内取消订阅时修改正在遍历的列表。
+        for cb in tuple(self._callbacks):
             try:
                 cb(dict(self._data))
             except Exception:

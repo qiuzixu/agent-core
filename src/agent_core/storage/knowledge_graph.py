@@ -15,6 +15,7 @@ from agent_core.ports.knowledge_graph import (
     Direction,
     GraphEntity,
     GraphRelation,
+    GraphSubgraph,
 )
 
 
@@ -46,7 +47,7 @@ class InMemoryKnowledgeGraphStore:
         thread_id: str | None = None,
         user_id: str | None = None,
         tenant_id: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> GraphEntity:
         normalized_type = entity_type.strip().lower()
         normalized_value = value.strip()
         if not normalized_type or not normalized_value:
@@ -77,9 +78,7 @@ class InMemoryKnowledgeGraphStore:
                 entity = existing
             if thread_id:
                 self._thread_entities.setdefault((tenant, thread_id.strip()), set()).add(resolved_id)
-        result = entity.to_dict()
-        result["user_id"] = user_id or None
-        return result
+        return entity
 
     async def add_relation(
         self,
@@ -92,7 +91,7 @@ class InMemoryKnowledgeGraphStore:
         thread_id: str | None = None,
         user_id: str | None = None,
         tenant_id: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> GraphRelation:
         tenant = (tenant_id or "default").strip() or "default"
         src = source_entity_id.strip()
         dst = target_entity_id.strip()
@@ -132,20 +131,18 @@ class InMemoryKnowledgeGraphStore:
                 relation = existing
             if thread_id:
                 self._thread_relations.setdefault((tenant, thread_id.strip()), set()).add(relation_id)
-        result = relation.to_dict()
-        result["user_id"] = user_id or None
-        return result
+        return relation
 
     async def get_entity(
         self,
         entity_id: str,
         *,
         tenant_id: str | None = None,
-    ) -> dict[str, Any] | None:
+    ) -> GraphEntity | None:
         tenant = (tenant_id or "default").strip() or "default"
         with self._lock:
             entity = self._entities.get((tenant, entity_id.strip()))
-        return entity.to_dict() if entity is not None else None
+        return entity
 
     async def query_subgraph(
         self,
@@ -158,7 +155,7 @@ class InMemoryKnowledgeGraphStore:
         tenant_id: str | None = None,
         limit_entities: int = 50,
         limit_relations: int = 200,
-    ) -> dict[str, Any]:
+    ) -> GraphSubgraph:
         tenant = (tenant_id or "default").strip() or "default"
         start = start_entity_id.strip()
         allowed_relations = {item.strip().upper() for item in (relation_types or []) if item.strip()}
@@ -166,7 +163,7 @@ class InMemoryKnowledgeGraphStore:
         with self._lock:
             start_entity = self._entities.get((tenant, start))
             if start_entity is None:
-                return {"start_entity_id": start, "entities": [], "relations": [], "hops": 0}
+                return GraphSubgraph(start_entity_id=start, entities=[], relations=[], hops=0)
             entities: dict[str, GraphEntity] = {start: start_entity}
             relations: dict[str, GraphRelation] = {}
             frontier = {start}
@@ -196,12 +193,12 @@ class InMemoryKnowledgeGraphStore:
                 frontier = next_frontier
                 if len(entities) >= limit_entities or len(relations) >= limit_relations:
                     break
-        return {
-            "start_entity_id": start,
-            "entities": [item.to_dict() for item in list(entities.values())[:limit_entities]],
-            "relations": [item.to_dict() for item in list(relations.values())[:limit_relations]],
-            "hops": max(0, max_hops),
-        }
+        return GraphSubgraph(
+            start_entity_id=start,
+            entities=list(entities.values())[:limit_entities],
+            relations=list(relations.values())[:limit_relations],
+            hops=max(0, max_hops),
+        )
 
     @staticmethod
     def _stable_relation_id(

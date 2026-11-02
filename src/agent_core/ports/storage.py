@@ -11,7 +11,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from agent_core.access import AccessContext
 from agent_core.protocol.messages import Message
-from agent_core.protocol.runtime import ApprovalRecord, RunContext, RunEvent
+from agent_core.protocol.runtime import ApprovalRecord, ApprovalStatus, RunContext, RunEvent
 
 
 class ApprovalStore(Protocol):
@@ -25,7 +25,7 @@ class ApprovalStore(Protocol):
         self,
         approval: ApprovalRecord,
         *,
-        expected_status: str = "pending",
+        expected_status: ApprovalStatus = "pending",
     ) -> bool:
         """仅当记录仍处于预期状态时保存新状态。"""
         ...
@@ -122,12 +122,37 @@ class ContextStore(Protocol):
     async def clear_context(self, thread_id: str, *, access: AccessContext | None = None) -> None: ...
 
 
+@runtime_checkable
+class WorkflowExecutionData(Protocol):
+    """工作流执行数据的结构化契约。
+
+    ``ports`` 不能反向依赖具体存储，这里只约束保存/恢复所需的最小字段。
+    具体实现可以继续使用 ``storage.workflow.WorkflowExecution``。
+    """
+
+    execution_id: str
+    definition_id: str
+    execution_type: str
+    user_id: str | None
+    tenant_id: str | None
+    status: str
+    current_step: str | None
+    steps_completed: int
+    total_steps: int
+    input_data: dict[str, Any]
+    result_data: dict[str, Any]
+    events: list[dict[str, Any]]
+    version: int
+    created_at: str
+    updated_at: str
+
+
 class WorkflowStore(Protocol):
     """工作流执行实例存储协议。"""
 
-    async def save_execution(self, execution: Any) -> None: ...
+    async def save_execution(self, execution: WorkflowExecutionData) -> None: ...
 
-    async def load_execution(self, execution_id: str) -> Any | None: ...
+    async def load_execution(self, execution_id: str) -> WorkflowExecutionData | None: ...
 
 
 class EventSink(Protocol):

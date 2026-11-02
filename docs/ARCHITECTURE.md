@@ -511,3 +511,9 @@ AgentTaskRetryScheduler（可选）
 
 
 | 2026-10-30 | 协议演进钩子 | protocol/runtime.py 为 RunEvent / RunContext 增加 schema_version，并为 Run / Approval 状态增加运行时白名单校验。属于协议字段与运行时兜底增强，模块边界、依赖方向和图形关系不变，无需修改 Mermaid 图。 |
+
+
+| 2026-10-30 | ports 契约增强 | WorkflowStore 引入结构化 WorkflowExecutionData；ModelSelectionStore 增加乐观锁；ConfigCenter.on_change 支持取消订阅；审批状态 Literal 化；KnowledgeGraphStore 返回 GraphEntity / GraphRelation / GraphSubgraph 并由上层负责 HTTP 序列化。未改变 ports → storage 依赖方向和模块边界，Mermaid 图无需修改。 |
+
+
+| 2026-11-02 | 序列化白名单扩展与安全校验 | serialization/registry.py 新增 GraphEntity / GraphRelation / GraphSubgraph / ModelSelection / AlertPayload / DeadLetterRecord codec；Blob checksum 严格校验、AccessContext 反序列化校验收紧。未改变模块边界和依赖方向，无需修改 Mermaid 图。 |
