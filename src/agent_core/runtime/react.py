@@ -346,8 +346,15 @@ class ReActAgent:
             )
             # 然后补执行之前未完成的工具（只重放 pending 集合，已完成的不重放）：
             messages = await self._execute_tools(pending_tool_calls, messages, restore_ctx, run_context)
-            # 工具执行完成后，把阶段改回模型调用：
-            start_iteration = int(checkpoint.get("iteration", 0)) + 1
+            # 恢复路径短路：如果有 direct_to_client 结果，跳过后续 LLM 循环直接返回。
+            direct_payload = restore_ctx.metadata.pop("_direct_to_client_result", None)
+            if direct_payload is not None:
+                import json as _json
+                value = direct_payload.get("value")
+                last_answer = _json.dumps(value, ensure_ascii=False) if isinstance(value, dict) else str(value or "")
+                start_iteration = self._max_iterations  # 跳过主循环，直接走到最终 yield
+            else:
+                start_iteration = int(checkpoint.get("iteration", 0)) + 1
             # 然后保存一次新的 checkpoint
             await self._save_checkpoint(
                 checkpoint_thread,
@@ -463,6 +470,17 @@ class ReActAgent:
                 )
             # 执行工具调用
             messages = await self._execute_tools(response.tool_calls, messages, ctx, run_context)
+            # direct_to_client 短路：工具声明"结果直接给客户端"时跳过 LLM 生成。
+            direct_payload = ctx.metadata.pop("_direct_to_client_result", None)
+            if direct_payload is not None:
+                import json as _json
+                value = direct_payload.get("value")
+                last_answer = _json.dumps(value, ensure_ascii=False) if isinstance(value, dict) else str(value or "")
+                logger.debug(
+                    "ReAct 工具 %s 声明 direct_to_client，跳过 LLM 生成直接返回",
+                    direct_payload.get("tool_name"),
+                )
+                break
             # 13. 工具执行后再次保存 checkpoint
             await self._save_checkpoint(
                 checkpoint_thread,
@@ -872,6 +890,8 @@ class ReActAgent:
         ordered_results: dict[int, Message] = {}
         completed_indices: set[int] = set()
         progress_messages: list[Message] = []
+        # direct_to_client 结果收集：声明"直接给客户端、跳过 LLM"的工具结果。
+        direct_results: dict[int, "ToolResult"] = {}
 
         # 单个工具的完整执行链：事件 -> before_tool -> 执行 -> after_tool。
         async def execute_one(index: int, tc: dict[str, Any]) -> Message:
@@ -912,6 +932,8 @@ class ReActAgent:
                 result = structured_result.to_text()
                 tool_ctx.metadata["tool_success"] = structured_result.success
                 success_by_index[index] = structured_result.success
+                if structured_result.direct_to_client and structured_result.success:
+                    direct_results[index] = structured_result
                 if runtime_context is not None:
                     runtime_context.emit(
                         "tool_finished",
@@ -1038,6 +1060,10 @@ class ReActAgent:
                 await run_batch(sub_batch)
 
         messages.extend(ordered_results[index] for index in range(len(tool_calls)))
+        # 有 direct_to_client 结果时，把第一个写回 ctx.metadata 供调用方短路 LLM 生成。
+        if direct_results:
+            first = direct_results[min(direct_results)]
+            ctx.metadata["_direct_to_client_result"] = first.to_dict()
         return messages
 
     async def _persist_tool_progress(

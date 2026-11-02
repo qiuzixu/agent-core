@@ -192,6 +192,9 @@ class ToolResult:
     error_kind: Literal["", "not_found", "invalid_arguments", "timeout", "approval", "execution"] = ""
     retryable: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
+    # 声明此结果直接返回给客户端（跳过 LLM 二次生成）。
+    # 适用于解析原文直出等场景：LLM 只负责触发工具调用，不参与结果文本的生成。
+    direct_to_client: bool = False
 
     def to_text(self) -> str:
         """转换成兼容旧 ReAct 消息的文本。"""
@@ -213,6 +216,7 @@ class ToolResult:
             "error_kind": self.error_kind,
             "retryable": self.retryable,
             "metadata": self.metadata,
+            "direct_to_client": self.direct_to_client,
         }
 
     @classmethod
@@ -225,6 +229,7 @@ class ToolResult:
             error_kind=value.get("error_kind", ""),
             retryable=bool(value.get("retryable", False)),
             metadata=dict(value.get("metadata") or {}),
+            direct_to_client=bool(value.get("direct_to_client", False)),
         )
 
 
