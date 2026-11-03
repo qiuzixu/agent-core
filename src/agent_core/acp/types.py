@@ -23,6 +23,22 @@ class AcpSession:
 
 
 @dataclass(frozen=True)
+class AcpCapabilities:
+    """ACP 服务端向 Client 声明的能力集合。
+
+    ``load_session`` 控制 ``session/load`` 恢复会话是否可用；其余字段对应
+    prompt 多媒体与 MCP 传输能力。默认全部关闭，保持最小安全面。
+    """
+
+    load_session: bool = False
+    image: bool = False
+    audio: bool = False
+    embedded_context: bool = False
+    mcp_http: bool = False
+    mcp_sse: bool = False
+
+
+@dataclass(frozen=True)
 class AcpUpdate:
     """业务运行时向 ACP Client 推送的一条标准化更新。"""
 
@@ -45,7 +61,11 @@ AcpPermissionRequester = Callable[[JsonObject], Awaitable[str]]
 
 
 class AcpBackend(Protocol):
-    """将具体 Agent Runtime 适配为 ACP 会话服务。"""
+    """将具体 Agent Runtime 适配为 ACP 会话服务。
+
+    可选属性 ``capabilities: AcpCapabilities`` 用于声明更细的协议能力；
+    未提供时服务端回退读取 ``supports_load_session``，保持向后兼容。
+    """
 
     agent_name: str
     agent_version: str
@@ -78,6 +98,7 @@ class AcpBackend(Protocol):
 
 __all__ = [
     "AcpBackend",
+    "AcpCapabilities",
     "AcpEmitter",
     "AcpPermissionRequester",
     "AcpSession",

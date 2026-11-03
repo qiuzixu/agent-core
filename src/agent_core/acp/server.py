@@ -12,7 +12,13 @@ import sys
 import uuid
 from typing import TextIO
 
-from agent_core.acp.types import AcpBackend, AcpSession, AcpUpdate, JsonObject
+from agent_core.acp.types import (
+    AcpBackend,
+    AcpCapabilities,
+    AcpSession,
+    AcpUpdate,
+    JsonObject,
+)
 
 
 class AcpProtocolError(ValueError):
@@ -47,7 +53,7 @@ class AcpStdioServer:
         self._stdout = stdout or sys.stdout
         self._approval_timeout_seconds = approval_timeout_seconds
         self._sessions: dict[str, AcpSession] = {}
-        self._pending_client_requests: dict[str, asyncio.Future[JsonObject]] = {}
+        self._pending_client_requests: dict[str, tuple[str, asyncio.Future[JsonObject]]] = {}
         self._prompt_tasks: dict[str, asyncio.Task[None]] = {}
         self._tasks: set[asyncio.Task[None]] = set()
         self._write_lock = asyncio.Lock()
@@ -92,8 +98,11 @@ class AcpStdioServer:
         request_id = value.get("id")
         if not isinstance(request_id, str):
             return
-        future = self._pending_client_requests.pop(request_id, None)
-        if future is None or future.done():
+        pending = self._pending_client_requests.pop(request_id, None)
+        if pending is None:
+            return
+        _session_id, future = pending
+        if future.done():
             return
         error = value.get("error")
         if isinstance(error, dict):
@@ -131,7 +140,7 @@ class AcpStdioServer:
         if method == "session/new":
             return await self._new_session(params)
         if method == "session/load":
-            if not getattr(self._backend, "supports_load_session", False):
+            if not self._resolve_capabilities().load_session:
                 raise NotImplementedError("当前 Agent 不支持 ACP 会话恢复")
             return await self._load_session(params)
         if method == "session/prompt":
@@ -146,16 +155,17 @@ class AcpStdioServer:
             raise AcpProtocolError("protocolVersion 必须是整数")
         if client_version != self.protocol_version:
             raise AcpProtocolError(f"不支持的 ACP 版本：{client_version}，当前仅支持 {self.protocol_version}")
+        capabilities = self._resolve_capabilities()
         return {
             "protocolVersion": self.protocol_version,
             "agentCapabilities": {
-                "loadSession": bool(getattr(self._backend, "supports_load_session", False)),
+                "loadSession": capabilities.load_session,
                 "promptCapabilities": {
-                    "image": False,
-                    "audio": False,
-                    "embeddedContext": False,
+                    "image": capabilities.image,
+                    "audio": capabilities.audio,
+                    "embeddedContext": capabilities.embedded_context,
                 },
-                "mcpCapabilities": {"http": False, "sse": False},
+                "mcpCapabilities": {"http": capabilities.mcp_http, "sse": capabilities.mcp_sse},
             },
             "agentInfo": {
                 "name": self._backend.agent_name,
@@ -163,6 +173,17 @@ class AcpStdioServer:
                 "version": self._backend.agent_version,
             },
         }
+
+    def _resolve_capabilities(self) -> AcpCapabilities:
+        """解析 Backend 声明的能力。
+
+        Backend 可选提供 ``capabilities`` 属性；未提供时回退到旧的
+        ``supports_load_session`` 标记，保持向后兼容。
+        """
+        capabilities = getattr(self._backend, "capabilities", None)
+        if isinstance(capabilities, AcpCapabilities):
+            return capabilities
+        return AcpCapabilities(load_session=bool(getattr(self._backend, "supports_load_session", False)))
 
     async def _new_session(self, params: JsonObject) -> JsonObject:
         cwd = self._require_string(params, "cwd")
@@ -205,6 +226,13 @@ class AcpStdioServer:
         task = self._prompt_tasks.get(session_id)
         if task is not None and not task.done():
             task.cancel()
+        # 立即终结该会话仍挂起的权限询问，避免会话取消后这些 Future
+        # 一直等到审批超时才被回收（fail-closed 语义）。
+        for request_id, (pending_session, future) in list(self._pending_client_requests.items()):
+            if pending_session != session_id or future.done():
+                continue
+            self._pending_client_requests.pop(request_id, None)
+            future.set_exception(AcpProtocolError("会话已取消，权限询问已失效"))
         return {}
 
     async def _emit_update(self, session_id: str, update: AcpUpdate) -> None:
@@ -228,6 +256,7 @@ class AcpStdioServer:
         if not allowed_option_ids:
             raise AcpProtocolError("审批选项必须包含非空 optionId")
         result = await self._request_client(
+            session_id,
             "session/request_permission",
             {
                 "sessionId": session_id,
@@ -241,10 +270,10 @@ class AcpStdioServer:
                 return value if value in allowed_option_ids else "reject_once"
         return "reject_once"
 
-    async def _request_client(self, method: str, params: JsonObject) -> JsonObject:
+    async def _request_client(self, session_id: str, method: str, params: JsonObject) -> JsonObject:
         request_id = f"agent-{uuid.uuid4()}"
         future: asyncio.Future[JsonObject] = asyncio.get_running_loop().create_future()
-        self._pending_client_requests[request_id] = future
+        self._pending_client_requests[request_id] = (session_id, future)
         await self._write({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params})
         try:
             return await asyncio.wait_for(future, timeout=self._approval_timeout_seconds)

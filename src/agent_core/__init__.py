@@ -3,6 +3,7 @@
 from agent_core.access import AccessContext
 from agent_core.acp import (
     AcpBackend,
+    AcpCapabilities,
     AcpProtocolError,
     AcpSession,
     AcpSessionNotFoundError,
@@ -335,6 +336,7 @@ __all__ = [
     "START",
     "AccessContext",
     "AcpBackend",
+    "AcpCapabilities",
     "AcpProtocolError",
     "AcpSession",
     "AcpSessionNotFoundError",

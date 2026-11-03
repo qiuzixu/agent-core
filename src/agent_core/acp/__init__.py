@@ -6,10 +6,11 @@ from agent_core.acp.server import (
     AcpStdioServer,
     run_acp_stdio,
 )
-from agent_core.acp.types import AcpBackend, AcpSession, AcpUpdate, JsonObject
+from agent_core.acp.types import AcpBackend, AcpCapabilities, AcpSession, AcpUpdate, JsonObject
 
 __all__ = [
     "AcpBackend",
+    "AcpCapabilities",
     "AcpProtocolError",
     "AcpSession",
     "AcpSessionNotFoundError",

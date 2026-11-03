@@ -6,13 +6,13 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from typing import cast
+from typing import Any, cast
 from uuid import uuid4
 
 from .envelope import TaskEnvelope
 from .metrics import default_task_metrics
 from .queue import TaskQueue
-from .store import AgentTaskStore
+from .store import AgentTask, AgentTaskStore
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +39,7 @@ class AgentTaskRetryScheduler:
         batch_size: int = 100,
         dlq_reconcile_enabled: bool = False,
         dlq_reconcile_interval_seconds: float = 60.0,
+        event_recorder: Callable[[TaskEnvelope, str, dict[str, Any]], Awaitable[None]] | None = None,
     ) -> None:
         self._queue = queue
         self._task_store = task_store
@@ -46,14 +47,57 @@ class AgentTaskRetryScheduler:
         self._batch_size = max(1, int(batch_size))
         self._dlq_reconcile_enabled = bool(dlq_reconcile_enabled)
         self._dlq_reconcile_interval_seconds = max(5.0, float(dlq_reconcile_interval_seconds))
+        self._event_recorder = event_recorder
         self._task: asyncio.Task[None] | None = None
         self._dlq_task: asyncio.Task[None] | None = None
 
+    def _envelope_for(self, task: AgentTask) -> TaskEnvelope:
+        """从持久化任务视图重建信封（用于事件记录）。"""
+        return TaskEnvelope(
+            task_id=task.task_id,
+            intent=task.intent,
+            thread_id=task.thread_id,
+            user_id=task.user_id,
+            tenant_id=task.tenant_id,
+            idempotency_key=task.idempotency_key,
+            retry_count=task.retry_count,
+            max_retries=task.max_retries,
+            requested_at=task.created_at,
+            attempt_id=task.attempt_id or "",
+            payload=task.payload,
+        )
+
+    async def _emit(
+        self,
+        envelope: TaskEnvelope,
+        event_type: str,
+        payload: dict[str, Any],
+    ) -> None:
+        if self._event_recorder is None:
+            return
+        await self._event_recorder(envelope, event_type, payload)
+
     async def resume_due_retries(self, *, now: datetime | None = None) -> int:
         """将到期的 waiting_retry 任务移回普通队列。"""
+        # 回收租约到期仍未完成的 Worker（崩溃恢复），并为每条僵尸任务发事件，
+        # 保证审计链上“任务消失又复活”可追溯。
+        reclaimed = await self._task_store.reclaim_stale(worker_id=self._worker_id)
+        if reclaimed:
+            default_task_metrics.inc("task_reclaimed_total", len(reclaimed))
+        for stale_task in reclaimed:
+            await self._emit(
+                self._envelope_for(stale_task),
+                "agent_task_reclaimed",
+                {
+                    "intent": stale_task.intent,
+                    "previous_worker_id": stale_task.worker_id,
+                    "retry_count": stale_task.retry_count,
+                },
+            )
+        # 回收完成后再捕获当前时间：reclaim_stale 会把 next_retry_at 设为回收
+        # 时刻，若沿用回收前的时间戳，刚回收的任务会因 next_retry_at 更晚被
+        # 跳过，导致崩溃恢复额外多等一个调度周期。
         current = now or datetime.now(UTC)
-        # 回收租约到期仍未完成的 Worker（崩溃恢复）。
-        await self._task_store.reclaim_stale(worker_id=self._worker_id)
         candidates = await self._task_store.list_by_status(
             "waiting_retry",
             limit=self._batch_size,
@@ -70,22 +114,20 @@ class AgentTaskRetryScheduler:
             scheduled = await self._task_store.set_attempt(task.task_id, next_attempt_id)
             if scheduled is None:
                 continue
-            envelope = TaskEnvelope(
-                task_id=task.task_id,
-                intent=task.intent,
-                thread_id=task.thread_id,
-                user_id=task.user_id,
-                tenant_id=task.tenant_id,
-                idempotency_key=task.idempotency_key,
-                retry_count=task.retry_count,
-                max_retries=task.max_retries,
-                requested_at=task.created_at,
-                attempt_id=next_attempt_id,
-                payload=task.payload,
-            )
+            envelope = self._envelope_for(task)
+            envelope.attempt_id = next_attempt_id
             try:
                 await self._queue.publish(envelope)
                 default_task_metrics.inc("task_retry_scheduled_total")
+                await self._emit(
+                    envelope,
+                    "agent_task_retry_scheduled",
+                    {
+                        "intent": envelope.intent,
+                        "attempt_id": envelope.attempt_id,
+                        "retry_count": envelope.retry_count,
+                    },
+                )
                 resumed += 1
             except Exception as exc:
                 await self._task_store.set_waiting_retry(

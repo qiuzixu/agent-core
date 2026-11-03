@@ -10,6 +10,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
 from .envelope import TaskEnvelope
+from .metrics import default_task_metrics
 from .registry import PermanentTaskError
 
 logger = logging.getLogger(__name__)
@@ -187,7 +188,8 @@ class RabbitMQTaskQueue(TaskQueue):
             except Exception as exc:
                 logger.exception("task failed: %s", envelope.task_id if envelope else "<invalid>")
                 if envelope is None:
-                    await message.reject(requeue=False)
+                    # 信封都无法解析的毒消息：尽力提取标识用于对账，然后进物理 DLQ。
+                    await self._handle_poison_message(message)
                 else:
                     await self._retry_or_dead_letter(envelope, message, exc, source_queue_name)
 
@@ -265,6 +267,28 @@ class RabbitMQTaskQueue(TaskQueue):
                 remaining += 1
                 break
         return acknowledged, remaining
+
+    async def _handle_poison_message(self, message: Any) -> None:
+        """处理无法解析的信封：记录指标与标识，然后拒绝进物理 DLQ。"""
+        default_task_metrics.inc("task_poison_message_total")
+        logger.warning(
+            "task envelope parse failed; message moved to DLQ",
+            extra={"task_id": self._peek_task_id(message.body)},
+        )
+        await message.reject(requeue=False)
+
+    @staticmethod
+    def _peek_task_id(body: Any) -> str:
+        """从原始消息体尽力提取 task_id，便于毒消息人工对账。"""
+        try:
+            value = json.loads(bytes(body).decode("utf-8"))
+        except Exception:
+            return "<unparseable>"
+        if isinstance(value, dict):
+            task_id = value.get("task_id")
+            if isinstance(task_id, str) and task_id:
+                return task_id
+        return "<unknown>"
 
     async def close(self) -> None:
         if self._connection is not None and not self._connection.is_closed:
