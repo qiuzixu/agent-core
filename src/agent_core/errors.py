@@ -38,6 +38,10 @@ class ToolExecutionError(AgentError):
 class StateMachineError(AgentError):
     """状态机错误。"""
 
+    def __init__(self, message: str, *, retryable: bool = False) -> None:
+        super().__init__(message)
+        self.retryable = retryable
+
 
 class CheckpointError(AgentError):
     """Checkpoint 持久化错误。"""

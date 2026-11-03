@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from typing import Any
 
 from agent_core.hitl.models import ApprovalStatus
@@ -13,6 +14,7 @@ from agent_core.middleware.base import (
     MiddlewareContext,
     MiddlewareResult,
 )
+from agent_core.runtime.state import transition_run_status
 
 
 class HumanInTheLoopMiddleware(Middleware):
@@ -83,7 +85,13 @@ class HumanInTheLoopMiddleware(Middleware):
         )
         # 把请求 ID 写入上下文，便于工具执行记录追溯本次审批。
         context.metadata["approval_request_id"] = request.request_id
-        status = await self._queue.wait_for_decision(request, timeout_seconds=self._timeout)
+        await self._mark_waiting_approval(context, request)
+        status: ApprovalStatus | None = None
+        try:
+            status = await self._queue.wait_for_decision(request, timeout_seconds=self._timeout)
+        finally:
+            await self._clear_waiting_approval(context, request, status)
+        assert status is not None
         if status == ApprovalStatus.APPROVED:
             return MiddlewareResult(action=MiddlewareAction.CONTINUE)
         reason = request.reason or status.value
@@ -91,3 +99,49 @@ class HumanInTheLoopMiddleware(Middleware):
             action=MiddlewareAction.STOP,
             data={"reason": reason, "tool": context.tool_name, "status": status.value},
         )
+
+    async def _mark_waiting_approval(self, context: MiddlewareContext, request: Any) -> None:
+        """把审批等待状态写入 RunContext，并立即持久化。"""
+        runtime_context = context.run_context
+        if runtime_context is None:
+            return
+        runtime_context.pending_approval = request.to_record()
+        if runtime_context.status == "running":
+            transition_run_status(runtime_context, "waiting_approval")
+        runtime_context.emit(
+            "run_waiting_approval",
+            approval_id=request.request_id,
+            tool_name=request.tool_name,
+        )
+        await self._persist_runtime_context(runtime_context)
+
+    async def _clear_waiting_approval(
+        self,
+        context: MiddlewareContext,
+        request: Any,
+        status: ApprovalStatus | None,
+    ) -> None:
+        """审批结束后清理挂起记录并恢复运行状态。"""
+        runtime_context = context.run_context
+        if runtime_context is None:
+            return
+        runtime_context.pending_approval = None
+        if runtime_context.status == "waiting_approval":
+            transition_run_status(runtime_context, "running")
+        runtime_context.emit(
+            "run_approval_decided",
+            approval_id=request.request_id,
+            tool_name=request.tool_name,
+            status=status.value if status is not None else "error",
+        )
+        await self._persist_runtime_context(runtime_context)
+
+    @staticmethod
+    async def _persist_runtime_context(runtime_context: Any) -> None:
+        """通过 Runtime 注入的 checkpoint 回调保存状态。"""
+        callback = runtime_context.checkpoint_callback
+        if callback is None:
+            return
+        result = callback(runtime_context.checkpoint)
+        if inspect.isawaitable(result):
+            await result

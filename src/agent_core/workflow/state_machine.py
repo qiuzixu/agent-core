@@ -233,7 +233,10 @@ class StateMachine:
                 except WorkflowPause:
                     raise
                 except Exception as exc:
-                    raise StateMachineError(f"Node {current_node!r} raised exception: {exc}") from exc
+                    raise StateMachineError(
+                        f"Node {current_node!r} raised exception: {exc}",
+                        retryable=bool(getattr(exc, "retryable", False)),
+                    ) from exc
 
             # 决定下一个节点
             next_node = await self._get_next_node(current_node, state)

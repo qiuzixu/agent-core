@@ -64,8 +64,9 @@ class StorageBundle:
             self.knowledge_graph_store,
         ):
             initialize = getattr(store, "initialize", None)
-            if inspect.isawaitable(initialize):
-                await initialize
+            result = initialize() if callable(initialize) else initialize
+            if inspect.isawaitable(result):
+                await result
 
     async def close(self) -> None:
         """关闭需要释放连接池的后端。"""
@@ -82,8 +83,9 @@ class StorageBundle:
             self.knowledge_graph_store,
         ):
             close = getattr(store, "close", None)
-            if inspect.isawaitable(close):
-                await close
+            result = close() if callable(close) else close
+            if inspect.isawaitable(result):
+                await result
 
 
 def create_storage_bundle(

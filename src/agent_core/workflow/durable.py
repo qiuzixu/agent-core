@@ -172,7 +172,7 @@ class DurableWorkflowRunner:
         async def persist_pending(context: NodeExecutionContext, _state: dict[str, Any]) -> None:
             idempotency_store = self._idempotency_store
             if idempotency_store is not None:
-                await idempotency_store.reserve(
+                existing = await idempotency_store.reserve(
                     WorkflowIdempotencyRecord(
                         key=context.idempotency_key,
                         workflow_id=execution.definition_id,
@@ -181,6 +181,20 @@ class DurableWorkflowRunner:
                         arguments_hash=str(context.idempotency_key),
                     )
                 )
+                if existing is not None:
+                    same_owner = (
+                        existing.execution_id == execution.execution_id
+                        and existing.workflow_id == execution.definition_id
+                        and existing.node_id == context.node_name
+                    )
+                    if not same_owner:
+                        raise WorkflowNodeError(
+                            f"工作流节点幂等键已被其他执行实例占用：{context.idempotency_key}",
+                        )
+                    if existing.status == "completed":
+                        raise WorkflowNodeError(
+                            f"工作流节点幂等记录已完成，但执行快照尚未推进：{context.idempotency_key}",
+                        )
             await self._emit(
                 execution,
                 {

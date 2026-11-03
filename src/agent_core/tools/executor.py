@@ -191,6 +191,21 @@ class ToolExecutor:
         ``approval_granted`` 用于已经在 API 或工作流边界完成审批的调用。
         未显式传入时仍使用构造器注入的审批回调，避免普通 Agent Loop 绕过审批。
         """
+        async with self._semaphore:
+            return await self._execute_result(
+                tool_name,
+                arguments,
+                approval_granted=approval_granted,
+            )
+
+    async def _execute_result(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        *,
+        approval_granted: bool | None = None,
+    ) -> ToolResult:
+        """在并发限额内执行单个工具调用。"""
         tool_func = self._registry.get_tool(tool_name)
         if tool_func is None:
             error_msg = f"Tool {tool_name!r} not found."
@@ -359,8 +374,7 @@ class ToolExecutor:
             工具执行结果列表（与 tool_calls 顺序对应）。
         """
         async def _limited_execute(call: dict[str, Any]) -> str:
-            async with self._semaphore:
-                return await self.execute(call["name"], call.get("args", {}))
+            return await self.execute(call["name"], call.get("args", {}))
 
         tasks = [_limited_execute(tc) for tc in tool_calls]
         return await asyncio.gather(*tasks)

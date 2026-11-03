@@ -903,6 +903,7 @@ class ReActAgent:
                 llm_response=ctx.llm_response,
                 metadata=dict(ctx.metadata),
                 emit=runtime_context.emit if runtime_context is not None else ctx.emit,
+                run_context=runtime_context,
             )
             if runtime_context is not None:
                 runtime_context.emit(

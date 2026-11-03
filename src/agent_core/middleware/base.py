@@ -35,6 +35,7 @@ from agent_core.errors import (
     ModelUnavailableError,
 )
 from agent_core.protocol.messages import Message
+from agent_core.protocol.runtime import RunContext
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,8 @@ class MiddlewareContext:
     tool_result: str | None = None
     llm_response: Message | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    # 当前运行上下文；需要持久化状态的通用中间件（例如 HITL）可选使用。
+    run_context: RunContext | None = None
     # 运行时事件上报入口。它让通用中间件可以记录压缩、重试等事件，
     # 同时保持对独立单元测试和旧 Vanilla 调用方的兼容。
     emit: Callable[..., Any] | None = None
