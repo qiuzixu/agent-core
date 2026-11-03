@@ -1,0 +1,176 @@
+"""Supervisor 多 Agent 执行器。"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, replace
+from typing import Any
+
+from agent_core.model import ModelAdapter, chat_structured, StructuredOutputSpec
+from agent_core.protocol.messages import system_message, user_message
+from agent_core.runtime.modes import AgentMode, SupportsRun
+
+
+@dataclass(frozen=True)
+class Worker:
+    """Supervisor 模式中的一个可路由 Worker。"""
+
+    name: str
+    description: str
+    agent: SupportsRun
+
+
+@dataclass(frozen=True)
+class SupervisorRoute:
+    """一次 Supervisor 路由决策。"""
+
+    target: str
+    instruction: str
+    reason: str
+    output: str = ""
+    status: str = "completed"
+
+    def to_dict(self) -> dict[str, Any]:
+        """转换为可序列化结构。"""
+        return {
+            "target": self.target,
+            "instruction": self.instruction,
+            "reason": self.reason,
+            "output": self.output,
+            "status": self.status,
+        }
+
+
+@dataclass(frozen=True)
+class SupervisorResult:
+    """Supervisor 多 Agent 执行结果。"""
+
+    answer: str
+    routes: list[SupervisorRoute]
+
+    def to_dict(self) -> dict[str, Any]:
+        """转换为可序列化结构。"""
+        return {
+            "answer": self.answer,
+            "routes": [route.to_dict() for route in self.routes],
+        }
+
+
+_SUPERVISOR_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "required": ["target", "instruction", "reason"],
+    "properties": {
+        "target": {"type": "string"},
+        "instruction": {"type": "string"},
+        "reason": {"type": "string"},
+    },
+}
+
+
+def _supervisor_decoder(value: dict[str, Any]) -> SupervisorRoute:
+    """解析 Supervisor 路由 JSON。"""
+    return SupervisorRoute(
+        target=str(value.get("target", "")).strip(),
+        instruction=str(value.get("instruction", "")).strip(),
+        reason=str(value.get("reason", "")).strip(),
+    )
+
+
+class SupervisorAgent:
+    """监督者路由多个 Worker 的 Multi-Agent 执行器。"""
+
+    def __init__(
+        self,
+        llm: ModelAdapter,
+        workers: list[Worker],
+        *,
+        max_rounds: int = 4,
+    ) -> None:
+        """创建 Supervisor Agent。"""
+        if not workers:
+            raise ValueError("Supervisor 至少需要一个 Worker")
+        names = [worker.name for worker in workers]
+        if len(set(names)) != len(names):
+            raise ValueError("Worker 名称不能重复")
+        self._llm = llm
+        self._workers = {worker.name: worker for worker in workers}
+        self._max_rounds = max(1, int(max_rounds))
+
+    async def run(
+        self,
+        user_input: str,
+        *,
+        memory_context: str | None = None,
+        thread_id: str | None = None,
+        run_metadata: dict[str, Any] | None = None,
+    ) -> SupervisorResult:
+        """路由 Worker、收集结果，并在足够信息后汇总最终答案。"""
+        worker_text = "\n".join(
+            f"- {worker.name}: {worker.description}" for worker in self._workers.values()
+        )
+        transcript = ""
+        routes: list[SupervisorRoute] = []
+
+        for round_number in range(1, self._max_rounds + 1):
+            route_messages = [
+                system_message(
+                    "你是 Multi-Agent 监督者。根据目标选择一个 Worker，或返回 FINAL 表示信息已足够。"
+                    "只输出 JSON。target 必须是可用 Worker 名称或 FINAL。"
+                ),
+                user_message(
+                    f"用户目标：{user_input}\n\n可用 Worker：\n{worker_text}\n\n"
+                    f"已收集信息：\n{transcript or '<empty>'}"
+                ),
+            ]
+            spec = StructuredOutputSpec(
+                name="supervisor_route",
+                schema=_SUPERVISOR_SCHEMA,
+                decoder=_supervisor_decoder,
+            )
+            route = (await chat_structured(self._llm, route_messages, spec)).value
+
+            if route.target == "FINAL":
+                final_messages = [
+                    system_message("你是 Multi-Agent 总控。请基于 Worker 结果合成最终答案。"),
+                    user_message(
+                        f"用户目标：{user_input}\n\n已收集信息：\n{transcript or '<empty>'}"
+                    ),
+                ]
+                final = await self._llm.chat(final_messages)
+                return SupervisorResult(answer=final.content, routes=routes)
+
+            worker = self._workers.get(route.target)
+            if worker is None:
+                routes.append(replace(route, status="failed"))
+                raise ValueError(f"Supervisor 选择了未知 Worker：{route.target}")
+
+            step_metadata: dict[str, Any] = {
+                **(run_metadata or {}),
+                "agent_mode": AgentMode.SUPERVISOR.value,
+                "supervisor_round": round_number,
+                "supervisor_target": route.target,
+            }
+            try:
+                output = await worker.agent.run(
+                    route.instruction,
+                    memory_context=memory_context,
+                    thread_id=thread_id,
+                    run_metadata=step_metadata,
+                )
+                executed = replace(route, output=output)
+                routes.append(executed)
+                transcript += f"\n[{worker.name}] {output}"
+            except Exception as exc:
+                routes.append(replace(route, status="failed", output=str(exc)))
+                raise
+
+        raise RuntimeError("Supervisor 达到最大轮次仍没有返回最终答案")
+
+
+
+
+__all__ = [
+    "SupervisorAgent",
+    "SupervisorResult",
+    "SupervisorRoute",
+    "Worker",
+]

@@ -23,6 +23,25 @@ from agent_core.runtime.compat import (
     messages_json,
     now_iso,
 )
+from agent_core.runtime.modes import AgentMode, SupportsRun
+from agent_core.runtime.plan_execute import (
+    ExecutionPlan,
+    PlanExecuteAgent,
+    PlanExecutionResult,
+    PlanStep,
+    PlanStepResult,
+)
+from agent_core.runtime.reflexion import (
+    Reflection,
+    ReflexionAgent,
+    ReflexionResult,
+)
+from agent_core.runtime.supervisor import (
+    SupervisorAgent,
+    SupervisorResult,
+    SupervisorRoute,
+    Worker,
+)
 from agent_core.runtime.react import ReActAgent
 from agent_core.runtime.service import AgentRuntime, MemoryEventSink, RunExecutor, RuntimeRun
 from agent_core.runtime.state import (
@@ -36,7 +55,20 @@ __all__ = [
     "AgentRuntime",
     "MemoryEventSink",
     "MemoryRunStore",
+    "PlanExecuteAgent",
+    "PlanExecutionResult",
+    "PlanStep",
+    "PlanStepResult",
     "ReActAgent",
+    "Reflection",
+    "ReflexionAgent",
+    "ReflexionResult",
+    "SupervisorAgent",
+    "SupervisorResult",
+    "SupervisorRoute",
+    "SupportsRun",
+    "Worker",
+    "ExecutionPlan",
     "RunExecutor",
     "RunStateError",
     "RunRecord",
