@@ -9,6 +9,12 @@
 | --- | --- |
 | `ReActAgent` | 普通和流式 ReAct Agent Loop |
 | `AgentRuntime` | Run 生命周期、事件、恢复、取消、租约和访问检查 |
+| `AgentMode` | ReAct、Plan-Execute、Supervisor、Reflexion、Swarm 模式标识 |
+| `AgentOutput` / `SupportsRun` / `answer_text` | 高级模式的统一执行结果协议和文本归一化 |
+| `PlanExecuteAgent` | 计划生成、依赖排序、步骤执行和最终总结 |
+| `runtime.SupervisorAgent` / `Worker` | 轻量 Worker 路由、重复路由保护和最终汇总 |
+| `ReflexionAgent` | Critic 评审、修订和最终答案复审 |
+| `SwarmAgent` / `SwarmWorker` | 白名单 handoff、历史 transcript 和重复边保护 |
 | `RunContext` / `RunEvent` / `RunStatus` | 运行状态和值对象 |
 | `RuntimeRun` | 后台运行的上下文和进程内任务句柄 |
 | `MemoryRunStore` / `MemoryEventSink` | 测试用运行与事件实现 |
@@ -146,7 +152,7 @@ AccessContext。它不会动态导入输入中的类，也不使用 pickle。
 | `AgentRegistry` | 能力发现、别名、权限过滤和 Agent 并发限制 |
 | `CapabilityRouter` / `ModelAgentRouter` | 确定性能力路由和结构化模型路由 |
 | `CallableAgentInvoker` / `RuntimeAgentInvoker` | 函数与现有 `AgentRuntime` 适配器 |
-| `SupervisorAgent` / `CoordinationPolicy` | handoff 循环、预算、重试、并行、取消和恢复 |
+| `multi-agent.SupervisorAgent` / `CoordinationPolicy` | handoff 循环、预算、重试、并行、取消和恢复 |
 | `WorkflowCoordinationStore` | 复用 Core Workflow Store 的持久化适配器 |
 
 扩展包依赖 Core，Core 不反向依赖扩展包。业务 Agent 只需实现 `AgentInvoker`，或者用适配器包装现有

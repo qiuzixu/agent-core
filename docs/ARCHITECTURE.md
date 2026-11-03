@@ -20,6 +20,8 @@ flowchart TB
     subgraph ENGINE["执行引擎"]
         RUNTIME["AgentRuntime<br/>Run 生命周期 / 恢复 / 取消"]
         REACT["ReActAgent<br/>Agent Loop / 流式输出"]
+        MODES["高级模式<br/>Plan-Execute / Supervisor / Reflexion / Swarm"]
+        OUTPUT["AgentOutput<br/>SupportsRun / answer_text"]
         WORKFLOW["StateMachine / NodeExecutionPolicy<br/>重试 / 幂等 / pending write / Mermaid"]
         LEASE["Run Lease<br/>认领 / Heartbeat / 过期接管"]
     end
@@ -75,6 +77,9 @@ flowchart TB
     RUNTIME --> PROTOCOL
     RUNTIME --> CALLBACKS
     REACT --> MIDDLEWARE
+    MODES --> OUTPUT
+    MODES -. 可嵌套执行 .-> REACT
+    RUNTIME -. RunExecutor 归一化终态 .-> MODES
     REACT --> MODEL
     REACT -. 可选治理 .-> MODELGOV
     REACT --> TOOLS
@@ -120,6 +125,8 @@ flowchart TB
 - `protocol` 只定义跨模块传递的数据结构；
 - `ports` 定义依赖接口及接口使用的值对象，具体数据库实现放在 `storage`，禁止反向依赖；
 - `runtime` 负责一次 Run 和 Agent Loop，不包含任何业务判断；
+- `runtime` 中的高级模式只负责通用编排：计划依赖、Worker 路由、反思修订和白名单 handoff，
+  通过 `AgentOutput` 与 `SupportsRun` 组合；`AgentRuntime` 仍负责统一 Run 终态和租约；
 - `skills` 负责加载和激活 Skill，应用显式提供本地 Function 和 MCP 客户端绑定；
 - `tools` 统一调度本地函数和 MCP 工具，模型只看到统一的 Tool Schema；
 - `middleware` 承载可组合的横切能力，例如审批、压缩、安全和可观测性；
@@ -518,3 +525,4 @@ AgentTaskRetryScheduler（可选）
 
 | 2026-11-02 | 序列化白名单扩展与安全校验 | serialization/registry.py 新增 GraphEntity / GraphRelation / GraphSubgraph / ModelSelection / AlertPayload / DeadLetterRecord codec；Blob checksum 严格校验、AccessContext 反序列化校验收紧。未改变模块边界和依赖方向，无需修改 Mermaid 图。 |
 | 2026-11-03 | Runtime 与 Workflow 可靠性修复 | 修复存储生命周期钩子调用、工作流 retryable/幂等冲突处理、流式 Run 幂等、HITL waiting_approval 状态持久化和统一工具并发限制；同时收紧图谱端口返回类型并清理重复检索协议。运行链路和模块依赖方向未改变，无需修改 Mermaid 图。 |
+| 2026-11-03 | Agent 高级模式统一协议 | 新增 `AgentOutput` / `SupportsAnswer` / `answer_text`，让 Plan-Execute、Supervisor、Reflexion、Swarm 可以安全嵌套；高级模式补齐记忆上下文、依赖校验、最终复审和移交历史，`RunExecutor` 统一归一化结果。同步更新 Runtime 执行引擎关系图。 |

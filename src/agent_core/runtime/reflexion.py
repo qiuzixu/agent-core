@@ -7,7 +7,7 @@ from typing import Any
 
 from agent_core.model import ModelAdapter, chat_structured, StructuredOutputSpec
 from agent_core.protocol.messages import system_message, user_message
-from agent_core.runtime.modes import AgentMode, SupportsRun
+from agent_core.runtime.modes import AgentMode, SupportsRun, answer_text
 
 
 @dataclass(frozen=True)
@@ -50,7 +50,7 @@ _REFLECTION_SCHEMA: dict[str, Any] = {
     "required": ["acceptable", "score", "feedback"],
     "properties": {
         "acceptable": {"type": "boolean"},
-        "score": {"type": "integer"},
+        "score": {"type": "integer", "minimum": 0, "maximum": 10},
         "feedback": {"type": "string"},
         "revised_instruction": {"type": "string"},
     },
@@ -70,6 +70,8 @@ def _reflection_decoder(value: dict[str, Any]) -> Reflection:
 class ReflexionAgent:
     """执行、评审、反思并按需重试的 Agent。"""
 
+    mode = AgentMode.REFLEXION
+
     def __init__(
         self,
         agent: SupportsRun,
@@ -79,10 +81,12 @@ class ReflexionAgent:
         score_threshold: int = 7,
     ) -> None:
         """创建 Reflexion / Self-Critic Agent。"""
+        if not 0 <= int(score_threshold) <= 10:
+            raise ValueError("score_threshold 必须在 0 到 10 之间")
         self._agent = agent
         self._critic_model = critic_model
         self._max_reflections = max(0, int(max_reflections))
-        self._score_threshold = max(0, int(score_threshold))
+        self._score_threshold = int(score_threshold)
 
     async def run(
         self,
@@ -93,16 +97,26 @@ class ReflexionAgent:
         run_metadata: dict[str, Any] | None = None,
     ) -> ReflexionResult:
         """执行一次，评审不合格时带着反馈继续修订。"""
-        answer = await self._agent.run(
-            user_input,
-            memory_context=memory_context,
-            thread_id=thread_id,
-            run_metadata=run_metadata,
+        initial_metadata = {
+            **(run_metadata or {}),
+            "agent_mode": AgentMode.REFLEXION.value,
+            "reflection_attempt": 1,
+        }
+        answer = answer_text(
+            await self._agent.run(
+                user_input,
+                memory_context=memory_context,
+                thread_id=thread_id,
+                run_metadata=initial_metadata,
+            )
         )
         reflections: list[Reflection] = []
         attempts = 1
+        if self._max_reflections == 0:
+            return ReflexionResult(answer=answer, reflections=reflections, attempts=attempts)
 
-        for _ in range(self._max_reflections):
+        memory_hint = f"\n\n相关会话记忆：\n{memory_context}" if memory_context else ""
+        for review_round in range(self._max_reflections + 1):
             review_messages = [
                 system_message(
                     "你是严格但务实的 Self-Critic。检查答案是否完整、准确、可执行。"
@@ -111,6 +125,7 @@ class ReflexionAgent:
                 user_message(
                     f"原始请求：{user_input}\n\n候选答案：\n{answer}\n\n"
                     f"score 使用 0-10，{self._score_threshold} 分及以上视为合格。"
+                    f"{memory_hint}"
                 ),
             ]
             spec = StructuredOutputSpec(
@@ -122,6 +137,10 @@ class ReflexionAgent:
             reflections.append(reflection)
 
             if reflection.acceptable or reflection.score >= self._score_threshold:
+                return ReflexionResult(answer=answer, reflections=reflections, attempts=attempts)
+
+            if review_round >= self._max_reflections:
+                # 已达到修订预算，返回最后一版并保留不合格评审记录，避免静默丢失质量信号。
                 return ReflexionResult(answer=answer, reflections=reflections, attempts=attempts)
 
             attempts += 1
@@ -137,11 +156,13 @@ class ReflexionAgent:
                 "agent_mode": AgentMode.REFLEXION.value,
                 "reflection_attempt": attempts,
             }
-            answer = await self._agent.run(
-                revision_input,
-                memory_context=memory_context,
-                thread_id=thread_id,
-                run_metadata=revision_metadata,
+            answer = answer_text(
+                await self._agent.run(
+                    revision_input,
+                    memory_context=memory_context,
+                    thread_id=thread_id,
+                    run_metadata=revision_metadata,
+                )
             )
 
         return ReflexionResult(answer=answer, reflections=reflections, attempts=attempts)

@@ -223,6 +223,7 @@ from agent_core.retrieval import (
 )
 from agent_core.runtime import (
     AgentMode,
+    AgentOutput,
     HandoffDecision,
     HandoffRecord,
     SwarmAgent,
@@ -240,6 +241,8 @@ from agent_core.runtime import (
     SupervisorResult,
     SupervisorRoute,
     SupportsRun,
+    SupportsAnswer,
+    answer_text,
     Worker,
     AgentRuntime,
     MemoryEventSink,
@@ -364,6 +367,7 @@ __all__ = [
     "AgentCapabilities",
     "AgentError",
     "AgentMode",
+    "AgentOutput",
     "HandoffDecision",
     "HandoffRecord",
     "SwarmAgent",
@@ -510,6 +514,8 @@ __all__ = [
     "SupervisorResult",
     "SupervisorRoute",
     "SupportsRun",
+    "SupportsAnswer",
+    "answer_text",
     "Worker",
     "ExecutionPlan",
     "RecursiveCharacterTextSplitter",

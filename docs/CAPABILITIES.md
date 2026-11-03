@@ -14,7 +14,7 @@ Agent Core 是一套零外部平台绑定的手写 Agent 运行时内核。
 
 | 模块 | 已实现能力 | 主要公开接口 |
 | --- | --- | --- |
-| `runtime` | ReAct Agent Loop、同步/流式运行、后台 Run、取消、checkpoint 恢复和 Worker 租约 | `ReActAgent`、`AgentRuntime` |
+| `runtime` | ReAct Agent Loop、Plan-Execute、Supervisor、Reflexion、Swarm、同步/流式运行、后台 Run、取消、checkpoint 恢复和 Worker 租约 | `ReActAgent`、`AgentRuntime`、`AgentMode`、`AgentOutput` |
 | `protocol` | 消息、运行上下文、运行事件、审批、工具结果和能力声明 | `Message`、`RunContext`、`RunEvent`、`ApprovalRecord`、`ToolResult`、`AgentCapabilities` |
 | `model` | 模型协议、Provider 注册表、统一工厂、结构化输出、限流、并发、默认超时、按 scope 熔断和 fallback | `ModelAdapter`、`StructuredOutputSpec`、`GovernedModelAdapter` |
 | `skills` | Skill 清单加载、严格校验、注册、按需激活及 Function/MCP 绑定 | `SkillLoader`、`SkillRegistry`、`SkillSpec`、`SkillActivation` |
@@ -30,7 +30,7 @@ Agent Core 是一套零外部平台绑定的手写 Agent 运行时内核。
 | `checkpoint` | 内存/文件 checkpoint、原子文件替换、历史版本、回滚和时间旅行 | `MemoryCheckpointer`、`TimeTravelCheckpointer`、`TimeTravelCheckpointer` |
 | `hitl` | 人工审批请求、持久化 deadline、条件状态转换、超时、跨进程决策同步和中间件接入 | `ApprovalQueue`、`HumanInTheLoopMiddleware` |
 | `workflow` | 异步状态机、节点策略、重试、超时、幂等、pending write、恢复和 Mermaid 导出 | `StateMachine`、`NodeExecutionPolicy`、`DurableWorkflowRunner` |
-| `multi-agent` 扩展 | Agent 注册、权限过滤、规则/模型路由、handoff、父子 Run、预算、租约和恢复 | `AgentRegistry`、`SupervisorAgent`、`RuntimeAgentInvoker` |
+| `multi-agent` 扩展 | Agent 注册、权限过滤、规则/模型路由、handoff、父子 Run、预算、租约和恢复 | `AgentRegistry`、`multi-agent.SupervisorAgent`、`RuntimeAgentInvoker` |
 | `storage` | 会话、上下文、长期记忆、Run、审批、模型选择和工作流实例持久化 | 各类 `Memory*`、`Sqlite*`、`Postgres*Store` |
 | `guardrails` | 关键词、长度、PII 脱敏和输出格式检查 | `GuardrailsMiddleware` |
 | `prompts` | 安全文本/聊天模板、消息占位符、partial、Prompt 版本和历史查询 | `PromptTemplate`、`ChatPromptTemplate`、`PromptRegistry` |
@@ -76,6 +76,19 @@ Agent Core 是一套零外部平台绑定的手写 Agent 运行时内核。
 - 扫描过期租约，将异常退出的 Run 标记为中断并选择是否自动恢复。
 - 可选 `require_access=True` 严格模式，创建 Run 时强制绑定用户和租户，查询、恢复和取消时
   强制提供 `AccessContext`。
+
+### 高级 Agent 模式
+
+Core 内置四种轻量编排模式，与 ReAct 共用 `SupportsRun` 执行协议：
+
+- `PlanExecuteAgent`：先生成计划，再按 `depends_on` 做拓扑顺序执行；支持步骤级执行 Agent、失败步骤阻断和结果总结；
+- `SupervisorAgent`：按模型路由 Worker，保留路由记录，并拒绝空指令和完全重复的路由；
+- `ReflexionAgent`：执行、评审、修订，修订后会再次评审最终答案，评审分数限制为 0-10；
+- `SwarmAgent`：按成员 handoff 白名单转交，决策模型可见历史 transcript，并拒绝重复移交边。
+
+高级模式的执行结果统一满足 `AgentOutput`（字符串或包含 `answer` 字段的结果对象），可通过
+`answer_text()` 转换为 Runtime 需要的最终文本。高级模式本身负责编排，不自动提供独立的流式
+checkpoint；应用可通过 `RunExecutor` 把编排结果交给 `AgentRuntime`，由 Runtime 统一管理 Run 终态。
 
 ## 4. 模型层
 
@@ -489,3 +502,15 @@ Checkpoint、状态机和 Middleware。上层 API 可以据此统一映射 HTTP 
 | 契约清理 | `ports/knowledge_graph.py`、`retrieval/core.py` | 图谱端口返回 `GraphSubgraph`，移除重复 `Retriever` 协议定义。 |
 
 模块边界、依赖方向和业务投影规则未改变。
+
+## 2026-11-03 Agent 高级模式统一协议
+
+| 能力 | 模块位置 | 说明 |
+| --- | --- | --- |
+| 高级模式结果协议 | `runtime/modes.py`、`runtime/service.py` | 新增 `AgentOutput`、`SupportsAnswer` 和 `answer_text()`；高级模式结果可安全嵌套，`RunExecutor` 会统一归一化最终文本。 |
+| Plan-Execute 依赖执行 | `runtime/plan_execute.py` | 校验重复 ID、未知依赖和循环依赖，按依赖顺序执行，支持按 `agent` 选择执行器，并阻断失败步骤的下游依赖。 |
+| Supervisor 防重复路由 | `runtime/supervisor.py` | 路由和总结阶段携带 memory context；空指令和完全重复路由会被拒绝。 |
+| Reflexion 最终复审 | `runtime/reflexion.py` | 修订结果会再次接受 Critic 评审，score 严格限制在 0-10，并补齐记忆上下文。 |
+| Swarm 历史与循环保护 | `runtime/swarm.py` | handoff 决策可见历史 transcript 和 memory context，重复移交边会被拒绝。 |
+
+高级模式仍是通用编排层；流式输出和子步骤 checkpoint 由应用通过 `RunExecutor` 与 `AgentRuntime` 组合接入。

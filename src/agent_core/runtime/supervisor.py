@@ -7,7 +7,7 @@ from typing import Any
 
 from agent_core.model import ModelAdapter, chat_structured, StructuredOutputSpec
 from agent_core.protocol.messages import system_message, user_message
-from agent_core.runtime.modes import AgentMode, SupportsRun
+from agent_core.runtime.modes import AgentMode, SupportsRun, answer_text
 
 
 @dataclass(frozen=True)
@@ -68,8 +68,11 @@ _SUPERVISOR_SCHEMA: dict[str, Any] = {
 
 def _supervisor_decoder(value: dict[str, Any]) -> SupervisorRoute:
     """解析 Supervisor 路由 JSON。"""
+    target = str(value.get("target", "")).strip()
+    if target.casefold() == "final":
+        target = "FINAL"
     return SupervisorRoute(
-        target=str(value.get("target", "")).strip(),
+        target=target,
         instruction=str(value.get("instruction", "")).strip(),
         reason=str(value.get("reason", "")).strip(),
     )
@@ -77,6 +80,8 @@ def _supervisor_decoder(value: dict[str, Any]) -> SupervisorRoute:
 
 class SupervisorAgent:
     """监督者路由多个 Worker 的 Multi-Agent 执行器。"""
+
+    mode = AgentMode.SUPERVISOR
 
     def __init__(
         self,
@@ -109,6 +114,8 @@ class SupervisorAgent:
         )
         transcript = ""
         routes: list[SupervisorRoute] = []
+        seen_routes: set[tuple[str, str]] = set()
+        memory_hint = f"\n\n相关会话记忆：\n{memory_context}" if memory_context else ""
 
         for round_number in range(1, self._max_rounds + 1):
             route_messages = [
@@ -118,7 +125,7 @@ class SupervisorAgent:
                 ),
                 user_message(
                     f"用户目标：{user_input}\n\n可用 Worker：\n{worker_text}\n\n"
-                    f"已收集信息：\n{transcript or '<empty>'}"
+                    f"已收集信息：\n{transcript or '<empty>'}{memory_hint}"
                 ),
             ]
             spec = StructuredOutputSpec(
@@ -132,7 +139,8 @@ class SupervisorAgent:
                 final_messages = [
                     system_message("你是 Multi-Agent 总控。请基于 Worker 结果合成最终答案。"),
                     user_message(
-                        f"用户目标：{user_input}\n\n已收集信息：\n{transcript or '<empty>'}"
+                        f"用户目标：{user_input}\n\n"
+                        f"{memory_hint}已收集信息：\n{transcript or '<empty>'}"
                     ),
                 ]
                 final = await self._llm.chat(final_messages)
@@ -142,6 +150,14 @@ class SupervisorAgent:
             if worker is None:
                 routes.append(replace(route, status="failed"))
                 raise ValueError(f"Supervisor 选择了未知 Worker：{route.target}")
+            if not route.instruction:
+                routes.append(replace(route, status="failed"))
+                raise ValueError(f"Supervisor 为 Worker {route.target} 生成了空指令")
+            route_key = (route.target, route.instruction)
+            if route_key in seen_routes:
+                routes.append(replace(route, status="failed"))
+                raise RuntimeError(f"Supervisor 重复路由相同任务：{route.target}")
+            seen_routes.add(route_key)
 
             step_metadata: dict[str, Any] = {
                 **(run_metadata or {}),
@@ -150,11 +166,13 @@ class SupervisorAgent:
                 "supervisor_target": route.target,
             }
             try:
-                output = await worker.agent.run(
-                    route.instruction,
-                    memory_context=memory_context,
-                    thread_id=thread_id,
-                    run_metadata=step_metadata,
+                output = answer_text(
+                    await worker.agent.run(
+                        route.instruction,
+                        memory_context=memory_context,
+                        thread_id=thread_id,
+                        run_metadata=step_metadata,
+                    )
                 )
                 executed = replace(route, output=output)
                 routes.append(executed)

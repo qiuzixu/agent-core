@@ -12,7 +12,7 @@ from typing import Any
 
 from agent_core.model import ModelAdapter, chat_structured, StructuredOutputSpec
 from agent_core.protocol.messages import system_message, user_message
-from agent_core.runtime.modes import AgentMode, SupportsRun
+from agent_core.runtime.modes import AgentMode, SupportsRun, answer_text
 
 
 @dataclass(frozen=True)
@@ -93,6 +93,8 @@ class SwarmAgent:
     白名单中的邻居；移交目标不在白名单时直接报错，避免失控。
     """
 
+    mode = AgentMode.SWARM
+
     def __init__(
         self,
         llm: ModelAdapter,
@@ -132,6 +134,7 @@ class SwarmAgent:
         """从入口成员开始执行，沿移交白名单在成员间传递控制权。"""
         current = self._workers[self._entry]
         handoffs: list[HandoffRecord] = []
+        seen_edges: set[tuple[str, str]] = set()
         transcript = ""
         member_input = user_input
 
@@ -142,17 +145,20 @@ class SwarmAgent:
                 "swarm_hop": hop,
                 "swarm_current": current.name,
             }
-            output = await current.agent.run(
-                member_input,
-                memory_context=memory_context,
-                thread_id=thread_id,
-                run_metadata=member_metadata,
+            output = answer_text(
+                await current.agent.run(
+                    member_input,
+                    memory_context=memory_context,
+                    thread_id=thread_id,
+                    run_metadata=member_metadata,
+                )
             )
 
             # 终点成员（无移交目标）直接返回答案
             if not current.handoffs:
                 return SwarmResult(answer=output, handoffs=handoffs)
 
+            memory_hint = f"\n\n相关会话记忆：\n{memory_context}" if memory_context else ""
             decision_messages = [
                 system_message(
                     "你是移交协调器。判断当前成员的输出是否已能回答用户。"
@@ -163,7 +169,9 @@ class SwarmAgent:
                     f"用户输入：{user_input}\n\n"
                     f"当前成员：{current.name}\n"
                     f"移交给手：{', '.join(current.handoffs)}\n\n"
+                    f"前序成员记录：\n{transcript or '<empty>'}\n\n"
                     f"当前成员输出：\n{output}"
+                    f"{memory_hint}"
                 ),
             ]
             spec = StructuredOutputSpec(
@@ -180,6 +188,10 @@ class SwarmAgent:
                 raise ValueError(
                     f"成员 {current.name} 试图移交给白名单外的目标：{decision.handoff_to}"
                 )
+            edge = (current.name, decision.handoff_to)
+            if edge in seen_edges:
+                raise RuntimeError(f"Swarm 检测到重复移交边：{current.name} -> {decision.handoff_to}")
+            seen_edges.add(edge)
 
             handoffs.append(
                 HandoffRecord(

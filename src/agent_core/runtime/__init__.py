@@ -9,8 +9,8 @@
 3. compat.py / store.py：HTTP/API 适配层常用的运行摘要、消息解析，
    以及测试和最小开发环境使用的内存 RunStore。
 
-应用层通常先构造 ReActAgent，再交给 AgentRuntime 管理；普通请求使用
-start / wait，流式请求直接使用 AgentRuntime.stream。
+应用层可以构造 ReActAgent 或高级编排模式交给 AgentRuntime 管理；普通请求使用
+start / wait，流式请求仅由 ReActAgent 通过 AgentRuntime.stream 提供。
 """
 
 from agent_core.runtime.compat import (
@@ -23,7 +23,7 @@ from agent_core.runtime.compat import (
     messages_json,
     now_iso,
 )
-from agent_core.runtime.modes import AgentMode, SupportsRun
+from agent_core.runtime.modes import AgentMode, AgentOutput, SupportsAnswer, SupportsRun, answer_text
 from agent_core.runtime.plan_execute import (
     ExecutionPlan,
     PlanExecuteAgent,
@@ -60,6 +60,7 @@ from agent_core.runtime.store import MemoryRunStore
 
 __all__ = [
     "AgentRuntime",
+    "AgentOutput",
     "MemoryEventSink",
     "MemoryRunStore",
     "PlanExecuteAgent",
@@ -74,6 +75,8 @@ __all__ = [
     "SupervisorResult",
     "SupervisorRoute",
     "SupportsRun",
+    "SupportsAnswer",
+    "answer_text",
     "Worker",
     "HandoffDecision",
     "HandoffRecord",

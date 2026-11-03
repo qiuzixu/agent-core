@@ -19,6 +19,7 @@ from agent_core.access import AccessContext, enforce_access
 from agent_core.callbacks import CallbackHandler, CallbackManager
 from agent_core.ports import EventSink, RecoverableRunStore, RunStore
 from agent_core.protocol.runtime import RunContext, RunEvent, RunStatus
+from agent_core.runtime.modes import AgentMode, AgentOutput, SupportsRun, answer_text
 from agent_core.runtime.react import ReActAgent
 from agent_core.runtime.state import transition_run_status
 from agent_core.runtime.store import MemoryRunStore
@@ -43,7 +44,7 @@ class RunExecutor(Protocol):
         *,
         memory_context: str | None = None,
         checkpoint_state: dict[str, Any] | None = None,
-    ) -> str: ...
+    ) -> AgentOutput: ...
 
 
 class MemoryEventSink(EventSink):
@@ -65,11 +66,11 @@ class RuntimeRun:
 
 
 class AgentRuntime:
-    """围绕 ``ReActAgent`` 的通用生命周期门面。"""
+    """围绕 ReAct 或高级编排 Agent 的通用生命周期门面。"""
 
     def __init__(
         self,
-        agent: ReActAgent,
+        agent: ReActAgent | SupportsRun,
         *,
         run_store: RunStore | None = None,
         event_sink: EventSink | None = None,
@@ -366,7 +367,7 @@ class AgentRuntime:
         user_input: str,
         **kwargs: Any,
     ) -> AsyncIterator[str]:
-        """以流式方式执行一次运行，并复用同一生命周期持久化逻辑。"""
+        """以流式方式执行一次 ReAct 运行，并复用同一生命周期持久化逻辑。"""
         # stream 不创建后台任务：上游消费者就是这个请求协程，生命周期随 SSE/WebSocket 连接。
         user_id = kwargs.pop("user_id", None)
         tenant_id = kwargs.pop("tenant_id", None)
@@ -382,6 +383,8 @@ class AgentRuntime:
                 raise RuntimeConcurrencyError(
                     f"幂等键已对应运行实例：{idempotency_key}（run_id={existing.run_id}）"
                 )
+        if not isinstance(self._agent, ReActAgent):
+            raise TypeError("高级 Agent 模式当前只支持非流式 run；请使用 AgentRuntime.run()")
         context = RunContext(
             thread_id=thread_id,
             run_id=str(uuid.uuid4()),
@@ -597,6 +600,10 @@ class AgentRuntime:
         memory_context: str | None = None,
         checkpoint_state: dict[str, Any] | None = None,
     ) -> str:
+        mode = getattr(self._agent, "mode", "advanced")
+        if isinstance(mode, AgentMode):
+            mode = mode.value
+        context.metadata.setdefault("agent_mode", str(mode))
         transition_run_status(context, "running")
         context.emit("run_started", input=user_input)
         context.checkpoint_callback = self._checkpoint_callback(context)
@@ -604,20 +611,36 @@ class AgentRuntime:
         try:
             if self._run_executor is not None:
                 # 自定义执行器：生命周期（状态/事件/持久化/租约）仍由 Runtime 收口。
-                answer = await self._run_executor(
-                    context,
-                    user_input,
-                    memory_context=memory_context,
-                    checkpoint_state=checkpoint_state,
+                answer = answer_text(
+                    await self._run_executor(
+                        context,
+                        user_input,
+                        memory_context=memory_context,
+                        checkpoint_state=checkpoint_state,
+                    )
                 )
             else:
-                answer = await self._agent.run(
-                    user_input,
-                    memory_context=memory_context,
-                    thread_id=context.thread_id,
-                    run_context=context,
-                    checkpoint_state=checkpoint_state,
-                )
+                if isinstance(self._agent, ReActAgent):
+                    answer = await self._agent.run(
+                        user_input,
+                        memory_context=memory_context,
+                        thread_id=context.thread_id,
+                        run_context=context,
+                        checkpoint_state=checkpoint_state,
+                    )
+                else:
+                    answer = answer_text(
+                        await self._agent.run(
+                            user_input,
+                            memory_context=memory_context,
+                            thread_id=context.thread_id,
+                            run_metadata={
+                                **context.metadata,
+                                "run_id": context.run_id,
+                                "agent_mode": str(mode),
+                            },
+                        )
+                    )
         except asyncio.CancelledError:
             # Worker 租约丢失导致的取消要交给 _run_with_lease 标记 interrupted，
             # 不能在这里抢先落成 cancelled 终态。

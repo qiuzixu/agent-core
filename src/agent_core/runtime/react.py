@@ -58,6 +58,7 @@ from agent_core.protocol.messages import (
     user_message,
 )
 from agent_core.protocol.runtime import RunContext, RunStatus
+from agent_core.runtime.modes import AgentMode
 from agent_core.runtime.state import transition_run_status
 from agent_core.tools import ToolExecutor, ToolResult
 
@@ -119,6 +120,8 @@ class _LoopEvent:
 
 class ReActAgent:
     """手写 ReAct 循环的 tool-calling agent。"""
+
+    mode = AgentMode.REACT
 
     def __init__(
         self,
@@ -628,6 +631,7 @@ class ReActAgent:
     ) -> dict[str, Any]:
         """把 Run 身份写入中间件元数据，供审批和审计中间件使用。"""
         result = {**runtime_context.metadata, **metadata}
+        result.setdefault("agent_mode", AgentMode.REACT.value)
         result["run_id"] = runtime_context.run_id
         result["thread_id"] = runtime_context.thread_id
         if runtime_context.user_id is not None:

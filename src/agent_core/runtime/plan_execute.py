@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
 from agent_core.model import ModelAdapter, chat_structured, StructuredOutputSpec
 from agent_core.protocol.messages import system_message, user_message
-from agent_core.runtime.modes import AgentMode, SupportsRun
+from agent_core.runtime.modes import AgentMode, SupportsRun, answer_text
 
 
 @dataclass(frozen=True)
@@ -117,12 +118,12 @@ def _plan_decoder(value: dict[str, Any]) -> ExecutionPlan:
     """把规划 JSON 转成强类型计划。"""
     steps = [
         PlanStep(
-            id=str(item.get("id", f"step-{index + 1}")),
-            title=str(item.get("title", f"步骤 {index + 1}")),
+            id=str(item.get("id", f"step-{index + 1}")).strip(),
+            title=str(item.get("title", f"步骤 {index + 1}")).strip(),
             instruction=str(item.get("instruction", "")).strip(),
-            depends_on=[str(item_dep) for item_dep in item.get("depends_on", [])],
-            acceptance=str(item.get("acceptance", "")),
-            agent=str(item.get("agent", "")),
+            depends_on=[str(item_dep).strip() for item_dep in item.get("depends_on", [])],
+            acceptance=str(item.get("acceptance", "")).strip(),
+            agent=str(item.get("agent", "")).strip(),
         )
         for index, item in enumerate(value.get("steps", []))
         if isinstance(item, dict)
@@ -139,6 +140,8 @@ def _plan_decoder(value: dict[str, Any]) -> ExecutionPlan:
 class PlanExecuteAgent:
     """先规划、后执行的 Agent。"""
 
+    mode = AgentMode.PLAN_EXECUTE
+
     def __init__(
         self,
         llm: ModelAdapter,
@@ -146,12 +149,14 @@ class PlanExecuteAgent:
         *,
         max_steps: int = 5,
         continue_on_step_error: bool = False,
+        executors: Mapping[str, SupportsRun] | None = None,
     ) -> None:
         """创建 Plan-and-Execute Agent。"""
         self._llm = llm
         self._executor = executor
         self._max_steps = max(1, int(max_steps))
         self._continue_on_step_error = bool(continue_on_step_error)
+        self._executors = dict(executors or {})
 
     async def run(
         self,
@@ -162,6 +167,7 @@ class PlanExecuteAgent:
         run_metadata: dict[str, Any] | None = None,
     ) -> PlanExecutionResult:
         """生成计划、逐步执行，并返回最终合成答案。"""
+        memory_hint = f"\n\n相关会话记忆：\n{memory_context}" if memory_context else ""
         messages = [
             system_message(
                 "你是严谨的任务规划器。只输出 JSON 计划，不要执行工具。"
@@ -171,6 +177,7 @@ class PlanExecuteAgent:
                 f"用户目标：{user_input}\n\n"
                 f"最多规划 {self._max_steps} 个步骤。"
                 "每个步骤要具体、可验证，避免把多个独立动作压到一个步骤里。"
+                f"{memory_hint}"
             ),
         ]
         spec = StructuredOutputSpec(
@@ -185,10 +192,51 @@ class PlanExecuteAgent:
             strategy=structured_plan.strategy,
             steps=structured_plan.steps[: self._max_steps],
         )
+        self._validate_plan(plan)
 
         step_results: list[PlanStepResult] = []
         previous_context = ""
-        for index, step in enumerate(plan.steps, start=1):
+        completed_ids: set[str] = set()
+        failed_ids: set[str] = set()
+        pending_steps = list(plan.steps)
+        while pending_steps:
+            blocked = next(
+                (
+                    step
+                    for step in pending_steps
+                    if any(dependency in failed_ids for dependency in step.depends_on)
+                ),
+                None,
+            )
+            if blocked is not None:
+                pending_steps.remove(blocked)
+                failed_ids.add(blocked.id)
+                step_results.append(
+                    PlanStepResult(
+                        step_id=blocked.id,
+                        title=blocked.title,
+                        instruction=blocked.instruction,
+                        output="",
+                        status="blocked",
+                        error="前置步骤失败，未执行该步骤",
+                    )
+                )
+                if not self._continue_on_step_error:
+                    raise RuntimeError(f"步骤 {blocked.id} 的前置步骤失败")
+                continue
+
+            step = next(
+                (
+                    candidate
+                    for candidate in pending_steps
+                    if set(candidate.depends_on).issubset(completed_ids)
+                ),
+                None,
+            )
+            if step is None:
+                raise ValueError("执行计划存在无法满足的步骤依赖")
+            pending_steps.remove(step)
+            index = len(step_results) + 1
             instruction = step.instruction
             if previous_context:
                 instruction = f"{instruction}\n\n已完成步骤的结果摘要：\n{previous_context}"
@@ -200,13 +248,21 @@ class PlanExecuteAgent:
                 "agent_mode": AgentMode.PLAN_EXECUTE.value,
                 "plan_step": index,
                 "plan_step_id": step.id,
+                "plan_step_dependencies": list(step.depends_on),
             }
             try:
-                output = await self._executor.run(
-                    instruction,
-                    memory_context=memory_context,
-                    thread_id=thread_id,
-                    run_metadata=step_metadata,
+                selected_executor = self._executor
+                if step.agent:
+                    selected_executor = self._executors.get(step.agent)
+                    if selected_executor is None:
+                        raise ValueError(f"步骤 {step.id} 指定了未注册的执行 Agent：{step.agent}")
+                output = answer_text(
+                    await selected_executor.run(
+                        instruction,
+                        memory_context=memory_context,
+                        thread_id=thread_id,
+                        run_metadata=step_metadata,
+                    )
                 )
                 result = PlanStepResult(
                     step_id=step.id,
@@ -215,6 +271,7 @@ class PlanExecuteAgent:
                     output=output,
                 )
                 step_results.append(result)
+                completed_ids.add(step.id)
                 previous_context += f"\n[{step.title}] {output}"
             except Exception as exc:
                 result = PlanStepResult(
@@ -226,13 +283,16 @@ class PlanExecuteAgent:
                     error=str(exc),
                 )
                 step_results.append(result)
+                failed_ids.add(step.id)
                 if not self._continue_on_step_error:
                     raise
 
+        memory_final_hint = f"相关会话记忆：\n{memory_context}\n\n" if memory_context else ""
         final_messages = [
             system_message("你是任务总控。请基于计划与执行结果输出清晰、可用的最终答案。"),
             user_message(
                 f"用户目标：{user_input}\n\n计划策略：{plan.strategy}\n\n"
+                f"{memory_final_hint}"
                 "执行结果：\n"
                 + "\n".join(
                     f"[{item.title}] {item.output or item.error}" for item in step_results
@@ -245,6 +305,46 @@ class PlanExecuteAgent:
             plan=plan,
             steps=step_results,
         )
+
+    @staticmethod
+    def _validate_plan(plan: ExecutionPlan) -> None:
+        """校验步骤标识和依赖关系，避免静默跳过或死循环。"""
+        if not plan.objective.strip():
+            raise ValueError("规划目标不能为空")
+        if not plan.steps:
+            raise ValueError("规划输出至少需要一个步骤")
+        ids = [step.id.strip() for step in plan.steps]
+        if any(not step_id for step_id in ids):
+            raise ValueError("规划步骤 ID 不能为空")
+        if len(set(ids)) != len(ids):
+            raise ValueError("规划步骤 ID 不能重复")
+        known = set(ids)
+        for step in plan.steps:
+            if not step.instruction.strip():
+                raise ValueError(f"步骤 {step.id} 的 instruction 不能为空")
+            unknown = [dependency for dependency in step.depends_on if dependency not in known]
+            if unknown:
+                raise ValueError(f"步骤 {step.id} 依赖了不存在的步骤：{unknown}")
+            if step.id in step.depends_on:
+                raise ValueError(f"步骤 {step.id} 不能依赖自身")
+
+        visiting: set[str] = set()
+        visited: set[str] = set()
+
+        def visit(step_id: str) -> None:
+            if step_id in visiting:
+                raise ValueError("执行计划存在循环依赖")
+            if step_id in visited:
+                return
+            visiting.add(step_id)
+            step = next(item for item in plan.steps if item.id == step_id)
+            for dependency in step.depends_on:
+                visit(dependency)
+            visiting.remove(step_id)
+            visited.add(step_id)
+
+        for step_id in ids:
+            visit(step_id)
 
 
 

@@ -9,12 +9,16 @@ import pytest
 
 from agent_core import (
     AgentMode,
+    ExecutionPlan,
     PlanExecuteAgent,
+    PlanExecutionResult,
+    PlanStepResult,
     SupervisorAgent,
     ReflexionAgent,
     Worker,
     SwarmAgent,
     SwarmWorker,
+    answer_text,
 )
 from agent_core.protocol.messages import Message, assistant_message
 
@@ -127,7 +131,15 @@ async def test_reflexion_retries_with_feedback() -> None:
                     "revised_instruction": "补充结论",
                 },
                 ensure_ascii=False,
-            )
+            ),
+            json.dumps(
+                {
+                    "acceptable": True,
+                    "score": 8,
+                    "feedback": "修订后完整",
+                },
+                ensure_ascii=False,
+            ),
         ]
     )
     executor = ScriptedExecutor(["第一版答案", "修订后的完整答案"])
@@ -207,3 +219,117 @@ async def test_swarm_rejects_handoff_outside_whitelist() -> None:
 
     with pytest.raises(ValueError, match="白名单外"):
         await agent.run("输入")
+
+
+@pytest.mark.asyncio
+async def test_nested_result_is_normalized_for_supervisor() -> None:
+    """高级模式嵌套时，Worker 结果应统一成可序列化文本。"""
+    route_1 = {"target": "nested", "instruction": "执行子任务", "reason": "需要子 Agent"}
+    route_2 = {"target": "FINAL", "instruction": "", "reason": "信息足够"}
+    model = ScriptedModel(
+        [json.dumps(route_1, ensure_ascii=False), json.dumps(route_2, ensure_ascii=False), "最终答案"]
+    )
+    nested = PlanExecutionResult(
+        answer="嵌套答案",
+        plan=ExecutionPlan(objective="子任务", strategy="直接执行", steps=[]),
+        steps=[
+            PlanStepResult(
+                step_id="s1",
+                title="子步骤",
+                instruction="执行",
+                output="完成",
+            )
+        ],
+    )
+
+    class NestedExecutor:
+        async def run(self, user_input: str, **kwargs: Any) -> PlanExecutionResult:
+            return nested
+
+    result = await SupervisorAgent(
+        model,
+        [Worker(name="nested", description="嵌套 Agent", agent=NestedExecutor())],
+        max_rounds=2,
+    ).run("完成任务")
+
+    assert result.routes[0].output == "嵌套答案"
+    assert result.to_dict()["routes"][0]["output"] == "嵌套答案"
+    assert answer_text(nested) == "嵌套答案"
+
+
+@pytest.mark.asyncio
+async def test_plan_execute_honors_dependencies_and_rejects_cycles() -> None:
+    """计划执行应按依赖排序，并拒绝循环依赖。"""
+    ordered_plan = {
+        "objective": "按依赖执行",
+        "strategy": "先准备再处理",
+        "steps": [
+            {"id": "process", "title": "处理", "instruction": "处理数据", "depends_on": ["prepare"]},
+            {"id": "prepare", "title": "准备", "instruction": "准备数据"},
+        ],
+    }
+    model = ScriptedModel([json.dumps(ordered_plan, ensure_ascii=False), "完成"])
+    executor = ScriptedExecutor(["准备完成", "处理完成"])
+    result = await PlanExecuteAgent(model, executor, max_steps=2).run("按依赖执行")
+
+    assert [item.step_id for item in result.steps] == ["prepare", "process"]
+    assert executor.inputs[0] == "准备数据"
+
+    cyclic_plan = {
+        "objective": "循环",
+        "strategy": "无",
+        "steps": [
+            {"id": "a", "title": "A", "instruction": "A", "depends_on": ["b"]},
+            {"id": "b", "title": "B", "instruction": "B", "depends_on": ["a"]},
+        ],
+    }
+    with pytest.raises(ValueError, match="循环依赖"):
+        await PlanExecuteAgent(
+            ScriptedModel([json.dumps(cyclic_plan, ensure_ascii=False)]),
+            ScriptedExecutor([]),
+        ).run("循环")
+
+
+@pytest.mark.asyncio
+async def test_plan_execute_passes_memory_to_planner_and_finalizer() -> None:
+    """规划和总结模型都应看到会话记忆。"""
+    plan = {
+        "objective": "记忆测试",
+        "strategy": "一步完成",
+        "steps": [{"id": "s1", "title": "执行", "instruction": "执行"}],
+    }
+    model = ScriptedModel([json.dumps(plan, ensure_ascii=False), "完成"])
+    await PlanExecuteAgent(model, ScriptedExecutor(["结果"])).run(
+        "记忆测试", memory_context="用户偏好简洁回答"
+    )
+
+    assert all(
+        any("用户偏好简洁回答" in message.content for message in call)
+        for call in model.calls
+    )
+
+
+@pytest.mark.asyncio
+async def test_swarm_handoff_model_receives_previous_transcript() -> None:
+    """后续 Swarm 移交决策应包含此前成员的输出。"""
+    model = ScriptedModel(
+        [
+            json.dumps({"handoff_to": "b", "reason": "需要继续处理"}, ensure_ascii=False),
+            json.dumps({"handoff_to": "c", "reason": "继续收尾"}, ensure_ascii=False),
+        ]
+    )
+    first = ScriptedExecutor(["第一步结果"])
+    second = ScriptedExecutor(["第二步结果"])
+    third = ScriptedExecutor(["最终结果"])
+    result = await SwarmAgent(
+        model,
+        [
+            SwarmWorker(name="a", description="A", agent=first, handoffs=("b",)),
+            SwarmWorker(name="b", description="B", agent=second, handoffs=("c",)),
+            SwarmWorker(name="c", description="C", agent=third),
+        ],
+        entry="a",
+    ).run("多步任务")
+
+    assert result.answer == "最终结果"
+    assert "第一步结果" in model.calls[1][-1].content
