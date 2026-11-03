@@ -223,6 +223,11 @@ from agent_core.retrieval import (
 )
 from agent_core.runtime import (
     AgentMode,
+    HandoffDecision,
+    HandoffRecord,
+    SwarmAgent,
+    SwarmResult,
+    SwarmWorker,
     ExecutionPlan,
     PlanExecuteAgent,
     PlanExecutionResult,
@@ -359,6 +364,11 @@ __all__ = [
     "AgentCapabilities",
     "AgentError",
     "AgentMode",
+    "HandoffDecision",
+    "HandoffRecord",
+    "SwarmAgent",
+    "SwarmResult",
+    "SwarmWorker",
     "AgentRuntime",
     "AgentStats",
     "AnthropicProvider",

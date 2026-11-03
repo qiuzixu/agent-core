@@ -5,22 +5,22 @@ Runtime 负责运行实例和生命周期，业务编排仍由调用方注入到
 """
 
 from __future__ import annotations
-import inspect
 
 import asyncio
+import inspect
 import logging
 import uuid
-from datetime import UTC, datetime
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any, Protocol
 
 from agent_core.access import AccessContext, enforce_access
 from agent_core.callbacks import CallbackHandler, CallbackManager
 from agent_core.ports import EventSink, RecoverableRunStore, RunStore
 from agent_core.protocol.runtime import RunContext, RunEvent, RunStatus
-from agent_core.runtime.state import transition_run_status
 from agent_core.runtime.react import ReActAgent
+from agent_core.runtime.state import transition_run_status
 from agent_core.runtime.store import MemoryRunStore
 from agent_core.storage.lease import RunLeaseStore
 from agent_core.storage.runtime import RuntimeConcurrencyError
@@ -368,17 +368,30 @@ class AgentRuntime:
     ) -> AsyncIterator[str]:
         """以流式方式执行一次运行，并复用同一生命周期持久化逻辑。"""
         # stream 不创建后台任务：上游消费者就是这个请求协程，生命周期随 SSE/WebSocket 连接。
+        user_id = kwargs.pop("user_id", None)
+        tenant_id = kwargs.pop("tenant_id", None)
+        idempotency_key = kwargs.pop("idempotency_key", None)
+        self._require_owner(user_id, tenant_id)
+        if idempotency_key:
+            existing = await self._run_store.find_run_by_idempotency(
+                tenant_id,
+                user_id,
+                idempotency_key,
+            )
+            if existing is not None:
+                raise RuntimeConcurrencyError(
+                    f"幂等键已对应运行实例：{idempotency_key}（run_id={existing.run_id}）"
+                )
         context = RunContext(
             thread_id=thread_id,
             run_id=str(uuid.uuid4()),
-            user_id=kwargs.pop("user_id", None),
-            tenant_id=kwargs.pop("tenant_id", None),
+            user_id=user_id,
+            tenant_id=tenant_id,
             parent_run_id=kwargs.pop("parent_run_id", None),
             tags=list(kwargs.pop("tags", ())),
-            idempotency_key=kwargs.pop("idempotency_key", None),
+            idempotency_key=idempotency_key,
             metadata={**kwargs.pop("metadata", {}), "_input": user_input},
         )
-        self._require_owner(context.user_id, context.tenant_id)
         await self._run_store.save_run(context)
         await self._claim(context)
         transition_run_status(context, "running")

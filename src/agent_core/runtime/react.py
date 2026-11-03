@@ -351,7 +351,11 @@ class ReActAgent:
             if direct_payload is not None:
                 import json as _json
                 value = direct_payload.get("value")
-                last_answer = _json.dumps(value, ensure_ascii=False) if isinstance(value, dict) else str(value or "")
+                last_answer = (
+                    _json.dumps(value, ensure_ascii=False)
+                    if isinstance(value, dict)
+                    else str(value or "")
+                )
                 start_iteration = self._max_iterations  # 跳过主循环，直接走到最终 yield
             else:
                 start_iteration = int(checkpoint.get("iteration", 0)) + 1
@@ -475,7 +479,11 @@ class ReActAgent:
             if direct_payload is not None:
                 import json as _json
                 value = direct_payload.get("value")
-                last_answer = _json.dumps(value, ensure_ascii=False) if isinstance(value, dict) else str(value or "")
+                last_answer = (
+                    _json.dumps(value, ensure_ascii=False)
+                    if isinstance(value, dict)
+                    else str(value or "")
+                )
                 logger.debug(
                     "ReAct 工具 %s 声明 direct_to_client，跳过 LLM 生成直接返回",
                     direct_payload.get("tool_name"),
@@ -891,7 +899,7 @@ class ReActAgent:
         completed_indices: set[int] = set()
         progress_messages: list[Message] = []
         # direct_to_client 结果收集：声明"直接给客户端、跳过 LLM"的工具结果。
-        direct_results: dict[int, "ToolResult"] = {}
+        direct_results: dict[int, ToolResult] = {}
 
         # 单个工具的完整执行链：事件 -> before_tool -> 执行 -> after_tool。
         async def execute_one(index: int, tc: dict[str, Any]) -> Message:

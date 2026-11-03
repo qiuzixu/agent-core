@@ -352,11 +352,7 @@ async def test_run_idempotency_lookup_respects_scope(stores: StoreBundle) -> Non
 
 
 async def test_run_duplicate_idempotency_key_rejected(stores: StoreBundle) -> None:
-    """第二个 run 复用同 scope 的幂等键必须被拒绝，且不覆盖首个 run。
-
-    已知不一致：PostgreSQL 抛 RuntimeConcurrencyError；SQLite 抛
-    sqlite3.IntegrityError；Memory 静默接受。此用例把差异以 xfail 记录。
-    """
+    """第二个 run 复用同 scope 的幂等键必须被领域错误拒绝。"""
     key = f"{stores.prefix}-dup"
     first = RunContext(
         thread_id=f"{stores.prefix}-t",
@@ -382,14 +378,6 @@ async def test_run_duplicate_idempotency_key_rejected(stores: StoreBundle) -> No
     except Exception as exc:  # 故意捕获以比较错误类型
         rejected = f"other:{type(exc).__name__}"
 
-    if stores.backend == "memory":
-        pytest.xfail(
-            f"三后端不一致：Memory 后端不拒绝重复幂等键（实际行为：{rejected or '静默接受'}）"
-        )
-    if stores.backend == "sqlite" and rejected != "domain":
-        pytest.xfail(
-            f"三后端不一致：SQLite 重复幂等键抛 {rejected} 而非 RuntimeConcurrencyError"
-        )
     assert rejected == "domain", f"{stores.backend}: 重复幂等键未被领域错误拒绝（{rejected}）"
 
     found = await stores.runtime.find_run_by_idempotency("t1", "u1", key)

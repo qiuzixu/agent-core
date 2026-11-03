@@ -65,6 +65,9 @@ class AgentTaskWorker:
                 self._heartbeat_loop(),
                 name=f"{self._worker_id}-heartbeat",
             )
+        configure_concurrency = getattr(self._queue, "set_concurrency", None)
+        if callable(configure_concurrency):
+            configure_concurrency(self._default_concurrency)
         try:
             await self._queue.consume(self._process)
         finally:

@@ -20,9 +20,9 @@
 """
 
 from __future__ import annotations
-import inspect
 
 import asyncio
+import inspect
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -182,7 +182,7 @@ class MiddlewareManager:
             if timeout and timeout > 0:
                 try:
                     should_retry = await asyncio.wait_for(outcome, timeout=timeout)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     logger.warning(
                         "[Middleware] %s.handle_exception 超时（%.1f 秒），跳过",
                         mw.name, timeout,
@@ -212,7 +212,7 @@ class MiddlewareManager:
             if timeout and timeout > 0:
                 try:
                     result: MiddlewareResult = await asyncio.wait_for(hook_outcome, timeout=timeout)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     logger.warning(
                         "[Middleware] %s.%s 超时（%.1f 秒），跳过该中间件继续执行链",
                         mw.name, hook, timeout,

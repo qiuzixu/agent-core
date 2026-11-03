@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Sequence
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from agent_core.access import AccessContext
 from agent_core.documents import Document
@@ -23,13 +23,6 @@ class Embeddings(Protocol):
     async def embed_documents(self, texts: Sequence[str]) -> list[list[float]]: ...
 
     async def embed_query(self, text: str) -> list[float]: ...
-
-
-@runtime_checkable
-class Retriever(Protocol):
-    """根据查询返回排好序的文档。"""
-
-    async def retrieve(self, query: RetrievalQuery) -> list[RetrievalResult]: ...
 
 
 @runtime_checkable

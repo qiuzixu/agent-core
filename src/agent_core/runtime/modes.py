@@ -13,6 +13,7 @@ class AgentMode(StrEnum):
     PLAN_EXECUTE = "plan_execute"
     SUPERVISOR = "supervisor"
     REFLEXION = "reflexion"
+    SWARM = "swarm"
 
 
 @runtime_checkable

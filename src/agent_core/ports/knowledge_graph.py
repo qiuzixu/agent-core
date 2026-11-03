@@ -44,7 +44,7 @@ class GraphEntity:
         }
 
     @classmethod
-    def from_dict(cls, value: Mapping[str, Any]) -> "GraphEntity":
+    def from_dict(cls, value: Mapping[str, Any]) -> GraphEntity:
         """从字典恢复实体对象。"""
 
         return cls(
@@ -85,7 +85,7 @@ class GraphRelation:
         }
 
     @classmethod
-    def from_dict(cls, value: Mapping[str, Any]) -> "GraphRelation":
+    def from_dict(cls, value: Mapping[str, Any]) -> GraphRelation:
         """从字典恢复关系对象。"""
 
         return cls(
@@ -122,7 +122,7 @@ class GraphSubgraph:
         }
 
     @classmethod
-    def from_dict(cls, value: Mapping[str, Any]) -> "GraphSubgraph":
+    def from_dict(cls, value: Mapping[str, Any]) -> GraphSubgraph:
         """从字典恢复子图对象。"""
 
         return cls(
@@ -186,4 +186,4 @@ class KnowledgeGraphStore(Protocol):
         tenant_id: str | None = None,
         limit_entities: int = 50,
         limit_relations: int = 200,
-    ) -> dict[str, Any]: ...
+    ) -> GraphSubgraph: ...

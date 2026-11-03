@@ -474,3 +474,18 @@ Checkpoint、状态机和 Middleware。上层 API 可以据此统一映射 HTTP 
 | AccessContext 严格校验 | serialization/registry.py | user_id / tenant_id 必须非空字符串，roles 必须是可迭代非空集合，不再静默降级 |
 | envelope schema 语义澄清 | serialization/registry.py | docstring 区分信封序列化格式版本与协议对象内部 schema_version |
 | 序列化参考文档 | docs/reference/serialization-overview.md | 新增设计原则、白名单、迁移规则、codec 新增指南 |
+
+## 2026-11-03 运行时与工作流可靠性修复
+
+| 能力 | 模块位置 | 说明 |
+| --- | --- | --- |
+| 存储生命周期钩子 | `storage/bundle.py` | 正确调用并等待各存储的 `initialize()` / `close()`。 |
+| 工作流错误与幂等收口 | `workflow/state_machine.py`、`workflow/durable.py` | 保留节点 `retryable` 标记；检测跨执行实例的幂等键占用，并拒绝 checkpoint 未推进时重复执行已完成节点。 |
+| 流式 Run 幂等 | `runtime/service.py` | 流式入口在创建 Run 前查询幂等键，重复请求明确返回并发冲突。 |
+| HITL Run 状态 | `middleware/base.py`、`hitl/middleware.py`、`runtime/react.py` | 审批等待期间持久化 `waiting_approval` 和 `pending_approval`，决定后恢复 `running`。 |
+| 工具并发治理 | `tools/executor.py` | 单个调用、批量调用和 ReAct 主路径统一经过同一并发限制。 |
+| Runtime 存储幂等一致性 | `storage/runtime/memory.py`、`storage/runtime/sqlite.py` | Memory、SQLite、PostgreSQL 对重复作用域幂等键统一抛出 `RuntimeConcurrencyError`。 |
+| Memory 任务队列并发 | `tasks/queue.py`、`tasks/worker.py` | Memory 队列支持配置消费并发度，Worker 会注入自身并发配置，开发环境行为与 RabbitMQ 对齐。 |
+| 契约清理 | `ports/knowledge_graph.py`、`retrieval/core.py` | 图谱端口返回 `GraphSubgraph`，移除重复 `Retriever` 协议定义。 |
+
+模块边界、依赖方向和业务投影规则未改变。

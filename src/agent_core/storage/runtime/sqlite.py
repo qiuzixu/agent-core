@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from abc import ABC, abstractmethod
+import sqlite3
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
@@ -147,46 +147,53 @@ class SqliteRuntimeStore(RuntimeStore):
                     raise RuntimeConcurrencyError(f"run {context.run_id} 版本冲突")
                 next_version = stored_version + 1
                 value = context.to_dict()
-                cursor = conn.execute(
-                    """INSERT INTO agent_runs
-                    (thread_id, run_id, user_id, tenant_id, parent_run_id, tags,
-                     status, version, idempotency_key,
-                     iteration, tool_calls_used, pending_approval, pending_clarification,
-                     state, metadata, checkpoint, events)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(thread_id, run_id) DO UPDATE SET
-                      user_id=excluded.user_id, tenant_id=excluded.tenant_id,
-                      parent_run_id=excluded.parent_run_id, tags=excluded.tags,
-                      status=excluded.status, version=excluded.version,
-                      idempotency_key=excluded.idempotency_key,
-                      iteration=excluded.iteration, tool_calls_used=excluded.tool_calls_used,
-                      pending_approval=excluded.pending_approval,
-                      pending_clarification=excluded.pending_clarification,
-                      state=excluded.state, metadata=excluded.metadata,
-                      checkpoint=excluded.checkpoint,
-                      events=excluded.events, updated_at=CURRENT_TIMESTAMP
-                    WHERE agent_runs.version=?""",
-                    (
-                        context.thread_id,
-                        context.run_id,
-                        context.user_id,
-                        context.tenant_id,
-                        context.parent_run_id,
-                        json.dumps(value["tags"], ensure_ascii=False),
-                        context.status,
-                        next_version,
-                        context.idempotency_key,
-                        context.iteration,
-                        context.tool_calls_used,
-                        json.dumps(value["pending_approval"], ensure_ascii=False),
-                        json.dumps(value["pending_clarification"], ensure_ascii=False),
-                        json.dumps(value["state"], ensure_ascii=False),
-                        json.dumps(value["metadata"], ensure_ascii=False),
-                        json.dumps(value["checkpoint"], ensure_ascii=False),
-                        json.dumps(value["events"], ensure_ascii=False),
-                        stored_version,
-                    ),
-                )
+                try:
+                    cursor = conn.execute(
+                        """INSERT INTO agent_runs
+                        (thread_id, run_id, user_id, tenant_id, parent_run_id, tags,
+                         status, version, idempotency_key,
+                         iteration, tool_calls_used, pending_approval, pending_clarification,
+                         state, metadata, checkpoint, events)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(thread_id, run_id) DO UPDATE SET
+                          user_id=excluded.user_id, tenant_id=excluded.tenant_id,
+                          parent_run_id=excluded.parent_run_id, tags=excluded.tags,
+                          status=excluded.status, version=excluded.version,
+                          idempotency_key=excluded.idempotency_key,
+                          iteration=excluded.iteration, tool_calls_used=excluded.tool_calls_used,
+                          pending_approval=excluded.pending_approval,
+                          pending_clarification=excluded.pending_clarification,
+                          state=excluded.state, metadata=excluded.metadata,
+                          checkpoint=excluded.checkpoint,
+                          events=excluded.events, updated_at=CURRENT_TIMESTAMP
+                        WHERE agent_runs.version=?""",
+                        (
+                            context.thread_id,
+                            context.run_id,
+                            context.user_id,
+                            context.tenant_id,
+                            context.parent_run_id,
+                            json.dumps(value["tags"], ensure_ascii=False),
+                            context.status,
+                            next_version,
+                            context.idempotency_key,
+                            context.iteration,
+                            context.tool_calls_used,
+                            json.dumps(value["pending_approval"], ensure_ascii=False),
+                            json.dumps(value["pending_clarification"], ensure_ascii=False),
+                            json.dumps(value["state"], ensure_ascii=False),
+                            json.dumps(value["metadata"], ensure_ascii=False),
+                            json.dumps(value["checkpoint"], ensure_ascii=False),
+                            json.dumps(value["events"], ensure_ascii=False),
+                            stored_version,
+                        ),
+                    )
+                except sqlite3.IntegrityError as exc:
+                    if context.idempotency_key and "idempotency" in str(exc).lower():
+                        raise RuntimeConcurrencyError(
+                            f"幂等键已被其他 run 使用：{context.idempotency_key}"
+                        ) from exc
+                    raise
                 if cursor.rowcount != 1:
                     raise RuntimeConcurrencyError(f"run {context.run_id} 保存时发生并发冲突")
             return next_version

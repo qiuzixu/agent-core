@@ -178,7 +178,8 @@ class ToolExecutor:
         )
         return result.to_text()
 
-    # TODO(debug): breakpoint suggestion #6 - execute_result: tool actual execution point (param validation -> timeout/approval -> business call).
+    # TODO(debug): breakpoint suggestion #6 - execute_result: tool actual
+    # execution point (param validation -> timeout/approval -> business call).
     async def execute_result(
         self,
         tool_name: str,

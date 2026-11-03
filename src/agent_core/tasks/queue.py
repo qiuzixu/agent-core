@@ -38,9 +38,16 @@ class TaskQueue(ABC):
 class MemoryTaskQueue(TaskQueue):
     """进程内队列：用于单元测试和单进程开发。"""
 
-    def __init__(self, maxsize: int = 1000) -> None:
+    def __init__(self, maxsize: int = 1000, *, concurrency: int = 1) -> None:
         self._queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=maxsize)
         self._closed = False
+        self._concurrency = max(1, int(concurrency))
+
+    def set_concurrency(self, concurrency: int) -> None:
+        """设置消费并发度；Worker 会在启动时注入自己的并发配置。"""
+        if concurrency <= 0:
+            raise ValueError("concurrency 必须大于 0")
+        self._concurrency = int(concurrency)
 
     async def publish(self, envelope: TaskEnvelope) -> None:
         if self._closed:
@@ -48,12 +55,46 @@ class MemoryTaskQueue(TaskQueue):
         self._queue.put_nowait(envelope.model_dump(mode="json"))
 
     async def consume(self, handler: TaskHandler) -> None:
-        while not self._closed:
-            value = await self._queue.get()
+        pending: set[asyncio.Task[None]] = set()
+
+        async def process(value: dict[str, Any]) -> None:
             try:
                 await handler(TaskEnvelope.model_validate(value))
             finally:
                 self._queue.task_done()
+
+        async def collect(done: set[asyncio.Task[None]]) -> None:
+            pending.difference_update(done)
+            for task in done:
+                exception = task.exception()
+                if exception is not None:
+                    for other in pending:
+                        other.cancel()
+                    await asyncio.gather(*pending, return_exceptions=True)
+                    pending.clear()
+                    raise exception
+
+        try:
+            while not self._closed:
+                finished = {task for task in pending if task.done()}
+                if finished:
+                    await collect(finished)
+                if len(pending) >= self._concurrency:
+                    done, _ = await asyncio.wait(
+                        pending,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    await collect(done)
+                    continue
+                try:
+                    value = await asyncio.wait_for(self._queue.get(), timeout=0.1)
+                except TimeoutError:
+                    continue
+                pending.add(asyncio.create_task(process(value)))
+        finally:
+            if pending:
+                done, _ = await asyncio.wait(pending)
+                await collect(done)
 
     async def close(self) -> None:
         self._closed = True

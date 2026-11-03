@@ -517,3 +517,4 @@ AgentTaskRetryScheduler（可选）
 
 
 | 2026-11-02 | 序列化白名单扩展与安全校验 | serialization/registry.py 新增 GraphEntity / GraphRelation / GraphSubgraph / ModelSelection / AlertPayload / DeadLetterRecord codec；Blob checksum 严格校验、AccessContext 反序列化校验收紧。未改变模块边界和依赖方向，无需修改 Mermaid 图。 |
+| 2026-11-03 | Runtime 与 Workflow 可靠性修复 | 修复存储生命周期钩子调用、工作流 retryable/幂等冲突处理、流式 Run 幂等、HITL waiting_approval 状态持久化和统一工具并发限制；同时收紧图谱端口返回类型并清理重复检索协议。运行链路和模块依赖方向未改变，无需修改 Mermaid 图。 |

@@ -58,6 +58,10 @@ pgvector = [
   "asyncpg>=0.30,<1",
 ]
 
+rabbitmq = [
+  "aio-pika>=9.5,<10",
+]
+
 qdrant = [
   "qdrant-client>=1.12,<2",
 ]

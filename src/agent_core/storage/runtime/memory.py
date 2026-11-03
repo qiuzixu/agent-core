@@ -4,12 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import asyncio
-
-from abc import ABC, abstractmethod
-from collections.abc import Generator
-from contextlib import contextmanager
-from pathlib import Path
 from typing import Any
 
 from agent_core.protocol.runtime import (
@@ -18,11 +12,6 @@ from agent_core.protocol.runtime import (
     RunContext,
 )
 from agent_core.runtime.state import transition_run_status
-from agent_core.storage._sqlite_utils import (
-    _run_in_thread,
-    run_sync_in_thread,
-    sqlite_connection,
-)
 from agent_core.storage.runtime.base import (
     RuntimeConcurrencyError,
     RuntimeStore,
@@ -41,12 +30,24 @@ class MemoryRuntimeStore(RuntimeStore):
         self._lock = asyncio.Lock()
 
     async def save_run(self, context: RunContext) -> None:
-        key = (context.thread_id, context.run_id)
-        previous = self._runs.get(key)
-        if previous is not None and int(previous.get("version", 0)) != context.version:
-            raise RuntimeConcurrencyError(f"run {context.run_id} 版本冲突")
-        context.version = (int(previous.get("version", 0)) + 1) if previous else 1
-        self._runs[key] = copy.deepcopy(context.to_dict())
+        async with self._lock:
+            key = (context.thread_id, context.run_id)
+            previous = self._runs.get(key)
+            if previous is not None and int(previous.get("version", 0)) != context.version:
+                raise RuntimeConcurrencyError(f"run {context.run_id} 版本冲突")
+            if context.idempotency_key:
+                for (stored_thread, stored_run), value in self._runs.items():
+                    if (
+                        (stored_thread, stored_run) != key
+                        and value.get("tenant_id") == context.tenant_id
+                        and value.get("user_id") == context.user_id
+                        and value.get("idempotency_key") == context.idempotency_key
+                    ):
+                        raise RuntimeConcurrencyError(
+                            f"幂等键已被 run {value.get('run_id', stored_run)} 使用"
+                        )
+            context.version = (int(previous.get("version", 0)) + 1) if previous else 1
+            self._runs[key] = copy.deepcopy(context.to_dict())
         if context.pending_approval:
             await self.save_approval(context.pending_approval)
 

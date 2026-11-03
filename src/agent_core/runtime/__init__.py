@@ -36,6 +36,13 @@ from agent_core.runtime.reflexion import (
     ReflexionAgent,
     ReflexionResult,
 )
+from agent_core.runtime.swarm import (
+    HandoffDecision,
+    HandoffRecord,
+    SwarmAgent,
+    SwarmResult,
+    SwarmWorker,
+)
 from agent_core.runtime.supervisor import (
     SupervisorAgent,
     SupervisorResult,
@@ -68,6 +75,11 @@ __all__ = [
     "SupervisorRoute",
     "SupportsRun",
     "Worker",
+    "HandoffDecision",
+    "HandoffRecord",
+    "SwarmAgent",
+    "SwarmResult",
+    "SwarmWorker",
     "ExecutionPlan",
     "RunExecutor",
     "RunStateError",

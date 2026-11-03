@@ -13,6 +13,8 @@ from agent_core import (
     SupervisorAgent,
     ReflexionAgent,
     Worker,
+    SwarmAgent,
+    SwarmWorker,
 )
 from agent_core.protocol.messages import Message, assistant_message
 
@@ -137,3 +139,71 @@ async def test_reflexion_retries_with_feedback() -> None:
     assert result.attempts == 2
     assert result.reflections[0].feedback == "缺少结论"
     assert "第一版答案" in executor.inputs[1]
+
+@pytest.mark.asyncio
+async def test_swarm_handoffs_between_members_then_final() -> None:
+    # 退款成员的输出完成后，模型决定移交给发票成员
+    decision = {"handoff_to": "invoice", "reason": "发票问题需要技术支持"}
+    model = ScriptedModel([json.dumps(decision, ensure_ascii=False)])
+    refund = ScriptedExecutor(["退款已成功"])
+    invoice = ScriptedExecutor(["发票已开具"])
+    agent = SwarmAgent(
+        model,
+        [
+            SwarmWorker(
+                name="refund",
+                description="退款专员",
+                agent=refund,
+                handoffs=("invoice",),
+            ),
+            SwarmWorker(
+                name="invoice",
+                description="发票专员",
+                agent=invoice,
+            ),
+        ],
+        entry="refund",
+        max_hops=2,
+    )
+
+    result = await agent.run("退款并开发票", thread_id="thread-4")
+
+    assert AgentMode.SWARM.value == "swarm"
+    assert result.answer == "发票已开具"
+    assert len(result.handoffs) == 1
+    assert result.handoffs[0].from_agent == "refund"
+    assert result.handoffs[0].to_agent == "invoice"
+    assert "退款已成功" in invoice.inputs[0]
+
+
+@pytest.mark.asyncio
+async def test_swarm_terminal_member_returns_directly() -> None:
+    model = ScriptedModel([])
+    worker = ScriptedExecutor(["直接回答"])
+    agent = SwarmAgent(
+        model,
+        [SwarmWorker(name="solo", description="单成员", agent=worker)],
+    )
+
+    result = await agent.run("你好")
+
+    assert result.answer == "直接回答"
+    assert result.handoffs == []
+
+
+@pytest.mark.asyncio
+async def test_swarm_rejects_handoff_outside_whitelist() -> None:
+    decision = {"handoff_to": "hacker", "reason": "越权移交"}
+    model = ScriptedModel([json.dumps(decision, ensure_ascii=False)])
+    member = ScriptedExecutor(["输出"])
+    agent = SwarmAgent(
+        model,
+        [
+            SwarmWorker(name="a", description="A", agent=member, handoffs=("b",)),
+            SwarmWorker(name="b", description="B", agent=member),
+        ],
+        entry="a",
+    )
+
+    with pytest.raises(ValueError, match="白名单外"):
+        await agent.run("输入")
