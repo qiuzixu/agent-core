@@ -9,6 +9,10 @@ from agent_core.ports.model_selection import (
     ModelSelectionScope,
     ModelSelectionStore,
 )
+from agent_core.storage.bundle import (
+    StorageBundle,
+    create_storage_bundle,
+)
 from agent_core.storage.context import (
     ContextStore,
     MemoryContextStore,
@@ -24,7 +28,12 @@ from agent_core.storage.governance import (
     create_session_event_store,
     create_workflow_idempotency_store,
 )
-from agent_core.storage.knowledge_graph import InMemoryKnowledgeGraphStore
+from agent_core.storage.knowledge_graph import (
+        InMemoryKnowledgeGraphStore,
+        PostgresKnowledgeGraphStore,
+        SqliteKnowledgeGraphStore,
+        create_knowledge_graph_store,
+    )
 from agent_core.storage.lease import (
     MemoryRunLeaseStore,
     PostgresRunLeaseStore,
@@ -75,6 +84,8 @@ __all__ = [
     "BaseSessionStore",
     "ContextStore",
     "InMemoryKnowledgeGraphStore",
+    "PostgresKnowledgeGraphStore",
+    "SqliteKnowledgeGraphStore",
     "InMemoryMemoryStore",
     "MemoryContextStore",
     "MemoryModelSelectionStore",
@@ -95,6 +106,7 @@ __all__ = [
     "RunLease",
     "RunLeaseStore",
     "RuntimeConcurrencyError",
+    "StorageBundle",
     "RuntimeStore",
     "SessionEvent",
     "SessionEventStore",
@@ -112,10 +124,12 @@ __all__ = [
     "WorkflowIdempotencyRecord",
     "WorkflowIdempotencyStore",
     "create_context_store",
+    "create_knowledge_graph_store",
     "create_memory_store",
     "create_model_selection_store",
     "create_run_lease_store",
     "create_runtime_store",
+    "create_storage_bundle",
     "create_session_event_store",
     "create_session_store",
     "create_workflow_execution_store",
