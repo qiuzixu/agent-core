@@ -164,10 +164,13 @@ class DurableWorkflowRunner:
         execution.status = "running"
         await self._store.save(execution)
         completed_offset = execution.steps_completed
+        # 部分重跑会携带递增代次；同一 execution 的节点需要新的幂等键才能再次执行。
+        rerun_epoch = int((execution.result_data or {}).get("workflow_rerun_epoch") or 0)
 
         def idempotency_key(node_name: str, completed_nodes: int) -> str:
             sequence = completed_offset + completed_nodes + 1
-            return f"{execution.execution_id}:{sequence}:{node_name}"
+            base = f"{execution.execution_id}:{sequence}:{node_name}"
+            return f"{base}:rerun-{rerun_epoch}" if rerun_epoch > 0 else base
 
         async def persist_pending(context: NodeExecutionContext, _state: dict[str, Any]) -> None:
             idempotency_store = self._idempotency_store
