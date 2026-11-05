@@ -8,6 +8,7 @@ from agent_core.tasks.base import AgentTaskStore
 from agent_core.tasks.models import AgentTask, _task_from_row
 
 class PostgresAgentTaskStore(AgentTaskStore):
+    SCHEMA_VERSION = 2
     DDL = """
     CREATE TABLE IF NOT EXISTS agent_tasks (
         task_id TEXT PRIMARY KEY,
@@ -29,7 +30,8 @@ class PostgresAgentTaskStore(AgentTaskStore):
         created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         lease_expires_at TIMESTAMPTZ,
-        attempt_id TEXT
+        attempt_id TEXT,
+        fencing_token BIGINT NOT NULL DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS idx_agent_tasks_status_retry
         ON agent_tasks(status, next_retry_at);
@@ -40,7 +42,7 @@ class PostgresAgentTaskStore(AgentTaskStore):
     _COLUMNS = (
         "task_id, intent, status, queue, thread_id, user_id, tenant_id, idempotency_key, "
         "payload, result, error, retry_count, max_retries, worker_id, "
-        "next_retry_at, workflow_execution_id, created_at, updated_at, lease_expires_at, attempt_id"
+        "next_retry_at, workflow_execution_id, created_at, updated_at, lease_expires_at, attempt_id, fencing_token"
     )
 
     @staticmethod
@@ -66,6 +68,7 @@ class PostgresAgentTaskStore(AgentTaskStore):
             task.updated_at,
             task.lease_expires_at,
             task.attempt_id,
+            task.fencing_token,
         )
 
     def __init__(self, dsn: str) -> None:
@@ -76,13 +79,47 @@ class PostgresAgentTaskStore(AgentTaskStore):
         import asyncpg  # type: ignore[import-untyped]
 
         self._pool = await asyncpg.create_pool(self._dsn, min_size=1, max_size=5)
-        await self._pool.execute(self.DDL)
-        await self._pool.execute(
-            "ALTER TABLE agent_tasks ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMPTZ"
-        )
-        await self._pool.execute(
-            "ALTER TABLE agent_tasks ADD COLUMN IF NOT EXISTS attempt_id TEXT"
-        )
+        assert self._pool is not None
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                # 多实例同时启动时只允许一个进程执行 DDL/迁移，避免索引和列变更竞态。
+                await conn.fetchval(
+                    "SELECT pg_advisory_xact_lock(hashtext($1))",
+                    "agent_core.agent_tasks.schema",
+                )
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS agent_core_schema_versions (
+                        component TEXT PRIMARY KEY,
+                        version INTEGER NOT NULL,
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                    )
+                    """
+                )
+                await conn.execute(self.DDL)
+                version = await conn.fetchval(
+                    "SELECT version FROM agent_core_schema_versions WHERE component=$1",
+                    "agent_tasks",
+                )
+                current_version = int(version or 0)
+                if current_version < 1:
+                    await conn.execute(
+                        "ALTER TABLE agent_tasks ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMPTZ"
+                    )
+                if current_version < 2:
+                    await conn.execute("ALTER TABLE agent_tasks ADD COLUMN IF NOT EXISTS attempt_id TEXT")
+                    await conn.execute(
+                        "ALTER TABLE agent_tasks ADD COLUMN IF NOT EXISTS fencing_token BIGINT NOT NULL DEFAULT 0"
+                    )
+                await conn.execute(
+                    """
+                    INSERT INTO agent_core_schema_versions(component, version)
+                    VALUES ($1, $2)
+                    ON CONFLICT(component) DO UPDATE SET version=EXCLUDED.version, updated_at=now()
+                    """,
+                    "agent_tasks",
+                    self.SCHEMA_VERSION,
+                )
 
     async def close(self) -> None:
         if self._pool is not None:
@@ -99,7 +136,9 @@ class PostgresAgentTaskStore(AgentTaskStore):
         row = await self._pool.fetchrow(
             f"""
             INSERT INTO agent_tasks ({self._COLUMNS})
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+            ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL
+            DO UPDATE SET task_id=agent_tasks.task_id
             RETURNING {self._COLUMNS}
             """,
             *self._values(task),
@@ -141,7 +180,8 @@ class PostgresAgentTaskStore(AgentTaskStore):
             f"""
             UPDATE agent_tasks
             SET status='running', worker_id=$2, error=NULL, updated_at=now(),
-                lease_expires_at=now() + make_interval(secs => $3::double precision)
+                lease_expires_at=now() + make_interval(secs => $3::double precision),
+                fencing_token=agent_tasks.fencing_token + 1
             WHERE task_id=$1
               AND ($4::text IS NULL OR attempt_id=$4::text)
               AND (
@@ -166,6 +206,7 @@ class PostgresAgentTaskStore(AgentTaskStore):
         *,
         worker_id: str,
         lease_seconds: float = 30.0,
+        fencing_token: int | None = None,
     ) -> AgentTask | None:
         self._check()
         assert self._pool is not None
@@ -175,11 +216,13 @@ class PostgresAgentTaskStore(AgentTaskStore):
             SET lease_expires_at=now() + make_interval(secs => $3::double precision),
                 updated_at=now()
             WHERE task_id=$1 AND status='running' AND worker_id=$2
+              AND ($4::bigint IS NULL OR fencing_token=$4::bigint)
             RETURNING {self._COLUMNS}
             """,
             task_id,
             worker_id,
             max(0.1, lease_seconds),
+            fencing_token,
         )
         return _task_from_row(row) if row is not None else None
 
@@ -217,15 +260,19 @@ class PostgresAgentTaskStore(AgentTaskStore):
         assert self._pool is not None
         rows = await self._pool.fetch(
             f"""
-            WITH stale AS (
+            WITH selected AS (
+                SELECT task_id FROM agent_tasks
+                WHERE status='running' AND (lease_expires_at IS NULL OR lease_expires_at <= now())
+                ORDER BY updated_at
+                LIMIT $2
+                FOR UPDATE SKIP LOCKED
+            ), stale AS (
                 UPDATE agent_tasks
                 SET status='waiting_retry', worker_id=$1, next_retry_at=now(), updated_at=now()
-                WHERE status='running' AND (
-                    lease_expires_at IS NULL OR lease_expires_at <= now()
-                )
+                WHERE task_id IN (SELECT task_id FROM selected)
                 RETURNING {self._COLUMNS}
             )
-            SELECT * FROM stale ORDER BY updated_at LIMIT $2
+            SELECT * FROM stale ORDER BY updated_at
             """,
             worker_id,
             limit,
@@ -238,6 +285,7 @@ class PostgresAgentTaskStore(AgentTaskStore):
         *,
         worker_id: str,
         result: dict[str, Any] | None,
+        fencing_token: int | None = None,
     ) -> AgentTask | None:
         self._check()
         assert self._pool is not None
@@ -246,11 +294,13 @@ class PostgresAgentTaskStore(AgentTaskStore):
             UPDATE agent_tasks
             SET status='completed', result=$3, error=NULL, next_retry_at=NULL, updated_at=now()
             WHERE task_id=$1 AND status='running' AND worker_id=$2
+              AND ($4::bigint IS NULL OR fencing_token=$4::bigint)
             RETURNING {self._COLUMNS}
             """,
             task_id,
             worker_id,
             result,
+            fencing_token,
         )
         return _task_from_row(row) if row is not None else None
 
@@ -261,6 +311,7 @@ class PostgresAgentTaskStore(AgentTaskStore):
         worker_id: str,
         error: str,
         retry_delay_seconds: float = 5.0,
+        fencing_token: int | None = None,
     ) -> AgentTask | None:
         self._check()
         assert self._pool is not None
@@ -274,12 +325,14 @@ class PostgresAgentTaskStore(AgentTaskStore):
                     THEN now() + make_interval(secs => $4::double precision) ELSE NULL END,
                 updated_at=now()
             WHERE task_id=$1 AND status='running' AND worker_id=$2
+              AND ($5::bigint IS NULL OR fencing_token=$5::bigint)
             RETURNING {self._COLUMNS}
             """,
             task_id,
             worker_id,
             error,
             max(0.1, retry_delay_seconds),
+            fencing_token,
         )
         return _task_from_row(row) if row is not None else None
 
@@ -289,6 +342,7 @@ class PostgresAgentTaskStore(AgentTaskStore):
         *,
         worker_id: str,
         error: str,
+        fencing_token: int | None = None,
     ) -> AgentTask | None:
         self._check()
         assert self._pool is not None
@@ -296,12 +350,14 @@ class PostgresAgentTaskStore(AgentTaskStore):
             f"""
             UPDATE agent_tasks
             SET status='dead', worker_id=$2, error=$3, next_retry_at=NULL, updated_at=now()
-            WHERE task_id=$1
+            WHERE task_id=$1 AND status='running' AND worker_id=$2
+              AND ($4::bigint IS NULL OR fencing_token=$4::bigint)
             RETURNING {self._COLUMNS}
             """,
             task_id,
             worker_id,
             error,
+            fencing_token,
         )
         return _task_from_row(row) if row is not None else None
 
@@ -380,6 +436,7 @@ class PostgresAgentTaskStore(AgentTaskStore):
         worker_id: str,
         error: str,
         retry_delay_seconds: float = 5.0,
+        fencing_token: int | None = None,
     ) -> AgentTask | None:
         self._check()
         assert self._pool is not None
@@ -390,12 +447,14 @@ class PostgresAgentTaskStore(AgentTaskStore):
                 next_retry_at=now() + make_interval(secs => $4::double precision),
                 updated_at=now()
             WHERE task_id=$1
+              AND ($5::bigint IS NULL OR fencing_token=$5::bigint)
             RETURNING {self._COLUMNS}
             """,
             task_id,
             worker_id,
             error,
             max(0.1, retry_delay_seconds),
+            fencing_token,
         )
         return _task_from_row(row) if row is not None else None
 

@@ -35,7 +35,8 @@ class SqliteAgentTaskStore(AgentTaskStore):
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         lease_expires_at TEXT,
-        attempt_id TEXT
+        attempt_id TEXT,
+        fencing_token INTEGER NOT NULL DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS idx_agent_tasks_status_retry
         ON agent_tasks(status, next_retry_at);
@@ -46,7 +47,7 @@ class SqliteAgentTaskStore(AgentTaskStore):
     _COLUMNS = (
         "task_id, intent, status, queue, thread_id, user_id, tenant_id, idempotency_key, "
         "payload_json, result_json, error, retry_count, max_retries, worker_id, "
-        "next_retry_at, workflow_execution_id, created_at, updated_at, lease_expires_at, attempt_id"
+        "next_retry_at, workflow_execution_id, created_at, updated_at, lease_expires_at, attempt_id, fencing_token"
     )
 
     def __init__(self, db_path: str | Path) -> None:
@@ -64,6 +65,7 @@ class SqliteAgentTaskStore(AgentTaskStore):
             for column, ddl in (
                 ("lease_expires_at", "ALTER TABLE agent_tasks ADD COLUMN lease_expires_at TEXT"),
                 ("attempt_id", "ALTER TABLE agent_tasks ADD COLUMN attempt_id TEXT"),
+                ("fencing_token", "ALTER TABLE agent_tasks ADD COLUMN fencing_token INTEGER NOT NULL DEFAULT 0"),
             ):
                 if column not in columns:
                     conn.execute(ddl)
@@ -92,6 +94,7 @@ class SqliteAgentTaskStore(AgentTaskStore):
             task.updated_at,
             task.lease_expires_at,
             task.attempt_id,
+            task.fencing_token,
         )
 
     async def create(self, task: AgentTask) -> AgentTask:
@@ -102,7 +105,7 @@ class SqliteAgentTaskStore(AgentTaskStore):
                 try:
                     conn.execute(
                         f"INSERT INTO agent_tasks ({self._COLUMNS}) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         values,
                     )
                     conn.commit()
@@ -159,9 +162,9 @@ class SqliteAgentTaskStore(AgentTaskStore):
 
         def op() -> None:
             with sqlite3.connect(str(self._db_path), timeout=30.0) as conn:
-                conn.execute(
+                cursor = conn.execute(
                     "UPDATE agent_tasks SET status='running', worker_id=?, error=NULL, "
-                    "updated_at=?, lease_expires_at=? WHERE task_id=? AND "
+                    "updated_at=?, lease_expires_at=?, fencing_token=fencing_token+1 WHERE task_id=? AND "
                     "(? IS NULL OR attempt_id=?) AND ("
                     "status IN ('queued','waiting_retry') OR (status='running' AND "
                     "(lease_expires_at IS NULL OR lease_expires_at <= ?)))",
@@ -212,23 +215,26 @@ class SqliteAgentTaskStore(AgentTaskStore):
         *,
         worker_id: str,
         lease_seconds: float = 30.0,
+        fencing_token: int | None = None,
     ) -> AgentTask | None:
         now = _now()
         lease_expires_at = (
             datetime.now(UTC) + timedelta(seconds=max(0.1, lease_seconds))
         ).isoformat()
 
-        def op() -> None:
+        def op() -> int:
             with sqlite3.connect(str(self._db_path), timeout=30.0) as conn:
-                conn.execute(
+                cursor = conn.execute(
                     "UPDATE agent_tasks SET lease_expires_at=?, updated_at=? "
-                    "WHERE task_id=? AND status='running' AND worker_id=?",
-                    (lease_expires_at, now, task_id, worker_id),
+                    "WHERE task_id=? AND status='running' AND worker_id=? "
+                    "AND (? IS NULL OR fencing_token=?)",
+                    (lease_expires_at, now, task_id, worker_id, fencing_token, fencing_token),
                 )
                 conn.commit()
+                return int(cursor.rowcount)
 
-        await _run_in_thread(op)
-        return await self.get(task_id)
+        updated = await _run_in_thread(op)
+        return await self.get(task_id) if updated == 1 else None
 
     async def renew_leases(
         self,
@@ -263,17 +269,26 @@ class SqliteAgentTaskStore(AgentTaskStore):
 
         def op() -> list[Any]:
             with sqlite3.connect(str(self._db_path), timeout=30.0) as conn:
-                conn.execute(
-                    "UPDATE agent_tasks SET status='waiting_retry', worker_id=?, "
-                    "next_retry_at=?, updated_at=? WHERE status='running' AND "
-                    "(lease_expires_at IS NULL OR lease_expires_at <= ?)",
-                    (worker_id, now, now, now),
-                )
+                selected = conn.execute(
+                    "SELECT task_id FROM agent_tasks WHERE status='running' AND "
+                    "(lease_expires_at IS NULL OR lease_expires_at <= ?) "
+                    "ORDER BY updated_at LIMIT ?",
+                    (now, max(1, int(limit))),
+                ).fetchall()
+                task_ids = [str(row[0]) for row in selected]
+                if task_ids:
+                    conn.executemany(
+                        "UPDATE agent_tasks SET status='waiting_retry', worker_id=?, "
+                        "next_retry_at=?, updated_at=? WHERE task_id=? AND status='running'",
+                        [(worker_id, now, now, task_id) for task_id in task_ids],
+                    )
                 conn.commit()
+                if not task_ids:
+                    return []
+                placeholders = ",".join("?" for _ in task_ids)
                 return conn.execute(
-                    f"SELECT {self._COLUMNS} FROM agent_tasks "
-                    "WHERE status='waiting_retry' AND worker_id=? ORDER BY updated_at LIMIT ?",
-                    (worker_id, limit),
+                    f"SELECT {self._COLUMNS} FROM agent_tasks WHERE task_id IN ({placeholders})",
+                    task_ids,
                 ).fetchall()
 
         rows = await _run_in_thread(op)
@@ -285,26 +300,30 @@ class SqliteAgentTaskStore(AgentTaskStore):
         *,
         worker_id: str,
         result: dict[str, Any] | None,
+        fencing_token: int | None = None,
     ) -> AgentTask | None:
         now = _now()
 
-        def op() -> None:
+        def op() -> int:
             with sqlite3.connect(str(self._db_path), timeout=30.0) as conn:
-                conn.execute(
+                cursor = conn.execute(
                     "UPDATE agent_tasks SET status='completed', result_json=?, error=NULL, "
-                    "next_retry_at=NULL, updated_at=? WHERE task_id=? AND status='running' AND worker_id=?",
+                    "next_retry_at=NULL, updated_at=? WHERE task_id=? AND status='running' AND worker_id=? "
+                    "AND (? IS NULL OR fencing_token=?)",
                     (
                         json.dumps(result, ensure_ascii=False) if result is not None else None,
                         now,
                         task_id,
                         worker_id,
+                        fencing_token,
+                        fencing_token,
                     ),
                 )
                 conn.commit()
+                return int(cursor.rowcount)
 
-        await _run_in_thread(op)
-        task = await self.get(task_id)
-        return task if task is not None and task.status == "completed" else None
+        updated = await _run_in_thread(op)
+        return await self.get(task_id) if updated == 1 else None
 
     async def fail(
         self,
@@ -313,9 +332,12 @@ class SqliteAgentTaskStore(AgentTaskStore):
         worker_id: str,
         error: str,
         retry_delay_seconds: float = 5.0,
+        fencing_token: int | None = None,
     ) -> AgentTask | None:
         task = await self.get(task_id)
         if task is None or task.status != "running" or task.worker_id != worker_id:
+            return None
+        if fencing_token is not None and task.fencing_token != fencing_token:
             return None
         task.retry_count += 1
         task.error = error
@@ -329,11 +351,12 @@ class SqliteAgentTaskStore(AgentTaskStore):
             task.status = "failed"
             task.next_retry_at = None
 
-        def op() -> None:
+        def op() -> int:
             with sqlite3.connect(str(self._db_path), timeout=30.0) as conn:
-                conn.execute(
+                cursor = conn.execute(
                     "UPDATE agent_tasks SET status=?, retry_count=?, error=?, next_retry_at=?, updated_at=? "
-                    "WHERE task_id=? AND status='running' AND worker_id=?",
+                    "WHERE task_id=? AND status='running' AND worker_id=? "
+                    "AND (? IS NULL OR fencing_token=?)",
                     (
                         task.status,
                         task.retry_count,
@@ -342,12 +365,15 @@ class SqliteAgentTaskStore(AgentTaskStore):
                         task.updated_at,
                         task_id,
                         worker_id,
+                        fencing_token,
+                        fencing_token,
                     ),
                 )
                 conn.commit()
+                return int(cursor.rowcount)
 
-        await _run_in_thread(op)
-        return await self.get(task_id)
+        updated = await _run_in_thread(op)
+        return await self.get(task_id) if updated == 1 else None
 
     async def mark_dead(
         self,
@@ -355,20 +381,23 @@ class SqliteAgentTaskStore(AgentTaskStore):
         *,
         worker_id: str,
         error: str,
+        fencing_token: int | None = None,
     ) -> AgentTask | None:
         now = _now()
 
-        def op() -> None:
+        def op() -> int:
             with sqlite3.connect(str(self._db_path), timeout=30.0) as conn:
-                conn.execute(
+                cursor = conn.execute(
                     "UPDATE agent_tasks SET status='dead', worker_id=?, error=?, "
-                    "next_retry_at=NULL, updated_at=? WHERE task_id=?",
-                    (worker_id, error, now, task_id),
+                    "next_retry_at=NULL, updated_at=? WHERE task_id=? "
+                    "AND status='running' AND worker_id=? AND (? IS NULL OR fencing_token=?)",
+                    (worker_id, error, now, task_id, worker_id, fencing_token, fencing_token),
                 )
                 conn.commit()
+                return int(cursor.rowcount)
 
-        await _run_in_thread(op)
-        return await self.get(task_id)
+        updated = await _run_in_thread(op)
+        return await self.get(task_id) if updated == 1 else None
 
     async def mark_requeued(
         self,
@@ -378,20 +407,18 @@ class SqliteAgentTaskStore(AgentTaskStore):
     ) -> AgentTask | None:
         now = _now()
 
-        def op() -> None:
+        def op() -> int:
             with sqlite3.connect(str(self._db_path), timeout=30.0) as conn:
-                conn.execute(
+                cursor = conn.execute(
                     "UPDATE agent_tasks SET status='queued', worker_id=?, error=NULL, "
                     "next_retry_at=NULL, updated_at=? WHERE task_id=? AND status='dead'",
                     (worker_id, now, task_id),
                 )
                 conn.commit()
+                return int(cursor.rowcount)
 
-        await _run_in_thread(op)
-        task = await self.get(task_id)
-        if task is not None and task.status == "queued" and task.worker_id == worker_id:
-            return task
-        return None
+        updated = await _run_in_thread(op)
+        return await self.get(task_id) if updated == 1 else None
 
 
     async def mark_discarded(
@@ -403,20 +430,18 @@ class SqliteAgentTaskStore(AgentTaskStore):
     ) -> AgentTask | None:
         now = _now()
 
-        def op() -> None:
+        def op() -> int:
             with sqlite3.connect(str(self._db_path), timeout=30.0) as conn:
-                conn.execute(
+                cursor = conn.execute(
                     "UPDATE agent_tasks SET status='discarded', worker_id=?, error=?, "
                     "next_retry_at=NULL, updated_at=? WHERE task_id=? AND status='dead'",
                     (worker_id, reason, now, task_id),
                 )
                 conn.commit()
+                return int(cursor.rowcount)
 
-        await _run_in_thread(op)
-        task = await self.get(task_id)
-        if task is not None and task.status == "discarded":
-            return task
-        return None
+        updated = await _run_in_thread(op)
+        return await self.get(task_id) if updated == 1 else None
 
 
     async def set_waiting_retry(
@@ -426,44 +451,42 @@ class SqliteAgentTaskStore(AgentTaskStore):
         worker_id: str,
         error: str,
         retry_delay_seconds: float = 5.0,
+        fencing_token: int | None = None,
     ) -> AgentTask | None:
         now = _now()
         next_retry_at = (
             datetime.now(UTC) + timedelta(seconds=max(0.1, retry_delay_seconds))
         ).isoformat()
 
-        def op() -> None:
+        def op() -> int:
             with sqlite3.connect(str(self._db_path), timeout=30.0) as conn:
-                conn.execute(
+                cursor = conn.execute(
                     "UPDATE agent_tasks SET status='waiting_retry', worker_id=?, error=?, "
-                    "next_retry_at=?, updated_at=? WHERE task_id=?",
-                    (worker_id, error, next_retry_at, now, task_id),
+                    "next_retry_at=?, updated_at=? WHERE task_id=? "
+                    "AND (? IS NULL OR fencing_token=?)",
+                    (worker_id, error, next_retry_at, now, task_id, fencing_token, fencing_token),
                 )
                 conn.commit()
+                return int(cursor.rowcount)
 
-        await _run_in_thread(op)
-        task = await self.get(task_id)
-        if task is not None and task.status == "waiting_retry":
-            return task
-        return None
+        updated = await _run_in_thread(op)
+        return await self.get(task_id) if updated == 1 else None
 
     async def reschedule(self, task_id: str, *, worker_id: str = "scheduler") -> AgentTask | None:
         now = _now()
 
-        def op() -> None:
+        def op() -> int:
             with sqlite3.connect(str(self._db_path), timeout=30.0) as conn:
-                conn.execute(
+                cursor = conn.execute(
                     "UPDATE agent_tasks SET status='queued', worker_id=?, next_retry_at=NULL, updated_at=? "
                     "WHERE task_id=? AND status='waiting_retry'",
                     (worker_id, now, task_id),
                 )
                 conn.commit()
+                return int(cursor.rowcount)
 
-        await _run_in_thread(op)
-        task = await self.get(task_id)
-        if task is not None and task.status == "queued" and task.worker_id == worker_id:
-            return task
-        return None
+        updated = await _run_in_thread(op)
+        return await self.get(task_id) if updated == 1 else None
 
     async def list_by_status(
         self,

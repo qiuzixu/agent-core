@@ -51,8 +51,16 @@ Core 不绑定配置框架，也不自动读取 `.env`。工厂通过属性访�
 | `lease_seconds` | `30` | Run 租约时间 |
 | `heartbeat_seconds` | `10` | 租约心跳间隔 |
 | `require_access` | `False` | 是否强制用户和租户身份 |
+| `max_event_history` | `2000` | 每个 Run 保留的最近事件数量；传 `None` 关闭裁剪 |
+| `callback_timeout_seconds` | `None` | 单个生命周期回调最长执行时间 |
+| `event_outbox` | `None` | 可选 `EventOutbox`；建议生产环境使用 `SqliteEventOutbox` 或应用自己的持久化实现 |
 
 `heartbeat_seconds` 必须明显小于 `lease_seconds`，并根据事件循环延迟和数据库抖动保留余量。
+任务 Worker 另外使用 fencing token 保护迟到写入；生产环境应为事件发布配置有限重试和超时。
+
+非幂等工具必须在执行时携带稳定 `operation_id`。ReAct 会自动使用 `run_id` 与模型的
+`tool_call_id` 组合生成；自定义调用方应在重试和恢复期间复用同一个操作号，并注入
+`ToolOperationStore` 保存成功结果。
 
 ## 存储工厂
 

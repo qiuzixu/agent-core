@@ -6,6 +6,7 @@ EventSink 负责把事件发往进程外；CallbackManager 负责进程内订阅
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 from collections.abc import Awaitable, Callable, Iterable
@@ -65,8 +66,16 @@ class CallbackFailure:
 class CallbackManager:
     """按注册顺序分发生命周期事件并隔离订阅者故障。"""
 
-    def __init__(self, handlers: Iterable[CallbackHandler] | None = None) -> None:
+    def __init__(
+        self,
+        handlers: Iterable[CallbackHandler] | None = None,
+        *,
+        handler_timeout_seconds: float | None = None,
+    ) -> None:
         self._handlers = list(handlers or ())
+        if handler_timeout_seconds is not None and handler_timeout_seconds <= 0:
+            raise ValueError("handler_timeout_seconds 必须大于 0")
+        self._handler_timeout_seconds = handler_timeout_seconds
 
     @property
     def handlers(self) -> tuple[CallbackHandler, ...]:
@@ -89,7 +98,11 @@ class CallbackManager:
         failures: list[CallbackFailure] = []
         for handler in tuple(self._handlers):
             try:
-                await handler.on_event(event)
+                operation = handler.on_event(event)
+                if self._handler_timeout_seconds is None:
+                    await operation
+                else:
+                    await asyncio.wait_for(operation, timeout=self._handler_timeout_seconds)
             except Exception as exc:
                 failure = CallbackFailure(
                     handler_name=type(handler).__name__,

@@ -12,7 +12,7 @@ from typing import Any
 
 from agent_core.model import ModelAdapter, chat_structured, StructuredOutputSpec
 from agent_core.protocol.messages import system_message, user_message
-from agent_core.runtime.modes import AgentMode, SupportsRun, answer_text
+from agent_core.runtime.modes import AgentMode, SupportsRun, answer_text, bounded_text
 
 
 @dataclass(frozen=True)
@@ -102,6 +102,7 @@ class SwarmAgent:
         *,
         entry: str | None = None,
         max_hops: int = 4,
+        max_transcript_chars: int = 12000,
     ) -> None:
         """创建 Swarm 执行器并校验移交白名单的完整性。"""
         if not workers:
@@ -122,6 +123,7 @@ class SwarmAgent:
         self._workers = {worker.name: worker for worker in workers}
         self._entry = entry or names[0]
         self._max_hops = max(0, int(max_hops))
+        self._max_transcript_chars = max(256, int(max_transcript_chars))
 
     async def run(
         self,
@@ -169,7 +171,7 @@ class SwarmAgent:
                     f"用户输入：{user_input}\n\n"
                     f"当前成员：{current.name}\n"
                     f"移交给手：{', '.join(current.handoffs)}\n\n"
-                    f"前序成员记录：\n{transcript or '<empty>'}\n\n"
+                    f"前序成员记录：\n{bounded_text(transcript, max_chars=self._max_transcript_chars) or '<empty>'}\n\n"
                     f"当前成员输出：\n{output}"
                     f"{memory_hint}"
                 ),
@@ -200,10 +202,13 @@ class SwarmAgent:
                     reason=decision.reason,
                 )
             )
-            transcript += f"\n[{current.name}] {output}"
+            transcript = bounded_text(
+                f"{transcript}\n[{current.name}] {output}",
+                max_chars=self._max_transcript_chars,
+            )
             current = self._workers[decision.handoff_to]
             member_input = (
-                f"{user_input}\n\n前序成员的执行记录：\n{transcript}"
+                f"{user_input}\n\n前序成员的执行记录：\n{bounded_text(transcript, max_chars=self._max_transcript_chars)}"
             )
 
         raise RuntimeError("Swarm 达到最大移交次数仍没有返回最终答案")

@@ -938,9 +938,11 @@ class ReActAgent:
                         result={"error_kind": "approval", "error": result},
                     )
             else:
+                operation_id = self._tool_operation_id(runtime_context, tc, index)
                 structured_result = await self._tool_executor.execute_result(
                     tc["name"],
                     tc.get("args", {}),
+                    operation_id=operation_id,
                 )
                 result = structured_result.to_text()
                 tool_ctx.metadata["tool_success"] = structured_result.success
@@ -1078,6 +1080,18 @@ class ReActAgent:
             first = direct_results[min(direct_results)]
             ctx.metadata["_direct_to_client_result"] = first.to_dict()
         return messages
+
+    def _tool_operation_id(
+        self,
+        runtime_context: RunContext | None,
+        tool_call: dict[str, Any],
+        index: int,
+    ) -> str:
+        """为一次工具调用生成恢复期间稳定的操作号。"""
+        run_id = runtime_context.run_id if runtime_context is not None else self._thread_id
+        call_id = str(tool_call.get("id") or f"index-{index}")
+        iteration = runtime_context.iteration if runtime_context is not None else 0
+        return f"{run_id}:iteration:{iteration}:tool:{call_id}"
 
     async def _persist_tool_progress(
         self,

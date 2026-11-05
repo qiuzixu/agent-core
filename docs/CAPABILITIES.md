@@ -18,10 +18,10 @@ Agent Core 是一套零外部平台绑定的手写 Agent 运行时内核。
 | `protocol` | 消息、运行上下文、运行事件、审批、工具结果和能力声明 | `Message`、`RunContext`、`RunEvent`、`ApprovalRecord`、`ToolResult`、`AgentCapabilities` |
 | `model` | 模型协议、Provider 注册表、统一工厂、结构化输出、限流、并发、默认超时、按 scope 熔断和 fallback | `ModelAdapter`、`StructuredOutputSpec`、`GovernedModelAdapter` |
 | `skills` | Skill 清单加载、严格校验、注册、按需激活及 Function/MCP 绑定 | `SkillLoader`、`SkillRegistry`、`SkillSpec`、`SkillActivation` |
-| `tools` | 工具注册、Schema、参数基础校验、超时、单个和批量并发执行 | `ToolRegistry`、`ToolExecutor`、`ToolSpec` |
+| `tools` | 工具注册、Schema、参数基础校验、超时、单个和批量并发执行；非幂等工具稳定 `operation_id` 与结果去重 | `ToolRegistry`、`ToolExecutor`、`ToolSpec` |
 | `mcp` | MCP 工具发现和调用、超时及统一错误 | `McpToolClient`、`McpToolCaller` |
 | `middleware` | Agent、模型和工具执行前后的扩展链 | `Middleware`、`MiddlewareManager` |
-| `callbacks` | 进程内生命周期事件订阅、同步/异步函数包装和订阅者故障隔离 | `CallbackHandler`、`CallbackManager` |
+| `callbacks` | 进程内生命周期事件订阅、同步/异步函数包装、订阅者超时和故障隔离 | `CallbackHandler`、`CallbackManager` |
 | `documents` | Blob、文档、片段、来源定位、纯文本加载和递归字符切分 | `Document`、`TextLoader`、`RecursiveCharacterTextSplitter` |
 | `retrieval` | 检索协议、内存/Chroma/pgvector 存储及环境工厂 | `Embeddings`、`EmbeddingRetriever`、`create_vector_store` |
 | `serialization` | 显式白名单、类型标识、Schema 版本和迁移函数 | `SerializerRegistry`、`SerializedEnvelope` |
@@ -31,12 +31,12 @@ Agent Core 是一套零外部平台绑定的手写 Agent 运行时内核。
 | `hitl` | 人工审批请求、持久化 deadline、条件状态转换、超时、跨进程决策同步和中间件接入 | `ApprovalQueue`、`HumanInTheLoopMiddleware` |
 | `workflow` | 异步状态机、节点策略、重试、超时、幂等、pending write、恢复和 Mermaid 导出 | `StateMachine`、`NodeExecutionPolicy`、`DurableWorkflowRunner` |
 | `multi-agent` 扩展 | Agent 注册、权限过滤、规则/模型路由、handoff、父子 Run、预算、租约和恢复 | `AgentRegistry`、`multi-agent.SupervisorAgent`、`RuntimeAgentInvoker` |
-| `storage` | 会话、上下文、长期记忆、Run、审批、模型选择和工作流实例持久化 | 各类 `Memory*`、`Sqlite*`、`Postgres*Store` |
+| `storage` | 会话、上下文、长期记忆、Run、审批、模型选择、工作流实例、事件 Outbox 和工具操作结果持久化 | 各类 `Memory*`、`Sqlite*`、`Postgres*Store` |
 | `guardrails` | 关键词、长度、PII 脱敏和输出格式检查 | `GuardrailsMiddleware` |
 | `prompts` | 安全文本/聊天模板、消息占位符、partial、Prompt 版本和历史查询 | `PromptTemplate`、`ChatPromptTemplate`、`PromptRegistry` |
 | `observability` | 并发隔离的模型/工具耗时、调用计数、Thread/Agent 统计和可选 OTel | `ObservabilityMiddleware`、`setup_tracing` |
 | `access` | 用户和租户访问上下文，共享的严格模式/归属/身份访问校验 | `AccessContext`、`enforce_access` |
-| `ports` | 存储、审批、事件、模型选择、图谱、服务注册和配置中心等依赖倒置接口 | `RunStore`、`SessionStore`、`WorkflowExecutionData`、`GraphSubgraph`、`ModelSelectionStore`、`ConfigCenter`、`EventSink` |
+| `ports` | 存储、审批、事件、Event Outbox、工具操作去重、模型选择、图谱、服务注册和配置中心等依赖倒置接口 | `RunStore`、`SessionStore`、`WorkflowExecutionData`、`GraphSubgraph`、`ModelSelectionStore`、`ConfigCenter`、`EventSink`、`EventOutbox`、`ToolOperationStore` |
 | `acp` | ACP JSON-RPC/stdio、会话、提示、更新、取消和审批请求 | `AcpStdioServer`、`AcpBackend` |
 
 ## 3. Agent Loop 和运行生命周期
@@ -73,18 +73,22 @@ Agent Core 是一套零外部平台绑定的手写 Agent 运行时内核。
 - 可选 `run_executor`（`RunExecutor` 协议）：应用接管 Agent 调用，Runtime 统一收口
   状态、事件、持久化与租约；
 - 定期 heartbeat 续租，租约丢失时停止本地执行；
+- 任务 Worker 使用 fencing token 校验心跳、失败和完成写入；失去租约时取消当前 handler，拒绝旧 Worker 提交结果；
 - 扫描过期租约，将异常退出的 Run 标记为中断并选择是否自动恢复。
 - 可选 `require_access=True` 严格模式，创建 Run 时强制绑定用户和租户，查询、恢复和取消时
   强制提供 `AccessContext`。
 
-### 高级 Agent 模式
+### Agent 模式
 
-Core 内置四种轻量编排模式，与 ReAct 共用 `SupportsRun` 执行协议：
+Core 内置五种执行模式，与 ReAct 共用 `SupportsRun` 执行协议：
 
 - `PlanExecuteAgent`：先生成计划，再按 `depends_on` 做拓扑顺序执行；支持步骤级执行 Agent、失败步骤阻断和结果总结；
 - `SupervisorAgent`：按模型路由 Worker，保留路由记录，并拒绝空指令和完全重复的路由；
 - `ReflexionAgent`：执行、评审、修订，修订后会再次评审最终答案，评审分数限制为 0-10；
 - `SwarmAgent`：按成员 handoff 白名单转交，决策模型可见历史 transcript，并拒绝重复移交边。
+- `PlanExecuteAgent` 可通过 `max_parallel_steps` 并行执行同一依赖层的独立步骤，并通过
+  `max_context_chars` 限制跨步骤上下文。
+- Supervisor、Swarm 和 Plan-Execute 均限制 transcript/结果摘要长度，避免长任务超过模型上下文窗口。
 
 高级模式的执行结果统一满足 `AgentOutput`（字符串或包含 `answer` 字段的结果对象），可通过
 `answer_text()` 转换为 Runtime 需要的最终文本。高级模式本身负责编排，不自动提供独立的流式
@@ -138,6 +142,7 @@ Skill 层已经实现：
 - 必填参数及基础类型校验；
 - 同步和异步工具统一调用；
 - 工具超时、异常包装和结构化 `ToolResult`；
+- 非幂等工具必须提供稳定 `operation_id`；可注入 `ToolOperationStore`，恢复/重试时复用成功结果；
 - 多个工具调用并发执行；
 - 工具定义转换为模型 Tool Calling 格式。
 
@@ -163,7 +168,8 @@ Guardrails 当前提供关键词拦截、文本长度限制、PII 脱敏和输�
 
 Callback 与 Middleware 的职责不同：Callback 只观察已经发生的生命周期事件，不能改变执行结果；
 Middleware 才负责修改、重试、审批或停止。`CallbackManager` 隔离单个处理器异常，`EventSink` 则把
-同一份 `RunEvent` 发送到 WebSocket、消息队列或审计系统。
+同一份 `RunEvent` 发送到 WebSocket、消息队列或审计系统。运行时可注入 `EventOutbox` 先落库再发布，
+只有 Sink 确认成功后才标记已投递，避免消息总线短暂故障造成事件丢失。
 
 ## 7. 文档、检索和序列化
 
@@ -313,8 +319,11 @@ SQLite 实现保持"每操作开新连接"的简单模型，但所有 async 方�
 连接规范），SQLite 锁等待不会冻结事件循环。
 Runtime Store 已包含版本号、乐观并发冲突、幂等键、Thread 所属用户/租户和陈旧 Run 标记能力。
 Workflow Store 同样使用版本号和条件更新拒绝执行实例的并发覆盖。
-`RunLeaseStore` 额外提供 Worker 认领、续租、释放和过期扫描；租约与 Run 状态分开保存，便于接入
-独立任务队列或 Worker 服务。
+`RunLeaseStore` 额外提供 Worker 认领、续租、释放和过期扫描；任务 Store 以 fencing token 保护旧
+Worker 的迟到写入，过期回收按批次原子限量，便于接入独立任务队列或 Worker 服务。
+
+`AgentRuntime` 支持 `max_event_history` 限制内存与持久化 Run 事件历史，`RetryingEventSink` 提供
+事件发布超时、指数退避和有限重试；`CallbackManager` 支持单个 handler 超时，订阅者故障不会拖垮主流程。
 
 ## 12. ACP 协议
 
@@ -514,3 +523,12 @@ Checkpoint、状态机和 Middleware。上层 API 可以据此统一映射 HTTP 
 | Swarm 历史与循环保护 | `runtime/swarm.py` | handoff 决策可见历史 transcript 和 memory context，重复移交边会被拒绝。 |
 
 高级模式仍是通用编排层；流式输出和子步骤 checkpoint 由应用通过 `RunExecutor` 与 `AgentRuntime` 组合接入。
+
+## 2026-11-04 可靠投递与副作用去重
+
+| 能力 | 模块位置 | 说明 |
+| --- | --- | --- |
+| 稳定工具操作号 | `protocol/runtime.py`、`tools/executor.py`、`runtime/react.py` | ReAct 以 `run_id + tool_call_id` 生成稳定 `operation_id`；非幂等工具缺少操作号时拒绝执行。 |
+| 工具结果去重 | `ports/storage.py`、`storage/outbox.py` | `ToolOperationStore` 提供 Memory/SQLite 实现；同一操作号和参数只执行一次，参数漂移会失败。 |
+| 事件 Outbox | `ports/storage.py`、`storage/outbox.py`、`runtime/service.py` | Run 事件先进入 Outbox，Sink 成功后确认；失败事件保留待后续重试，支持 Memory/SQLite。 |
+| PostgreSQL 任务迁移锁 | `tasks/postgres.py` | 任务表 DDL 与 fencing token 迁移使用事务 advisory lock 和 schema version，避免多 Worker 同时启动竞态。 |

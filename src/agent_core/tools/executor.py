@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from agent_core.ports.storage import ToolOperationStore
 from agent_core.protocol.runtime import ToolResult
 
 logger = logging.getLogger(__name__)
@@ -144,9 +147,12 @@ class ToolExecutor:
         *,
         approval_callback: Callable[[ToolSpec, dict[str, Any]], Awaitable[bool]] | None = None,
         max_concurrent: int = 5,
+        operation_store: ToolOperationStore | None = None,
     ) -> None:
         self._registry = registry
         self._approval_callback = approval_callback
+        self._operation_store = operation_store
+        self._operation_locks: dict[str, asyncio.Lock] = {}
         self._semaphore = asyncio.Semaphore(max(1, max_concurrent))
         # 工具使用统计：{tool_name: {"calls": int, "successes": int, "failures": int, "total_seconds": float}}
         self._usage_stats: dict[str, dict[str, Any]] = {}
@@ -161,6 +167,7 @@ class ToolExecutor:
         arguments: dict[str, Any],
         *,
         approval_granted: bool | None = None,
+        operation_id: str | None = None,
     ) -> str:
         """执行单个工具调用。
 
@@ -175,6 +182,7 @@ class ToolExecutor:
             tool_name,
             arguments,
             approval_granted=approval_granted,
+            operation_id=operation_id,
         )
         return result.to_text()
 
@@ -186,6 +194,7 @@ class ToolExecutor:
         arguments: dict[str, Any],
         *,
         approval_granted: bool | None = None,
+        operation_id: str | None = None,
     ) -> ToolResult:
         """执行工具并返回结构化结果。
 
@@ -197,6 +206,7 @@ class ToolExecutor:
                 tool_name,
                 arguments,
                 approval_granted=approval_granted,
+                operation_id=operation_id,
             )
 
     async def _execute_result(
@@ -205,6 +215,7 @@ class ToolExecutor:
         arguments: dict[str, Any],
         *,
         approval_granted: bool | None = None,
+        operation_id: str | None = None,
     ) -> ToolResult:
         """在并发限额内执行单个工具调用。"""
         tool_func = self._registry.get_tool(tool_name)
@@ -227,6 +238,22 @@ class ToolExecutor:
             )
 
         spec = self._registry.get_spec(tool_name)
+        if spec is not None and not spec.idempotent and not operation_id:
+            return ToolResult(
+                tool_name=tool_name,
+                success=False,
+                error="非幂等工具必须提供 operation_id",
+                error_kind="invalid_arguments",
+            )
+        if spec is not None and not spec.idempotent and self._operation_store is None:
+            return ToolResult(
+                tool_name=tool_name,
+                success=False,
+                error="非幂等工具必须配置 ToolOperationStore",
+                error_kind="execution",
+                retryable=True,
+                operation_id=operation_id,
+            )
         if spec is not None:
             schema_error = self._validate_arguments(spec, arguments)
             if schema_error:
@@ -274,6 +301,18 @@ class ToolExecutor:
                         )
 
         import time
+        arguments_hash = hashlib.sha256(
+            json.dumps(arguments, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
+                "utf-8"
+            )
+        ).hexdigest()
+        operation_lock = (
+            self._operation_locks.setdefault(operation_id, asyncio.Lock())
+            if operation_id
+            else None
+        )
+        operation_claimed = False
+        operation_saving = False
         _start_time = time.monotonic()
         try:
             logger.debug("Executing tool: %r with args: %s", tool_name, arguments)
@@ -284,20 +323,77 @@ class ToolExecutor:
                 # 同步工具放到线程，避免阻塞 Agent Loop。
                 return await asyncio.to_thread(tool_func, **arguments)
 
-            if spec and spec.timeout_seconds:
-                result = await asyncio.wait_for(invoke(), spec.timeout_seconds)
+            async def invoke_once() -> ToolResult:
+                nonlocal operation_claimed, operation_saving
+                if self._operation_store is not None and operation_id is not None:
+                    claim = getattr(self._operation_store, "claim", None)
+                    if callable(claim):
+                        owner, cached = await claim(
+                            operation_id,
+                            tool_name=tool_name,
+                            arguments_hash=arguments_hash,
+                        )
+                        if not owner and cached is None:
+                            return ToolResult(
+                                tool_name=tool_name,
+                                success=False,
+                                error="相同 operation_id 的工具操作正在执行",
+                                error_kind="execution",
+                                retryable=True,
+                                operation_id=operation_id,
+                            )
+                        operation_claimed = owner
+                    else:
+                        cached = await self._operation_store.get(
+                            operation_id,
+                            tool_name=tool_name,
+                            arguments_hash=arguments_hash,
+                        )
+                    if cached is not None:
+                        cached.operation_id = operation_id
+                        return cached
+                if spec and spec.timeout_seconds:
+                    value = await asyncio.wait_for(invoke(), spec.timeout_seconds)
+                else:
+                    value = await invoke()
+                if isinstance(value, ToolResult):
+                    outcome = value
+                    outcome.tool_name = tool_name
+                else:
+                    outcome = ToolResult(tool_name=tool_name, success=True, value=value)
+                outcome.operation_id = operation_id
+                if self._operation_store is not None and operation_id is not None and outcome.success:
+                    operation_saving = True
+                    await self._operation_store.save(
+                        operation_id,
+                        outcome,
+                        tool_name=tool_name,
+                        arguments_hash=arguments_hash,
+                    )
+                    operation_saving = False
+                elif operation_claimed:
+                    release = getattr(self._operation_store, "release", None)
+                    if callable(release):
+                        await release(operation_id or "")
+                    operation_claimed = False
+                return outcome
+
+            if operation_lock is None:
+                outcome = await invoke_once()
             else:
-                result = await invoke()
+                async with operation_lock:
+                    outcome = await invoke_once()
 
             self._record_usage(tool_name, time.monotonic() - _start_time, success=True)
-            if isinstance(result, ToolResult):
-                result.tool_name = tool_name
-                if not result.success and not result.error_kind:
-                    result.error_kind = "execution"
-                return result
-            return ToolResult(tool_name=tool_name, success=True, value=result)
+            if not outcome.success and not outcome.error_kind:
+                outcome.error_kind = "execution"
+            return outcome
 
         except TimeoutError:
+            if operation_claimed and not operation_saving:
+                release = getattr(self._operation_store, "release", None)
+                if callable(release):
+                    await release(operation_id or "")
             self._record_usage(tool_name, time.monotonic() - _start_time, success=False)
             logger.warning("Tool %r timed out", tool_name)
             return ToolResult(
@@ -308,6 +404,10 @@ class ToolExecutor:
                 retryable=True,
             )
         except Exception as exc:
+            if operation_claimed and not operation_saving:
+                release = getattr(self._operation_store, "release", None)
+                if callable(release):
+                    await release(operation_id or "")
             self._record_usage(tool_name, time.monotonic() - _start_time, success=False)
             logger.warning("Tool %r raised exception: %s", tool_name, exc, exc_info=True)
             return ToolResult(
@@ -375,7 +475,11 @@ class ToolExecutor:
             工具执行结果列表（与 tool_calls 顺序对应）。
         """
         async def _limited_execute(call: dict[str, Any]) -> str:
-            return await self.execute(call["name"], call.get("args", {}))
+            return await self.execute(
+                call["name"],
+                call.get("args", {}),
+                operation_id=call.get("operation_id"),
+            )
 
         tasks = [_limited_execute(tc) for tc in tool_calls]
         return await asyncio.gather(*tasks)

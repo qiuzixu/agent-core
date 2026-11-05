@@ -7,6 +7,7 @@ create / claim / complete / fail / 租约续期与僵尸回收。
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import Any
 
 from agent_core.tasks.models import AgentTask
 
@@ -49,6 +50,7 @@ class AgentTaskStore(ABC):
         worker_id: str,
         error: str,
         retry_delay_seconds: float = 5.0,
+        fencing_token: int | None = None,
     ) -> AgentTask | None:
         """传输层失败后将任务回退到 retry 调度。"""
 
@@ -59,6 +61,7 @@ class AgentTaskStore(ABC):
         *,
         worker_id: str,
         lease_seconds: float = 30.0,
+        fencing_token: int | None = None,
     ) -> AgentTask | None: ...
 
     @abstractmethod
@@ -84,6 +87,7 @@ class AgentTaskStore(ABC):
         *,
         worker_id: str,
         result: dict[str, Any] | None,
+        fencing_token: int | None = None,
     ) -> AgentTask | None: ...
 
     @abstractmethod
@@ -94,6 +98,7 @@ class AgentTaskStore(ABC):
         worker_id: str,
         error: str,
         retry_delay_seconds: float = 5.0,
+        fencing_token: int | None = None,
     ) -> AgentTask | None:
         """递增重试计数；还有配额则进入 waiting_retry，否则标记失败。"""
 
@@ -104,6 +109,7 @@ class AgentTaskStore(ABC):
         *,
         worker_id: str,
         error: str,
+        fencing_token: int | None = None,
     ) -> AgentTask | None: ...
 
     @abstractmethod

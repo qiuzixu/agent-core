@@ -8,16 +8,17 @@
 | API | 作用 |
 | --- | --- |
 | `ReActAgent` | 普通和流式 ReAct Agent Loop |
-| `AgentRuntime` | Run 生命周期、事件、恢复、取消、租约和访问检查 |
+| `AgentRuntime` | Run 生命周期、事件、恢复、取消、租约和访问检查；`drain_event_outbox()` 可主动重试未确认事件 |
 | `AgentMode` | ReAct、Plan-Execute、Supervisor、Reflexion、Swarm 模式标识 |
 | `AgentOutput` / `SupportsRun` / `answer_text` | 高级模式的统一执行结果协议和文本归一化 |
-| `PlanExecuteAgent` | 计划生成、依赖排序、步骤执行和最终总结 |
+| `PlanExecuteAgent` | 计划生成、依赖排序、可选依赖层并行、步骤执行和最终总结 |
 | `runtime.SupervisorAgent` / `Worker` | 轻量 Worker 路由、重复路由保护和最终汇总 |
 | `ReflexionAgent` | Critic 评审、修订和最终答案复审 |
 | `SwarmAgent` / `SwarmWorker` | 白名单 handoff、历史 transcript 和重复边保护 |
 | `RunContext` / `RunEvent` / `RunStatus` | 运行状态和值对象 |
 | `RuntimeRun` | 后台运行的上下文和进程内任务句柄 |
-| `MemoryRunStore` / `MemoryEventSink` | 测试用运行与事件实现 |
+| `MemoryRunStore` / `MemoryEventSink` / `RetryingEventSink` | 测试用运行、事件实现和带超时退避的事件发布包装 |
+| `EventOutbox` / `MemoryEventOutbox` / `SqliteEventOutbox` | 事件先落库、发布成功后确认的可靠投递协议与默认实现 |
 
 ## 消息与模型
 
@@ -42,8 +43,9 @@
 
 | API | 作用 |
 | --- | --- |
-| `ToolSpec` / `ToolRegistry` / `ToolExecutor` | 工具声明、注册和执行 |
-| `ToolResult` | 标准化执行结果 |
+| `ToolSpec` / `ToolRegistry` / `ToolExecutor` | 工具声明、注册和执行；非幂等工具支持稳定操作号和结果去重 |
+| `ToolResult` | 标准化执行结果，包含可恢复的 `operation_id` |
+| `ToolOperationStore` / `MemoryToolOperationStore` / `SqliteToolOperationStore` | 非幂等工具操作结果缓存协议与默认实现 |
 | `McpToolCaller` / `McpToolClient` | MCP 客户端协议与 stdio 实现 |
 | `SkillLoader` / `SkillRegistry` | Skill 校验、加载和激活 |
 | `SkillSpec` / `SkillToolSpec` / `SkillActivation` | Skill 值对象 |
@@ -71,6 +73,8 @@
 
 Callback 只观察事件；需要修改或停止执行时使用 Middleware。`AgentRuntime` 支持直接传入
 `callbacks`，也可以注入预先组装的 `callback_manager`。
+`CallbackManager` 可配置单个 handler 的超时；`AgentRuntime` 可配置 `max_event_history`，事件序号在
+历史裁剪后仍保持递增。
 
 ## 文档与检索
 

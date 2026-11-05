@@ -25,10 +25,12 @@ from agent_core.ports.platform import (
 from agent_core.ports.storage import (
     ApprovalStore,
     ContextStore,
+    EventOutbox,
     EventSink,
     RecoverableRunStore,
     RunStore,
     SessionStore,
+    ToolOperationStore,
     WorkflowExecutionData,
     WorkflowStore,
 )
@@ -43,6 +45,7 @@ __all__ = [
     "DeadLetterSink",
     "Direction",
     "EventSink",
+    "EventOutbox",
     "GraphEntity",
     "GraphRelation",
     "GraphSubgraph",
@@ -57,6 +60,7 @@ __all__ = [
     "RunStore",
     "SessionStore",
     "ToolCacheStore",
+    "ToolOperationStore",
     "ServiceInstance",
     "ServiceRegistry",
     "WorkflowExecutionData",

@@ -54,6 +54,12 @@ from agent_core.storage.model_selection import (
     SqliteModelSelectionStore,
     create_model_selection_store,
 )
+from agent_core.storage.outbox import (
+    MemoryEventOutbox,
+    MemoryToolOperationStore,
+    SqliteEventOutbox,
+    SqliteToolOperationStore,
+)
 from agent_core.storage.runtime import (
     MemoryRuntimeStore,
     PostgresRuntimeStore,
@@ -93,6 +99,8 @@ __all__ = [
     "MemoryRuntimeStore",
     "MemorySessionStore",
     "MemoryWorkflowExecutionStore",
+    "MemoryEventOutbox",
+    "MemoryToolOperationStore",
     "ModelSelection",
     "ModelSelectionScope",
     "ModelSelectionStore",
@@ -118,6 +126,8 @@ __all__ = [
     "SqliteRuntimeStore",
     "SqliteSessionStore",
     "SqliteWorkflowExecutionStore",
+    "SqliteEventOutbox",
+    "SqliteToolOperationStore",
     "WorkflowConcurrencyError",
     "WorkflowExecution",
     "WorkflowExecutionStore",

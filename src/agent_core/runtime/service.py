@@ -17,7 +17,7 @@ from typing import Any, Protocol
 
 from agent_core.access import AccessContext, enforce_access
 from agent_core.callbacks import CallbackHandler, CallbackManager
-from agent_core.ports import EventSink, RecoverableRunStore, RunStore
+from agent_core.ports import EventOutbox, EventSink, RecoverableRunStore, RunStore
 from agent_core.protocol.runtime import RunContext, RunEvent, RunStatus
 from agent_core.runtime.modes import AgentMode, AgentOutput, SupportsRun, answer_text
 from agent_core.runtime.react import ReActAgent
@@ -57,6 +57,40 @@ class MemoryEventSink(EventSink):
         self.events.append(event)
 
 
+class RetryingEventSink(EventSink):
+    """为进程外事件发布增加超时、退避和有限重试。"""
+
+    def __init__(
+        self,
+        sink: EventSink,
+        *,
+        max_retries: int = 3,
+        timeout_seconds: float = 5.0,
+        backoff_seconds: float = 0.2,
+    ) -> None:
+        if max_retries < 0:
+            raise ValueError("max_retries 不能小于 0")
+        if timeout_seconds <= 0 or backoff_seconds < 0:
+            raise ValueError("事件发布超时必须大于 0，退避时间不能小于 0")
+        self._sink = sink
+        self._max_retries = int(max_retries)
+        self._timeout_seconds = float(timeout_seconds)
+        self._backoff_seconds = float(backoff_seconds)
+
+    async def publish(self, event: RunEvent) -> None:
+        """发布事件；所有重试失败后保留最后一个异常。"""
+        for attempt in range(self._max_retries + 1):
+            try:
+                await asyncio.wait_for(self._sink.publish(event), self._timeout_seconds)
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                if attempt >= self._max_retries:
+                    raise
+                await asyncio.sleep(self._backoff_seconds * (2**attempt))
+
+
 @dataclass
 class RuntimeRun:
     """运行句柄，供需要后台任务的 API 层使用。"""
@@ -74,6 +108,7 @@ class AgentRuntime:
         *,
         run_store: RunStore | None = None,
         event_sink: EventSink | None = None,
+        event_outbox: EventOutbox | None = None,
         callbacks: Sequence[CallbackHandler] | None = None,
         callback_manager: CallbackManager | None = None,
         lease_store: RunLeaseStore | None = None,
@@ -82,6 +117,8 @@ class AgentRuntime:
         heartbeat_seconds: float = 10.0,
         require_access: bool = False,
         run_executor: RunExecutor | None = None,
+        max_event_history: int | None = 2000,
+        callback_timeout_seconds: float | None = None,
     ) -> None:
         # 启动前校验生命周期参数：心跳过慢会导致租约在业务完成前被其他 Worker 抢走。
         if lease_seconds <= 0:
@@ -91,6 +128,8 @@ class AgentRuntime:
         # callbacks 是便捷注入；callback_manager 是显式接管。两者只允许选择一种。
         if callbacks is not None and callback_manager is not None:
             raise ValueError("callbacks 和 callback_manager 不能同时传入")
+        if callback_manager is not None and callback_timeout_seconds is not None:
+            raise ValueError("callback_manager 已接管时不能再传 callback_timeout_seconds")
         self._agent = agent
         # 未注入持久化时使用内存实现，适合测试和最小开发环境。
         store = run_store or MemoryRunStore()
@@ -98,7 +137,11 @@ class AgentRuntime:
         # 后台重试调度器依赖可选扩展协议；这里在构造时显式判定能力。
         self._recoverable_run_store = store if isinstance(store, RecoverableRunStore) else None
         self._event_sink = event_sink
-        self._callback_manager = callback_manager or CallbackManager(callbacks)
+        self._event_outbox = event_outbox
+        self._callback_manager = callback_manager or CallbackManager(
+            callbacks,
+            handler_timeout_seconds=callback_timeout_seconds,
+        )
         self._lease_store = lease_store
         self._worker_id = worker_id or f"worker-{uuid.uuid4()}"
         self._lease_seconds = lease_seconds
@@ -106,9 +149,14 @@ class AgentRuntime:
         self._require_access = require_access
         # 自定义执行器可以替换默认 agent.run，但状态/事件/持久化仍由 Runtime 管理。
         self._run_executor = run_executor
+        self._max_event_history = (
+            None if max_event_history is None else max(100, int(max_event_history))
+        )
         # _tasks 是进程内句柄；进程重启后不能恢复，需要通过 checkpoint + resume 恢复。
         self._tasks: dict[str, asyncio.Task[str]] = {}
         self._event_cursors: dict[str, int] = {}
+        self._callback_cursors: dict[str, int] = {}
+        self._outbox_event_ids: dict[str, set[str]] = {}
         self._lock = asyncio.Lock()
 
     async def start(
@@ -679,24 +727,64 @@ class AgentRuntime:
     async def _persist(self, context: RunContext) -> None:
         # 保存状态和发布事件放在同一个运行时入口；Agent 只负责产出事件，不直接触达存储。
         await self._run_store.save_run(context)
+        if self._event_outbox is not None:
+            known = self._outbox_event_ids.setdefault(context.run_id, set())
+            for event in context.events:
+                if event.event_id in known:
+                    continue
+                await self._event_outbox.append(event)
+                known.add(event.event_id)
         await self._publish_pending_events(context)
+        if self._max_event_history is not None and len(context.events) > self._max_event_history:
+            context.events = context.events[-self._max_event_history :]
+            self._event_cursors[context.run_id] = len(context.events)
+            self._callback_cursors[context.run_id] = len(context.events)
+            await self._run_store.save_run(context)
 
     async def _publish_pending_events(self, context: RunContext) -> None:
         """把尚未发布的事件依次交给进程内 Callback 和进程外 EventSink。"""
 
-        # cursor 记录“已发布到多少号事件”，保证重试/恢复时不重复发送。
-        cursor = self._event_cursors.get(context.run_id, 0)
-        for event in context.events[cursor:]:
+        # Callback 与进程外 Sink 使用不同游标：Sink 失败时，Callback 不重复消费。
+        callback_cursor = self._callback_cursors.get(context.run_id, 0)
+        for event in context.events[callback_cursor:]:
             await self._callback_manager.dispatch(event)
-            if self._event_sink is not None:
-                try:
-                    await self._event_sink.publish(event)
-                except Exception:
-                    # 事件订阅者故障不能覆盖 Agent 的最终结果。
-                    logger.exception("发布 Agent 运行事件失败：%s", event.event_type)
-        self._event_cursors[context.run_id] = len(context.events)
+        self._callback_cursors[context.run_id] = len(context.events)
+
+        if self._event_sink is None:
+            return
+        if self._event_outbox is not None:
+            # 未确认的 outbox 记录会在下一次持久化或外部 drain 时重试。
+            await self.drain_event_outbox(context.run_id)
+            return
+
+        # 未注入 outbox 时仍保持内存重试语义；只有成功发布后才推进游标。
+        cursor = self._event_cursors.get(context.run_id, 0)
+        for index, event in enumerate(context.events[cursor:], start=cursor):
+            try:
+                await self._event_sink.publish(event)
+            except Exception:
+                logger.exception("发布 Agent 运行事件失败：%s", event.event_type)
+                break
+            self._event_cursors[context.run_id] = index + 1
+
+    async def drain_event_outbox(self, run_id: str, *, limit: int = 100) -> int:
+        """主动重试指定 Run 的未确认事件，返回本次确认数量。"""
+        if self._event_outbox is None or self._event_sink is None:
+            return 0
+        delivered = 0
+        for event in await self._event_outbox.pending(run_id, limit=limit):
+            try:
+                await self._event_sink.publish(event)
+            except Exception:
+                logger.exception("重试发布 Agent 运行事件失败：%s", event.event_type)
+                break
+            await self._event_outbox.mark_published(event.event_id)
+            delivered += 1
+        return delivered
 
     def _cleanup_run(self, run_id: str) -> None:
         """后台任务完全结束后释放进程内句柄和事件游标。"""
         self._tasks.pop(run_id, None)
         self._event_cursors.pop(run_id, None)
+        self._callback_cursors.pop(run_id, None)
+        self._outbox_event_ids.pop(run_id, None)

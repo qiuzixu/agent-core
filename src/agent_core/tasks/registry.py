@@ -16,6 +16,10 @@ class TaskTimeoutError(RuntimeError):
     """任务超出其意图对应的执行超时。"""
 
 
+class TaskLeaseLostError(RuntimeError):
+    """任务执行期间失去租约，当前 Worker 不得提交结果。"""
+
+
 class UnknownTaskError(PermanentTaskError):
     """Worker 收到了不支持的任务意图。"""
 
@@ -41,6 +45,7 @@ __all__ = [
     "PermanentTaskError",
     "TaskHandler",
     "TaskTimeoutError",
+    "TaskLeaseLostError",
     "UnknownTaskError",
     "make_task_router",
 ]

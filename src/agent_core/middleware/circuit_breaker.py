@@ -18,6 +18,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Any
 
 from agent_core.middleware.base import (
     Middleware,

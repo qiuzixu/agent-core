@@ -60,6 +60,7 @@ class MemoryAgentTaskStore(AgentTaskStore):
                 return None
             task.status = "running"
             task.worker_id = worker_id
+            task.fencing_token += 1
             task.error = None
             task.updated_at = _now()
             task.lease_expires_at = (
@@ -73,10 +74,13 @@ class MemoryAgentTaskStore(AgentTaskStore):
         *,
         worker_id: str,
         lease_seconds: float = 30.0,
+        fencing_token: int | None = None,
     ) -> AgentTask | None:
         async with self._lock:
             task = self._tasks.get(task_id)
             if task is None or task.status != "running" or task.worker_id != worker_id:
+                return None
+            if fencing_token is not None and task.fencing_token != fencing_token:
                 return None
             task.lease_expires_at = (
                 datetime.now(UTC) + timedelta(seconds=max(0.1, lease_seconds))
@@ -111,7 +115,7 @@ class MemoryAgentTaskStore(AgentTaskStore):
         async with self._lock:
             now = datetime.now(UTC)
             reclaimed: list[AgentTask] = []
-            for task in self._tasks.values():
+            for task in sorted(self._tasks.values(), key=lambda item: item.updated_at):
                 if len(reclaimed) >= limit:
                     break
                 expired = task.status == "running" and (
@@ -133,10 +137,13 @@ class MemoryAgentTaskStore(AgentTaskStore):
         *,
         worker_id: str,
         result: dict[str, Any] | None,
+        fencing_token: int | None = None,
     ) -> AgentTask | None:
         async with self._lock:
             task = self._tasks.get(task_id)
             if task is None or task.status != "running" or task.worker_id != worker_id:
+                return None
+            if fencing_token is not None and task.fencing_token != fencing_token:
                 return None
             task.status = "completed"
             task.result = result
@@ -152,10 +159,13 @@ class MemoryAgentTaskStore(AgentTaskStore):
         worker_id: str,
         error: str,
         retry_delay_seconds: float = 5.0,
+        fencing_token: int | None = None,
     ) -> AgentTask | None:
         async with self._lock:
             task = self._tasks.get(task_id)
             if task is None or task.status != "running" or task.worker_id != worker_id:
+                return None
+            if fencing_token is not None and task.fencing_token != fencing_token:
                 return None
             task.retry_count += 1
             task.error = error
@@ -176,10 +186,13 @@ class MemoryAgentTaskStore(AgentTaskStore):
         *,
         worker_id: str,
         error: str,
+        fencing_token: int | None = None,
     ) -> AgentTask | None:
         async with self._lock:
             task = self._tasks.get(task_id)
-            if task is None:
+            if task is None or task.status != "running" or task.worker_id != worker_id:
+                return None
+            if fencing_token is not None and task.fencing_token != fencing_token:
                 return None
             task.status = "dead"
             task.error = error
@@ -249,10 +262,13 @@ class MemoryAgentTaskStore(AgentTaskStore):
         worker_id: str,
         error: str,
         retry_delay_seconds: float = 5.0,
+        fencing_token: int | None = None,
     ) -> AgentTask | None:
         async with self._lock:
             task = self._tasks.get(task_id)
             if task is None:
+                return None
+            if fencing_token is not None and task.fencing_token != fencing_token:
                 return None
             task.status = "waiting_retry"
             task.worker_id = worker_id

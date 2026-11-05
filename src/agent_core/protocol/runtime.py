@@ -195,6 +195,8 @@ class ToolResult:
     # 声明此结果直接返回给客户端（跳过 LLM 二次生成）。
     # 适用于解析原文直出等场景：LLM 只负责触发工具调用，不参与结果文本的生成。
     direct_to_client: bool = False
+    # 非幂等工具的稳定操作号；恢复或重试时由调用方复用。
+    operation_id: str | None = None
 
     def to_text(self) -> str:
         """转换成兼容旧 ReAct 消息的文本。"""
@@ -216,6 +218,7 @@ class ToolResult:
             "error_kind": self.error_kind,
             "retryable": self.retryable,
             "metadata": self.metadata,
+            "operation_id": self.operation_id,
             "direct_to_client": self.direct_to_client,
         }
 
@@ -229,6 +232,7 @@ class ToolResult:
             error_kind=value.get("error_kind", ""),
             retryable=bool(value.get("retryable", False)),
             metadata=dict(value.get("metadata") or {}),
+            operation_id=value.get("operation_id"),
             direct_to_client=bool(value.get("direct_to_client", False)),
         )
 
@@ -258,6 +262,8 @@ class RunContext:
     checkpoint: dict[str, Any] = field(default_factory=dict)
     checkpoint_callback: Any = field(default=None, repr=False, compare=False)
     events: list[RunEvent] = field(default_factory=list)
+    # 事件裁剪后仍保持全局递增的序号。
+    event_sequence: int = 0
 
     def __post_init__(self) -> None:
         """校验运行状态，避免非法状态进入存储或事件流。"""
@@ -285,7 +291,7 @@ class RunContext:
             event_type=event_type,
             run_id=self.run_id,
             thread_id=self.thread_id,
-            sequence=len(self.events),
+            sequence=self.event_sequence,
             payload=payload,
             parent_run_id=self.parent_run_id,
             component=inferred_component,
@@ -296,6 +302,7 @@ class RunContext:
             duration_ms=duration_ms,
         )
         self.events.append(event)
+        self.event_sequence += 1
         return event
 
     def to_dict(self) -> dict[str, Any]:
@@ -318,6 +325,7 @@ class RunContext:
             "metadata": self.metadata,
             "checkpoint": self.checkpoint,
             "events": [event.to_dict() for event in self.events],
+            "event_sequence": self.event_sequence,
         }
 
     @classmethod
@@ -349,4 +357,10 @@ class RunContext:
         context.events = [
             RunEvent.from_dict(item) for item in value.get("events", []) if isinstance(item, dict)
         ]
+        context.event_sequence = int(
+            value.get(
+                "event_sequence",
+                max((event.sequence for event in context.events), default=-1) + 1,
+            )
+        )
         return context

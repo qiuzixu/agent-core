@@ -159,3 +159,50 @@ class EventSink(Protocol):
     """运行事件发布协议，可接 SSE、WebSocket、日志或消息队列。"""
 
     async def publish(self, event: RunEvent) -> None: ...
+
+
+class EventOutbox(Protocol):
+    """运行事件可靠投递协议。
+
+    事件先写入 outbox，再交给进程外 EventSink；只有发布成功后才能确认，
+    这样消息总线短暂不可用时不会因为运行状态已经落库而丢事件。
+    """
+
+    async def append(self, event: RunEvent) -> None: ...
+
+    async def pending(self, run_id: str, *, limit: int = 100) -> list[RunEvent]: ...
+
+    async def mark_published(self, event_id: str) -> None: ...
+
+
+class ToolOperationStore(Protocol):
+    """非幂等工具的操作结果去重协议。"""
+
+    async def claim(
+        self,
+        operation_id: str,
+        *,
+        tool_name: str,
+        arguments_hash: str,
+    ) -> tuple[bool, ToolResult | None]:
+        """原子认领操作；返回 (当前调用方是否获得执行权, 已有结果)。"""
+
+    async def get(
+        self,
+        operation_id: str,
+        *,
+        tool_name: str,
+        arguments_hash: str,
+    ) -> ToolResult | None: ...
+
+    async def save(
+        self,
+        operation_id: str,
+        result: ToolResult,
+        *,
+        tool_name: str,
+        arguments_hash: str,
+    ) -> None: ...
+
+    async def release(self, operation_id: str) -> None:
+        """执行失败时释放未完成的操作认领。"""

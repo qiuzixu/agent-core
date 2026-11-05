@@ -7,7 +7,7 @@ from typing import Any
 
 from agent_core.model import ModelAdapter, chat_structured, StructuredOutputSpec
 from agent_core.protocol.messages import system_message, user_message
-from agent_core.runtime.modes import AgentMode, SupportsRun, answer_text
+from agent_core.runtime.modes import AgentMode, SupportsRun, answer_text, bounded_text
 
 
 @dataclass(frozen=True)
@@ -89,6 +89,7 @@ class SupervisorAgent:
         workers: list[Worker],
         *,
         max_rounds: int = 4,
+        max_transcript_chars: int = 12000,
     ) -> None:
         """创建 Supervisor Agent。"""
         if not workers:
@@ -99,6 +100,7 @@ class SupervisorAgent:
         self._llm = llm
         self._workers = {worker.name: worker for worker in workers}
         self._max_rounds = max(1, int(max_rounds))
+        self._max_transcript_chars = max(256, int(max_transcript_chars))
 
     async def run(
         self,
@@ -125,7 +127,7 @@ class SupervisorAgent:
                 ),
                 user_message(
                     f"用户目标：{user_input}\n\n可用 Worker：\n{worker_text}\n\n"
-                    f"已收集信息：\n{transcript or '<empty>'}{memory_hint}"
+                    f"已收集信息：\n{bounded_text(transcript, max_chars=self._max_transcript_chars) or '<empty>'}{memory_hint}"
                 ),
             ]
             spec = StructuredOutputSpec(
@@ -140,7 +142,7 @@ class SupervisorAgent:
                     system_message("你是 Multi-Agent 总控。请基于 Worker 结果合成最终答案。"),
                     user_message(
                         f"用户目标：{user_input}\n\n"
-                        f"{memory_hint}已收集信息：\n{transcript or '<empty>'}"
+                        f"{memory_hint}已收集信息：\n{bounded_text(transcript, max_chars=self._max_transcript_chars) or '<empty>'}"
                     ),
                 ]
                 final = await self._llm.chat(final_messages)
@@ -176,7 +178,10 @@ class SupervisorAgent:
                 )
                 executed = replace(route, output=output)
                 routes.append(executed)
-                transcript += f"\n[{worker.name}] {output}"
+                transcript = bounded_text(
+                    f"{transcript}\n[{worker.name}] {output}",
+                    max_chars=self._max_transcript_chars,
+                )
             except Exception as exc:
                 routes.append(replace(route, status="failed", output=str(exc)))
                 raise

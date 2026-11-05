@@ -36,6 +36,14 @@ def answer_text(value: AgentOutput) -> str:
     raise TypeError("Agent 执行结果必须是 str 或包含 answer 字段的结果对象")
 
 
+def bounded_text(value: str, *, max_chars: int = 12000) -> str:
+    """限制编排上下文长度，优先保留最新结果。"""
+    limit = max(256, int(max_chars))
+    if len(value) <= limit:
+        return value
+    return "[前序结果已压缩]\n" + value[-limit:]
+
+
 @runtime_checkable
 class SupportsRun(Protocol):
     """所有高级模式使用的最小执行器协议。"""
@@ -58,4 +66,5 @@ __all__ = [
     "SupportsRun",
     "SupportsAnswer",
     "answer_text",
+    "bounded_text",
 ]

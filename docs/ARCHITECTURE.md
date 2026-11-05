@@ -431,14 +431,15 @@ TaskQueue.publish() ────────────► RabbitMQ / Memory
   ▼
 AgentTaskWorker._process()
   │
-  ├── TaskStore.claim()  ←── 原子抢占（lease + attempt_id）
+  ├── TaskStore.claim()  ←── 原子抢占（lease + attempt_id + fencing_token）
   ├── handler(envelope)  ←── 业务逻辑（上层注册）
   │     ├── 成功 → TaskStore.complete()
   │     ├── 临时失败 → TaskStore.fail() → 重试计数+1
   │     └── 永久失败 → TaskStore.mark_dead() → DLQ
   │
-  └── 心跳循环：renew_leases() 每 10s
-       └── 租约过期 → reclaim_stale() → waiting_retry
+  └── 心跳循环：heartbeat(task_id, fencing_token) 每 10s
+       ├── 租约丢失 → 取消旧 handler，拒绝迟到写入
+       └── 租约过期 → reclaim_stale(limit) → waiting_retry
 
 AgentTaskRetryScheduler（可选）
   └── 定时扫描 waiting_retry → reschedule → 重新入队
@@ -526,3 +527,5 @@ AgentTaskRetryScheduler（可选）
 | 2026-11-02 | 序列化白名单扩展与安全校验 | serialization/registry.py 新增 GraphEntity / GraphRelation / GraphSubgraph / ModelSelection / AlertPayload / DeadLetterRecord codec；Blob checksum 严格校验、AccessContext 反序列化校验收紧。未改变模块边界和依赖方向，无需修改 Mermaid 图。 |
 | 2026-11-03 | Runtime 与 Workflow 可靠性修复 | 修复存储生命周期钩子调用、工作流 retryable/幂等冲突处理、流式 Run 幂等、HITL waiting_approval 状态持久化和统一工具并发限制；同时收紧图谱端口返回类型并清理重复检索协议。运行链路和模块依赖方向未改变，无需修改 Mermaid 图。 |
 | 2026-11-03 | Agent 高级模式统一协议 | 新增 `AgentOutput` / `SupportsAnswer` / `answer_text`，让 Plan-Execute、Supervisor、Reflexion、Swarm 可以安全嵌套；高级模式补齐记忆上下文、依赖校验、最终复审和移交历史，`RunExecutor` 统一归一化结果。同步更新 Runtime 执行引擎关系图。 |
+| 2026-11-04 | Worker 与运行时可靠性升级 | Task Store 增加 fencing token，Worker 按任务监控心跳并在失租时取消 handler；过期回收按 limit 原子选择，PostgreSQL 幂等创建与其他后端对齐。RunContext 增加全局事件序号和历史裁剪，CallbackManager 支持 handler 超时，新增 RetryingEventSink；Plan-Execute 支持依赖层并行配置，三种高级模式增加上下文长度限制。模块边界和依赖方向不变，无需新增 Mermaid 节点。 |
+| 2026-11-04 | 可靠投递与副作用去重 | 新增 `EventOutbox` / Memory/SQLite 实现，Runtime 先记录事件、Sink 成功后确认；新增 `ToolOperationStore` 与稳定 `operation_id`，ReAct 恢复时避免非幂等工具重复执行；PostgreSQL 任务初始化增加 advisory lock 与 schema version。均属于原有 Runtime/Tools/Storage 端口增强，模块边界和依赖方向不变。 |

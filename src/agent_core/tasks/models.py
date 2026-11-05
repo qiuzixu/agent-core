@@ -49,6 +49,8 @@ class AgentTask:
     next_retry_at: str | None = None
     workflow_execution_id: str | None = None
     attempt_id: str | None = None
+    # 每次获得执行权都会递增；结果写入必须携带相同 token，防止旧 Worker 覆盖新结果。
+    fencing_token: int = 0
     created_at: str = field(default_factory=_now)
     updated_at: str = field(default_factory=_now)
     lease_expires_at: str | None = None
@@ -83,7 +85,9 @@ def _task_from_row(value: Any) -> AgentTask:
         updated_at,
         lease_expires_at,
         attempt_id,
+        *tail,
     ) = value
+    fencing_token = int(tail[0] or 0) if tail else 0
     return AgentTask(
         task_id=str(task_id),
         intent=str(intent),
@@ -109,6 +113,7 @@ def _task_from_row(value: Any) -> AgentTask:
             else lease_expires_at
         ),
         attempt_id=attempt_id,
+        fencing_token=fencing_token,
     )
 
 

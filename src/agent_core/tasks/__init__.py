@@ -17,6 +17,7 @@ from agent_core.tasks.registry import (
     PermanentTaskError,
     TaskHandler,
     TaskTimeoutError,
+    TaskLeaseLostError,
     UnknownTaskError,
     make_task_router,
 )
@@ -47,6 +48,7 @@ __all__ = [
     "TaskQueue",
     "TaskHandler",
     "TaskTimeoutError",
+    "TaskLeaseLostError",
     "UnknownTaskError",
     "access_from_envelope",
     "create_agent_task_store",

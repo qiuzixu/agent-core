@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
 from agent_core.model import ModelAdapter, chat_structured, StructuredOutputSpec
 from agent_core.protocol.messages import system_message, user_message
-from agent_core.runtime.modes import AgentMode, SupportsRun, answer_text
+from agent_core.runtime.modes import AgentMode, SupportsRun, answer_text, bounded_text
 
 
 @dataclass(frozen=True)
@@ -150,6 +151,8 @@ class PlanExecuteAgent:
         max_steps: int = 5,
         continue_on_step_error: bool = False,
         executors: Mapping[str, SupportsRun] | None = None,
+        max_context_chars: int = 12000,
+        max_parallel_steps: int = 1,
     ) -> None:
         """创建 Plan-and-Execute Agent。"""
         self._llm = llm
@@ -157,6 +160,8 @@ class PlanExecuteAgent:
         self._max_steps = max(1, int(max_steps))
         self._continue_on_step_error = bool(continue_on_step_error)
         self._executors = dict(executors or {})
+        self._max_context_chars = max(256, int(max_context_chars))
+        self._max_parallel_steps = max(1, int(max_parallel_steps))
 
     async def run(
         self,
@@ -199,50 +204,16 @@ class PlanExecuteAgent:
         completed_ids: set[str] = set()
         failed_ids: set[str] = set()
         pending_steps = list(plan.steps)
-        while pending_steps:
-            blocked = next(
-                (
-                    step
-                    for step in pending_steps
-                    if any(dependency in failed_ids for dependency in step.depends_on)
-                ),
-                None,
-            )
-            if blocked is not None:
-                pending_steps.remove(blocked)
-                failed_ids.add(blocked.id)
-                step_results.append(
-                    PlanStepResult(
-                        step_id=blocked.id,
-                        title=blocked.title,
-                        instruction=blocked.instruction,
-                        output="",
-                        status="blocked",
-                        error="前置步骤失败，未执行该步骤",
-                    )
-                )
-                if not self._continue_on_step_error:
-                    raise RuntimeError(f"步骤 {blocked.id} 的前置步骤失败")
-                continue
 
-            step = next(
-                (
-                    candidate
-                    for candidate in pending_steps
-                    if set(candidate.depends_on).issubset(completed_ids)
-                ),
-                None,
-            )
-            if step is None:
-                raise ValueError("执行计划存在无法满足的步骤依赖")
-            pending_steps.remove(step)
-            index = len(step_results) + 1
+        async def execute_step(step: PlanStep, index: int) -> PlanStepResult:
             instruction = step.instruction
             if previous_context:
-                instruction = f"{instruction}\n\n已完成步骤的结果摘要：\n{previous_context}"
+                instruction = (
+                    f"{instruction}\n\n已完成步骤的结果摘要：\n"
+                    f"{bounded_text(previous_context, max_chars=self._max_context_chars)}"
+                )
             if step.acceptance:
                 instruction = f"{instruction}\n\n完成标准：{step.acceptance}"
-
             step_metadata: dict[str, Any] = {
                 **(run_metadata or {}),
                 "agent_mode": AgentMode.PLAN_EXECUTE.value,
@@ -264,17 +235,14 @@ class PlanExecuteAgent:
                         run_metadata=step_metadata,
                     )
                 )
-                result = PlanStepResult(
+                return PlanStepResult(
                     step_id=step.id,
                     title=step.title,
                     instruction=step.instruction,
                     output=output,
                 )
-                step_results.append(result)
-                completed_ids.add(step.id)
-                previous_context += f"\n[{step.title}] {output}"
             except Exception as exc:
-                result = PlanStepResult(
+                return PlanStepResult(
                     step_id=step.id,
                     title=step.title,
                     instruction=step.instruction,
@@ -282,10 +250,54 @@ class PlanExecuteAgent:
                     status="failed",
                     error=str(exc),
                 )
-                step_results.append(result)
-                failed_ids.add(step.id)
+
+        while pending_steps:
+            blocked_steps = [
+                step
+                for step in pending_steps
+                if any(dependency in failed_ids for dependency in step.depends_on)
+            ]
+            if blocked_steps:
+                for blocked in blocked_steps:
+                    pending_steps.remove(blocked)
+                    failed_ids.add(blocked.id)
+                    step_results.append(
+                        PlanStepResult(
+                            step_id=blocked.id,
+                            title=blocked.title,
+                            instruction=blocked.instruction,
+                            output="",
+                            status="blocked",
+                            error="前置步骤失败，未执行该步骤",
+                        )
+                    )
                 if not self._continue_on_step_error:
-                    raise
+                    raise RuntimeError(f"步骤 {blocked_steps[0].id} 的前置步骤失败")
+                continue
+
+            ready = [
+                step for step in pending_steps if set(step.depends_on).issubset(completed_ids)
+            ]
+            if not ready:
+                raise ValueError("执行计划存在无法满足的步骤依赖")
+            batch = ready[: self._max_parallel_steps]
+            for step in batch:
+                pending_steps.remove(step)
+            batch_results = await asyncio.gather(
+                *(execute_step(step, len(step_results) + offset + 1) for offset, step in enumerate(batch))
+            )
+            for step, result in zip(batch, batch_results, strict=True):
+                step_results.append(result)
+                if result.status == "completed":
+                    completed_ids.add(step.id)
+                    previous_context = bounded_text(
+                        f"{previous_context}\n[{step.title}] {result.output}",
+                        max_chars=self._max_context_chars,
+                    )
+                else:
+                    failed_ids.add(step.id)
+                    if not self._continue_on_step_error:
+                        raise RuntimeError(f"步骤 {step.id} 执行失败：{result.error}")
 
         memory_final_hint = f"相关会话记忆：\n{memory_context}\n\n" if memory_context else ""
         final_messages = [
