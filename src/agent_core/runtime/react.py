@@ -1,4 +1,4 @@
-﻿"""手写 ReAct 循环（tool-calling agent）。
+"""手写 ReAct 循环（tool-calling agent）。
 
 执行模型：
 1. LLM 收到用户问题 + 工具描述
@@ -117,6 +117,18 @@ class _LoopEvent:
     text_delta: str = ""
     answer: str | None = None
 
+
+
+class _SafeFormatDict(dict):
+    """str.format_map 安全字典：未知占位符原样保留，不抛 KeyError。
+
+    提示词模板可能包含旧版占位符（如 {history}）或用户自定义文本中的
+    花括号，直接 .format() 会崩溃。此字典对缺失键返回 "{key}" 原文，
+    保证 /context/usage 和对话链路对模板容错。
+    """
+
+    def __missing__(self, key: str) -> str:
+        return "{" + key + "}"
 
 class ReActAgent:
     """手写 ReAct 循环的 tool-calling agent。"""
@@ -653,9 +665,8 @@ class ReActAgent:
         msgs: list[Message] = [system_message(self._system_prompt)]
         if memory_context:
             if self._memory_context_template:
-                user_content = self._memory_context_template.format(
-                    memory_context=memory_context,
-                    user_input=user_input,
+                user_content = self._memory_context_template.format_map(
+                    _SafeFormatDict(memory_context=memory_context, history=memory_context, user_input=user_input)
                 )
             else:
                 user_content = f"会话相关记忆：\n{memory_context}\n\n用户问题：{user_input}"
@@ -1028,8 +1039,8 @@ class ReActAgent:
                 await asyncio.gather(*tasks, return_exceptions=True)
 
         def priority_of(index: int, tool_call: dict[str, Any]) -> int:
-            spec_for = getattr(self._tool_executor, "spec_for", None)
-            spec = spec_for(tool_call["name"]) if callable(spec_for) else None
+            # tool_executor 类型为 ToolExecutor，spec_for 恒存在，无需 getattr 防御。
+            spec = self._tool_executor.spec_for(tool_call["name"])
             return spec.priority if spec is not None else 100
 
         # 先按工具 spec.priority 分层；数字小的优先级更高。
