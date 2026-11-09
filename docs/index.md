@@ -10,6 +10,7 @@ Zero Agent Core 是一个使用 Python 从头实现的 Agent 运行时内核。�
   <a href="./guide/core-concepts/">核心概念<br><small>理解运行时、工具与存储边界</small></a>
   <a href="./ARCHITECTURE/">系统架构<br><small>Core 内部模块和应用调用关系</small></a>
   <a href="./CAPABILITIES/">能力清单<br><small>核对已经实现和不属于 Core 的功能</small></a>
+  <a href="./AGENT_DEVELOPMENT_KNOWLEDGE_SYSTEM/">Agent 开发知识体系<br><small>能力地图、系统架构与面试速查</small></a>
 </div>
 
 ## 适合什么场景
