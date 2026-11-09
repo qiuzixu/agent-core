@@ -438,7 +438,7 @@ Checkpoint、状态机和 Middleware。上层 API 可以据此统一映射 HTTP 
 
 | 能力 | agent-core 模块 | vanilla 接线 | 说明 |
 |---|---|---|---|
-| 通用图谱存储 | ports/knowledge_graph.py、storage/knowledge_graph.py | core/knowledge_graph_service.py | 提供 GraphEntity、GraphRelation、KnowledgeGraphStore 协议与 InMemoryKnowledgeGraphStore；不引入 Neo4j，业务实体类型和关系投影仍留在应用层。 |
+| 通用图谱存储 | ports/knowledge_graph.py、storage/knowledge_graph.py | core/knowledge_graph_service.py | 提供 GraphEntity、GraphRelation、KnowledgeGraphStore 协议与 InMemory / SQLite / PostgreSQL 实现；不引入 Neo4j，业务实体类型和关系投影仍留在应用层。 |
 
 ## 2026-10-26 文档增量同步
 
@@ -532,3 +532,13 @@ Checkpoint、状态机和 Middleware。上层 API 可以据此统一映射 HTTP 
 | 工具结果去重 | `ports/storage.py`、`storage/outbox.py` | `ToolOperationStore` 提供 Memory/SQLite 实现；同一操作号和参数只执行一次，参数漂移会失败。 |
 | 事件 Outbox | `ports/storage.py`、`storage/outbox.py`、`runtime/service.py` | Run 事件先进入 Outbox，Sink 成功后确认；失败事件保留待后续重试，支持 Memory/SQLite。 |
 | PostgreSQL 任务迁移锁 | `tasks/postgres.py` | 任务表 DDL 与 fencing token 迁移使用事务 advisory lock 和 schema version，避免多 Worker 同时启动竞态。 |
+
+## 2026-11-08 知识图谱持久化与 GraphRAG 上下文
+
+| 能力 | 模块位置 | 说明 |
+| --- | --- | --- |
+| 多后端图谱存储 | `storage/knowledge_graph.py` | `KnowledgeGraphStore` 新增 `SqliteKnowledgeGraphStore` 与 `PostgresKnowledgeGraphStore`；`create_knowledge_graph_store()` 按 test / development / production 选择内存、SQLite 或 PostgreSQL。 |
+| 词面实体检索 | `ports/knowledge_graph.py` | 协议新增 `search_entities(query, limit, tenant_id)`；按实体 ID、值与展示名做双向包含匹配（实体可出现在整句输入中），并严格按租户隔离，供上层 GraphRAG 前置检索。 |
+| 受控子图上下文 | `ports/knowledge_graph.py` | 继续以 `GraphSubgraph` + 跳数/方向/类型/数量上限约束查询；Core 不提供自由图查询，也不引入图数据库。 |
+
+> 说明：`/graph/context`、业务实体关系和文本化上下文仍由上层 Agent 组装；Core 只提供通用存储与检索契约。

@@ -529,3 +529,4 @@ AgentTaskRetryScheduler（可选）
 | 2026-11-03 | Agent 高级模式统一协议 | 新增 `AgentOutput` / `SupportsAnswer` / `answer_text`，让 Plan-Execute、Supervisor、Reflexion、Swarm 可以安全嵌套；高级模式补齐记忆上下文、依赖校验、最终复审和移交历史，`RunExecutor` 统一归一化结果。同步更新 Runtime 执行引擎关系图。 |
 | 2026-11-04 | Worker 与运行时可靠性升级 | Task Store 增加 fencing token，Worker 按任务监控心跳并在失租时取消 handler；过期回收按 limit 原子选择，PostgreSQL 幂等创建与其他后端对齐。RunContext 增加全局事件序号和历史裁剪，CallbackManager 支持 handler 超时，新增 RetryingEventSink；Plan-Execute 支持依赖层并行配置，三种高级模式增加上下文长度限制。模块边界和依赖方向不变，无需新增 Mermaid 节点。 |
 | 2026-11-04 | 可靠投递与副作用去重 | 新增 `EventOutbox` / Memory/SQLite 实现，Runtime 先记录事件、Sink 成功后确认；新增 `ToolOperationStore` 与稳定 `operation_id`，ReAct 恢复时避免非幂等工具重复执行；PostgreSQL 任务初始化增加 advisory lock 与 schema version。均属于原有 Runtime/Tools/Storage 端口增强，模块边界和依赖方向不变。 |
+| 2026-11-08 | 知识图谱持久化与 GraphRAG 上下文 | KnowledgeGraphStore 增加 SQLite / PostgreSQL 后端与 `search_entities()` 词面检索；上层双端新增 `/graph/context`，把命中实体扩展为受控子图并文本化。Core 边界不变：仍不引入 Neo4j，不承载业务实体投影，模块关系图无需修改。 |

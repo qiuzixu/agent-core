@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sqlite3
 import threading
 from collections.abc import Iterable
 from pathlib import Path
@@ -212,6 +211,34 @@ class InMemoryKnowledgeGraphStore:
             entity = self._entities.get((tenant, entity_id.strip()))
         return entity
 
+    async def search_entities(
+        self,
+        query: str,
+        *,
+        limit: int = 20,
+        tenant_id: str | None = None,
+    ) -> list[GraphEntity]:
+        normalized = query.strip().lower()
+        if not normalized:
+            return []
+        tenant = (tenant_id or "default").strip() or "default"
+        with self._lock:
+            matches: list[GraphEntity] = []
+            for (entity_tenant, _), entity in self._entities.items():
+                if entity_tenant != tenant:
+                    continue
+                fields = (
+                    entity.entity_id.lower(),
+                    entity.value.lower(),
+                    entity.display_name.lower(),
+                )
+                # 双向包含：既支持“查询词是实体的一部分”，也支持“实体出现在整句里”。
+                if any(normalized in field for field in fields) or any(
+                    field and field in normalized for field in fields
+                ):
+                    matches.append(entity)
+            return matches[: max(1, limit)]
+
     async def query_subgraph(
         self,
         start_entity_id: str,
@@ -392,7 +419,8 @@ class SqliteKnowledgeGraphStore:
                     conn.execute(
                         """
                         INSERT INTO kg_entities
-                        (tenant_id, entity_id, entity_type, value, display_name, properties, source, created_at, updated_at)
+                        (tenant_id, entity_id, entity_type, value, display_name,
+                         properties, source, created_at, updated_at)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
@@ -496,7 +524,8 @@ class SqliteKnowledgeGraphStore:
                     conn.execute(
                         """
                         INSERT INTO kg_relations
-                        (tenant_id, relation_id, source_entity_id, target_entity_id, relation_type, properties, source, created_at, updated_at)
+                        (tenant_id, relation_id, source_entity_id, target_entity_id,
+                         relation_type, properties, source, created_at, updated_at)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
@@ -558,6 +587,37 @@ class SqliteKnowledgeGraphStore:
                     (tenant, entity_id.strip()),
                 ).fetchone()
             return self._entity_row(row) if row is not None else None
+
+        return await _run_in_thread(_op)
+
+    async def search_entities(
+        self,
+        query: str,
+        *,
+        limit: int = 20,
+        tenant_id: str | None = None,
+    ) -> list[GraphEntity]:
+        normalized = query.strip().lower()
+        if not normalized:
+            return []
+        tenant = (tenant_id or "default").strip() or "default"
+
+        def _op() -> list[GraphEntity]:
+            pattern = f"%{normalized}%"
+            with sqlite_connection(self._db_path) as conn:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM kg_entities
+                    WHERE tenant_id = ? AND (
+                        lower(entity_id) LIKE ? OR lower(value) LIKE ? OR lower(display_name) LIKE ?
+                        OR ? LIKE '%' || lower(value) || '%'
+                        OR ? LIKE '%' || lower(display_name) || '%'
+                    )
+                    ORDER BY updated_at DESC LIMIT ?
+                    """,
+                    (tenant, pattern, pattern, pattern, normalized, normalized, max(1, limit)),
+                ).fetchall()
+            return [self._entity_row(row) for row in rows]
 
         return await _run_in_thread(_op)
 
@@ -701,7 +761,8 @@ class PostgresKnowledgeGraphStore:
                 await conn.execute(
                     """
                     INSERT INTO kg_entities
-                    (tenant_id, entity_id, entity_type, value, display_name, properties, source, created_at, updated_at)
+                    (tenant_id, entity_id, entity_type, value, display_name,
+                     properties, source, created_at, updated_at)
                     VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9)
                     """,
                     tenant,
@@ -805,7 +866,8 @@ class PostgresKnowledgeGraphStore:
                 await conn.execute(
                     """
                     INSERT INTO kg_relations
-                    (tenant_id, relation_id, source_entity_id, target_entity_id, relation_type, properties, source, created_at, updated_at)
+                    (tenant_id, relation_id, source_entity_id, target_entity_id,
+                     relation_type, properties, source, created_at, updated_at)
                     VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9)
                     """,
                     tenant,
@@ -863,6 +925,36 @@ class PostgresKnowledgeGraphStore:
                 entity_id.strip(),
             )
         return self._entity_row(row) if row is not None else None
+
+    async def search_entities(
+        self,
+        query: str,
+        *,
+        limit: int = 20,
+        tenant_id: str | None = None,
+    ) -> list[GraphEntity]:
+        self._check()
+        normalized = query.strip().lower()
+        if not normalized:
+            return []
+        tenant = (tenant_id or "default").strip() or "default"
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT * FROM kg_entities
+                WHERE tenant_id = $1 AND (
+                    entity_id ILIKE $2 OR value ILIKE $2 OR display_name ILIKE $2
+                    OR $4 ILIKE '%' || value || '%'
+                    OR $4 ILIKE '%' || display_name || '%'
+                )
+                ORDER BY updated_at DESC LIMIT $3
+                """,
+                tenant,
+                f"%{normalized}%",
+                max(1, limit),
+                normalized,
+            )
+        return [self._entity_row(row) for row in rows]
 
     async def query_subgraph(
         self,

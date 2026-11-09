@@ -175,6 +175,14 @@ class KnowledgeGraphStore(Protocol):
         tenant_id: str | None = None,
     ) -> GraphEntity | None: ...
 
+    async def search_entities(
+        self,
+        query: str,
+        *,
+        limit: int = 20,
+        tenant_id: str | None = None,
+    ) -> list[GraphEntity]: ...
+
     async def query_subgraph(
         self,
         start_entity_id: str,
