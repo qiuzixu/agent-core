@@ -187,7 +187,15 @@ class McpToolClient:
             raise McpToolError(f"MCP 工具 {name} 调用失败：{exc}") from exc
         if result.isError:
             message = self._text_content(result.content) or "服务返回 isError=true"
-            raise McpToolError(f"MCP 工具 {name} 失败：{message}")
+            structured_error = result.structuredContent
+            raise McpToolError(
+                f"MCP 工具 {name} 失败：{message}",
+                structured_content=(
+                    cast(JsonObject, structured_error)
+                    if isinstance(structured_error, dict)
+                    else None
+                ),
+            )
         structured = result.structuredContent
         if isinstance(structured, dict):
             # \u5982\u679c\u5de5\u5177\u5b9a\u4e49\u4e86 outputSchema\uff0c\u505a\u8f7b\u91cf\u7ea7\u6821\u9a8c

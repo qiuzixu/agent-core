@@ -956,6 +956,21 @@ class ReActAgent:
                     operation_id=operation_id,
                 )
                 result = structured_result.to_text()
+                # 通用动作透传：工具可在 metadata.client_actions 中声明浏览器动作，
+                # Runtime 只按字典原样收集，不理解任何业务语义（低空实体留在应用层）。
+                declared_actions = structured_result.metadata.get("client_actions")
+                if (
+                    isinstance(declared_actions, list)
+                    and declared_actions
+                    and runtime_context is not None
+                ):
+                    existing_actions = runtime_context.state.get("client_actions")
+                    if not isinstance(existing_actions, list):
+                        existing_actions = []
+                        runtime_context.state["client_actions"] = existing_actions
+                    existing_actions.extend(
+                        action for action in declared_actions if isinstance(action, dict)
+                    )
                 tool_ctx.metadata["tool_success"] = structured_result.success
                 success_by_index[index] = structured_result.success
                 if structured_result.direct_to_client and structured_result.success:

@@ -542,3 +542,10 @@ Checkpoint、状态机和 Middleware。上层 API 可以据此统一映射 HTTP 
 | 受控子图上下文 | `ports/knowledge_graph.py` | 继续以 `GraphSubgraph` + 跳数/方向/类型/数量上限约束查询；Core 不提供自由图查询，也不引入图数据库。 |
 
 > 说明：`/graph/context`、业务实体关系和文本化上下文仍由上层 Agent 组装；Core 只提供通用存储与检索契约。
+
+
+## 2026-11-09 MCP 结构化错误透传
+
+| 能力 | 模块位置 | 说明 |
+| --- | --- | --- |
+| MCP 错误结构化内容 | `mcp/errors.py`、`mcp/client.py` | `McpToolError` 增加 `structured_content`；`isError=true` 时仍保留服务端结构化输出，供上层业务按需消费（如地理编码候选），而不是只看到错误文本。 |

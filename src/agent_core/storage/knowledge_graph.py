@@ -234,7 +234,7 @@ class InMemoryKnowledgeGraphStore:
                 )
                 # 双向包含：既支持“查询词是实体的一部分”，也支持“实体出现在整句里”。
                 if any(normalized in field for field in fields) or any(
-                    field and field in normalized for field in fields
+                    len(field) >= 2 and field in normalized for field in fields
                 ):
                     matches.append(entity)
             return matches[: max(1, limit)]
@@ -610,8 +610,8 @@ class SqliteKnowledgeGraphStore:
                     SELECT * FROM kg_entities
                     WHERE tenant_id = ? AND (
                         lower(entity_id) LIKE ? OR lower(value) LIKE ? OR lower(display_name) LIKE ?
-                        OR ? LIKE '%' || lower(value) || '%'
-                        OR ? LIKE '%' || lower(display_name) || '%'
+                        OR (length(value) >= 2 AND ? LIKE '%' || lower(value) || '%')
+                        OR (length(display_name) >= 2 AND ? LIKE '%' || lower(display_name) || '%')
                     )
                     ORDER BY updated_at DESC LIMIT ?
                     """,
@@ -944,8 +944,8 @@ class PostgresKnowledgeGraphStore:
                 SELECT * FROM kg_entities
                 WHERE tenant_id = $1 AND (
                     entity_id ILIKE $2 OR value ILIKE $2 OR display_name ILIKE $2
-                    OR $4 ILIKE '%' || value || '%'
-                    OR $4 ILIKE '%' || display_name || '%'
+                    OR (length(value) >= 2 AND $4 ILIKE '%' || value || '%')
+                    OR (length(display_name) >= 2 AND $4 ILIKE '%' || display_name || '%')
                 )
                 ORDER BY updated_at DESC LIMIT $3
                 """,

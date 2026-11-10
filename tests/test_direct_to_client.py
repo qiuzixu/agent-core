@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from collections.abc import AsyncIterator
 
 from agent_core import (
     AgentRuntime,
@@ -19,7 +20,6 @@ from agent_core import (
     ToolResult,
     assistant_message,
 )
-from collections.abc import AsyncIterator
 
 
 class _Model:
@@ -112,3 +112,59 @@ class DirectToClientTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class _ActionModel:
+    """第一轮发起工具调用，第二轮返回文本。"""
+
+    def __init__(self) -> None:
+        self.call_count = 0
+
+    async def chat(self, _messages: object, *, tools: object = None) -> object:
+        del tools
+        self.call_count += 1
+        if self.call_count == 1:
+            return assistant_message(
+                "", tool_calls=[{"id": "call-1", "name": "emit_action", "args": {}}]
+            )
+        return assistant_message("完成")
+
+    async def stream_chat(self, _messages: object, *, tools: object = None) -> AsyncIterator[StreamChunk]:
+        del tools
+        yield StreamChunk(text="完成")
+
+
+class ClientActionMetadataTests(unittest.IsolatedAsyncioTestCase):
+    async def test_tool_metadata_client_actions_are_collected(self) -> None:
+        """通用 metadata.client_actions 应进入 RunContext.state，供 API 下发前端。"""
+        registry = ToolRegistry()
+
+        async def emit_action(**_kwargs: object) -> ToolResult:
+            return ToolResult(
+                tool_name="emit_action",
+                success=True,
+                value="已生成候选",
+                metadata={
+                    "client_actions": [
+                        {"type": "SHOW_PLACE_CANDIDATES", "query": "测试地点甲"}
+                    ]
+                },
+            )
+
+        registry.register("emit_action", emit_action, description="下发前端动作")
+        runtime = AgentRuntime(
+            ReActAgent(
+                _ActionModel(),
+                ToolExecutor(registry),
+                system_prompt="测试",
+                tool_definitions=[],
+            ),
+            run_store=MemoryRunStore(),
+        )
+
+        context = await runtime.run("thread-action-1", "测试地点甲")
+
+        self.assertEqual(
+            context.state.get("client_actions"),
+            [{"type": "SHOW_PLACE_CANDIDATES", "query": "测试地点甲"}],
+        )
