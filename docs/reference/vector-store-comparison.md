@@ -1,7 +1,7 @@
 # 向量存储选型对比
 
 > 覆盖 agent-core `retrieval` 模块内置的全部后端，以及面试/选型中常见的同类产品。
-> 结论先行：**部署重量和收益成正比才引入**（与 Apollo 4 容器的判断逻辑一致）。
+> 工厂的当前默认值以 `retrieval/factory.py` 为准；选型建议不等于自动选择。
 
 ## 一、我们提到的所有方案对比
 
@@ -10,38 +10,40 @@
 | 定位 | 进程内字典 | 向量检索**库** | 向量**数据库** | PG 扩展（向量插件） | 向量数据库 | 分布式向量数据库 | 向量数据库 |
 | 部署重量 | 零 | 零（pip 即用） | 低（可嵌入） | 零（复用已有 PG） | 1 容器 | 多容器 + etcd/MinIO | 1 容器 |
 | 持久化 | 无 | 本地文件 | 本地/服务端 | PG 表 | 本地/服务端 | 分布式存储 | 本地/服务端 |
-| 元数据过滤 | Python 侧 | 不支持（需自建） | 支持 | SQL WHERE | 支持（Filter） | 支持 | 支持 |
+| 元数据过滤 | Python 侧 | 全量候选后由适配器过滤 | 支持 | SQL WHERE | 有限候选后由适配器过滤 | 支持 | 支持 |
 | 访问控制/namespace | 适配器层统一实现 | 适配器层统一实现 | 适配器层统一实现 | 适配器层统一实现 | Filter 原生下推 | 支持 | 支持 |
 | 分布式/水平扩展 | 不支持 | 不支持 | 弱 | 随 PG | 支持 | 强（亿级场景） | 支持 |
-| 适合场景 | 测试 | 单机开发 | 单机开发（功能多余） | 生产（已有 PG） | 生产（无 PG 或需独立服务） | 亿级+高吞吐 | 生产 |
+| 适合场景 | 测试 | 显式选择的单机索引 | 默认开发环境 | 默认生产环境（需 PG） | 显式选择的独立服务 | 需另行集成 | 需另行集成 |
 | agent-core 适配器 | `memory.py` | `faiss.py` | `chroma.py` | `pgvector.py` | `qdrant.py` | 无 | 无 |
 
-## 二、FAISS vs Chroma（为什么开发选 FAISS）
+## 二、FAISS vs Chroma
 
 | 维度 | FAISS | Chroma |
 | --- | --- | --- |
 | 定位 | 纯向量检索**库** | 向量**数据库**（带存储引擎、元数据管理） |
 | 部署 | 零部署，pip 装完即用 | pip 也能用，但设计上往独立服务走 |
-| 元数据/访问控制 | 我们自己在 `_common.py` 里做 | 它自带，但我们已经在适配器层统一做了 |
-| 我们的需求 | 本地持久化 + 进程内检索 | 一样 |
+| 元数据/访问控制 | 适配器取全量候选后过滤，数据量增长时成本高 | 由适配器结合后端查询处理 |
+| 环境工厂 | 需显式 `backend="faiss"` | `development` 默认 |
 
-关键点：我们的 namespace / 租户 / 访问控制逻辑跨所有后端统一实现（`_common.py`），Chroma 自带的元数据管理用不上，属于多余依赖。
+两个适配器遵循相同的 `VectorStore` 契约，但过滤执行位置和性能不同。
+FAISS 适合明确接受单机文件索引及应用侧过滤成本的场景；开发环境默认使用 Chroma。
 
-## 三、环境选型矩阵（agent-core 现行策略）
+## 三、环境默认值与显式选型
 
-| 环境 | 推荐后端 | 理由 |
+| 环境 | 工厂默认后端 | 可显式覆盖 |
 | --- | --- | --- |
-| test/testing | `memory` | 快、 ephemeral，无需清理 |
-| development | `faiss` | 零部署 + 本地持久化 |
-| production（已有 PG） | `pgvector` | 0 个新容器，复用现有数据库 |
-| production（无 PG） | `qdrant` | 1 容器，带原生过滤下推 |
-| 亿级向量 + 高吞吐 | Milvus（未内置） | 需要分布式才值得多容器成本 |
+| test/testing | `memory` | 可指定任一内置后端 |
+| development 及其他值 | `chroma` | 可指定 `faiss` 或 `qdrant` 等 |
+| production/prod | `pgvector` | 无 PG 时可显式指定 `qdrant` |
 
-## 四、Qdrant 适配器要点（新增）
+`production` 默认选 pgvector，缺少 `postgres_url` 或 `dimension` 会报错，不会自动切换 Qdrant。
+FAISS、Chroma、pgvector 和 Qdrant 分别使用对应的 optional extra。
+
+## 四、Qdrant 适配器要点
 
 - 三种连接方式：注入 `client`（测试）> `url`（服务模式/生产）> `path`（本地嵌入式持久化）
 - 点 ID 用 `uuid.uuid5` 确定性映射 record_id，重复 upsert 天然覆盖
-- namespace + 访问范围下推 Qdrant Filter；业务 metadata 过滤超额拉取 1000 条后 Python 侧精确匹配
+- namespace + 访问范围下推 Qdrant Filter；业务 metadata 过滤最多拉取 1000 条候选后在 Python 侧匹配，强过滤时需评估召回完整性
 - 集合不存在：search 返回 `[]`、delete 返回 0，与 Memory/Chroma 行为一致
 - `close()` 只关闭自建 client
 
@@ -58,7 +60,7 @@ create_vector_store("production", backend="qdrant",
 create_vector_store("test", backend="qdrant", qdrant_client=fake_client)
 ```
 
-依赖安装：`pip install agent-core[qdrant]`（`qdrant-client>=1.12,<2`）。
+依赖安装：`pip install zero-agent-core[qdrant]`（`qdrant-client>=1.12,<2`）。
 
 ## 五、pgvector vs Qdrant：各自的缺失能力
 

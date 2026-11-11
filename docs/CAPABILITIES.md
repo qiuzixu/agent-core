@@ -23,11 +23,11 @@ Agent Core 是一套零外部平台绑定的手写 Agent 运行时内核。
 | `middleware` | Agent、模型和工具执行前后的扩展链 | `Middleware`、`MiddlewareManager` |
 | `callbacks` | 进程内生命周期事件订阅、同步/异步函数包装、订阅者超时和故障隔离 | `CallbackHandler`、`CallbackManager` |
 | `documents` | Blob、文档、片段、来源定位、纯文本加载和递归字符切分 | `Document`、`TextLoader`、`RecursiveCharacterTextSplitter` |
-| `retrieval` | 检索协议、内存/Chroma/pgvector 存储及环境工厂 | `Embeddings`、`EmbeddingRetriever`、`create_vector_store` |
+| `retrieval` | 检索协议、Memory/Chroma/FAISS/pgvector/Qdrant 存储及环境工厂 | `Embeddings`、`EmbeddingRetriever`、`create_vector_store` |
 | `serialization` | 显式白名单、类型标识、Schema 版本和迁移函数 | `SerializerRegistry`、`SerializedEnvelope` |
 | `compaction` | Token 估算、历史摘要、消息裁剪、工具结果瘦身、spill 和超长恢复 | `CompactionMiddleware`、`TokenLimitMiddleware`、`SpillStore` |
 | `cache` | 进程内 TTL/LRU 缓存、请求合并、可选 Redis 后端和统一工厂 | `CacheService`、`MemoryCache`、`RedisCache`、`create_cache_service` |
-| `checkpoint` | 内存/文件 checkpoint、原子文件替换、历史版本、回滚和时间旅行 | `MemoryCheckpointer`、`TimeTravelCheckpointer`、`TimeTravelCheckpointer` |
+| `checkpoint` | Memory/SQLite/PostgreSQL checkpoint、历史版本、回滚和时间旅行 | `MemoryCheckpointer`、`SqliteCheckpointer`、`PostgresCheckpointer`、`TimeTravelCheckpointer`、`create_checkpointer` |
 | `hitl` | 人工审批请求、持久化 deadline、条件状态转换、超时、跨进程决策同步和中间件接入 | `ApprovalQueue`、`HumanInTheLoopMiddleware` |
 | `workflow` | 异步状态机、节点策略、重试、超时、幂等、pending write、恢复和 Mermaid 导出 | `StateMachine`、`NodeExecutionPolicy`、`DurableWorkflowRunner` |
 | `multi-agent` 扩展 | Agent 注册、权限过滤、规则/模型路由、handoff、父子 Run、预算、租约和恢复 | `AgentRegistry`、`multi-agent.SupervisorAgent`、`RuntimeAgentInvoker` |
@@ -182,7 +182,9 @@ Core 已提供完整的零依赖检索边界：
 - `EmbeddingRetriever` 组合 Embedding 与 VectorStore；
 - `InMemoryVectorStore` 支持余弦相似度、namespace、metadata filter 及用户/租户隔离；
 - `ChromaVectorStore` 提供开发环境本地持久化，并把同步客户端调用移出异步事件循环；
+- `FaissVectorStore` 提供显式选择的单机本地索引与持久化；
 - `PgVectorStore` 提供固定维度表、JSONB metadata 过滤、余弦 HNSW 索引及生产权限过滤；
+- `QdrantVectorStore` 支持本地或服务端部署，按 namespace 和访问范围过滤；
 - `create_vector_store` 默认按测试/开发/生产选择 Memory、Chroma、pgvector，并允许显式覆盖；
 - `KeywordRetriever` 提供小型静态语料和测试用关键词检索。
 
@@ -191,11 +193,11 @@ Core 已提供完整的零依赖检索边界：
 AccessContext。Core 不使用 pickle，也不会
 根据输入中的 Python 类路径动态导入代码。
 
-Chroma 和 pgvector 通过 optional extras 安装，基础安装不依赖它们。仓库中的独立
+Chroma、FAISS、pgvector 和 Qdrant 通过 optional extras 安装，基础安装不依赖它们。仓库中的独立
 `zero-agent-core-mineru` 扩展包实现 `DocumentLoader` 和 `BlobParser`，调用自托管
 `/file_parse` 并保留页码、block id、区块类型、来源 checksum 和解析器版本。OpenAI/Gemini
 Embedding 由独立 `zero-agent-core-embeddings` 扩展包实现，并与 Ollama 共用批处理、并发、
-重试、超时和维度校验。Qdrant、FAISS、Milvus 和通用 OCR 尚未提供具体适配器。MinerU 模型、
+重试、超时和维度校验。Milvus 和通用 OCR 尚未提供具体适配器。MinerU 模型、
 OCR 运行时和服务部署不属于 Core。
 
 ## 8. 上下文、会话和记忆
@@ -234,14 +236,12 @@ Session Store 在调用方传入 `AccessContext` 时，会在首次写入时绑�
 
 ## 9. Checkpoint 和工作流
 
-Checkpoint 支持内存和文件后端。文件后端通过同目录临时文件、`fsync` 和原子替换避免留下截断
-JSON；持久化失败会显式报错。thread_id 映射到文件名时经过白名单严格清洗（单射且可逆，
-Windows 非法字符 `<>:"/\|?*`、`%`、控制符与保留设备名统一转义），含 `/`、`\`、`:`
-的会话不会互相覆盖，`list_threads` 会把文件名反向还原为 thread_id。
-`TimeTravelCheckpointer` 在基础 Checkpointer 上增加版本历史、指定版本读取、持久化回滚
+`create_checkpointer` 默认按测试/开发/生产选择 Memory、SQLite、PostgreSQL，也可显式指定后端；
+生产环境必须配置 `postgres_url`。`TimeTravelCheckpointer` 提供文件持久化的版本历史、指定版本读取、持久化回滚
 指针、整条 thread 删除和时间旅行能力，并提供 `max_versions_per_thread`（默认 100）版本
 容量上限：追加超过上限时淘汰最旧版本并同步收缩持久化文件，当前指针指向被淘汰版本时前移到
-其继任版本。
+其继任版本。文件写入使用同目录临时文件、`fsync` 和原子替换；thread_id 映射到文件名时
+经过严格清洗和可逆转义，避免不同会话互相覆盖。
 
 通用工作流不依赖外部编排框架，支持：
 
@@ -337,7 +337,7 @@ ACP 模块提供通用 JSON-RPC/stdio 服务端，已经支持：
 - `session/update` 流式通知；
 - `session/request_permission` 双向审批请求，兼容平铺和嵌套的 `outcome` 响应；
 - 用户消息、Agent 文本、思考过程、工具开始和工具结束更新；
-- 工具事件携带稳定的 `tool_call_id`，便于客户端关联并发工具调用；
+- Backend 提供相同的 `toolCallId` 时，客户端可关联并发工具的开始和结束事件；
 - 可选 `replay_session()` 历史回放接口，供声明 `loadSession=true` 的后端恢复会话。
 
 Core 只定义 `AcpBackend` 端口和协议服务端。具体 Agent 负责把自己的 Runtime、会话和审批机制
@@ -461,8 +461,8 @@ Checkpoint、状态机和 Middleware。上层 API 可以据此统一映射 HTTP 
 | HITL 审批跨进程合并 | `hitl/core.py` | 审批列表支持跨进程合并查询；Core 继续保持通用状态语义 |
 | HITL 模块拆分 | `hitl/` | `core.py` 按职责拆分，审批队列、状态机与存储职责更清晰 |
 | 中间件优先级与超时 | `middleware/` | 各中间件支持声明式优先级和超时设置，便于稳定排序与慢路径隔离 |
-| 向量存储适配器工厂 | `retrieval/factory.py`、`storage/vector.py` | 增加多向量存储适配器工厂，Qdrant 适配器可用作外部扩展 |
-| Qdrant 适配器 | `retrieval/qdrant.py`、`storage/vector.py` | 支持 namespace、访问范围和 metadata 过滤的 Qdrant 外部扩展 |
+| 向量存储适配器工厂 | `retrieval/factory.py` | 增加多向量存储适配器工厂，可显式选择 Qdrant |
+| Qdrant 适配器 | `retrieval/qdrant.py` | Core 内置可选适配器，支持 namespace、访问范围和 metadata 过滤 |
 | 审批审计与保留清理 | `hitl/`、`middleware/retention.py` | 审批事件可进入审计流并接入 TTL / Retention 清理，双端语义保持一致 |
 
 > 说明：这些能力仍未改变 Core 的分层边界。HTTP Admin、业务实体投影和具体部署配置仍属于上层 Agent。

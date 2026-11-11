@@ -89,10 +89,13 @@ Callback 只观察事件；需要修改或停止执行时使用 Middleware。`Ag
 | `EmbeddingRetriever` | 组合 Embeddings 和 VectorStore 的语义检索器 |
 | `InMemoryVectorStore` / `KeywordRetriever` | 测试和小型语料实现 |
 | `ChromaVectorStore` | 本地开发持久化向量存储 |
+| `FaissVectorStore` | 可选单机向量索引与本地持久化 |
 | `PgVectorStore` | PostgreSQL pgvector 生产存储 |
+| `QdrantVectorStore` | 可选本地或服务端向量存储 |
 | `create_vector_store` / `VectorStoreBackend` | 环境默认与显式后端选择 |
 
-具体 Embedding 模型、通用 OCR、FAISS、Milvus 和 Qdrant 通过上述协议扩展。
+具体 Embedding 模型、通用 OCR 和 Milvus 可通过上述协议扩展。FAISS 与 Qdrant 已内置适配器，
+使用时需安装对应 optional extra。
 
 ### Embedding Provider 扩展包
 
@@ -135,8 +138,9 @@ AccessContext。它不会动态导入输入中的类，也不使用 pickle。
 
 | API | 作用 |
 | --- | --- |
-| `Checkpointer` / `MemoryCheckpointer` / `TimeTravelCheckpointer` | 最新快照协议和实现 |
+| `Checkpointer` / `MemoryCheckpointer` / `SqliteCheckpointer` / `PostgresCheckpointer` | 最新快照协议和实现 |
 | `TimeTravelCheckpointer` / `CheckpointVersion` | 历史版本与回滚 |
+| `create_checkpointer` / `trace_tree` | 按环境创建后端与查询版本谱系 |
 | `StateMachineBuilder` / `StateMachine` | 通用异步状态机 |
 | `NodeExecutionPolicy` / `NodeExecutionContext` | 节点重试、超时、退避和稳定幂等键 |
 | `current_node_execution` | 在节点内读取当前尝试次数和幂等键 |
@@ -165,7 +169,8 @@ AccessContext。它不会动态导入输入中的类，也不使用 pickle。
 ## 存储与访问
 
 关系型 `create_*_store` 工厂按环境选择 Memory、SQLite 或 PostgreSQL；
-`create_vector_store` 单独选择 Memory、Chroma 或 pgvector。公共 Store 包括：
+`create_vector_store` 默认按环境选择 Memory、Chroma 或 pgvector，也可显式选择 FAISS、Qdrant。
+公共 Store 包括：
 
 - `SessionStore` / `BaseSessionStore`；
 - `ContextStore`；

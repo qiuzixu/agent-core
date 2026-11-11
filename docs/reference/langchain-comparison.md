@@ -19,7 +19,7 @@
 | **chat_models** | `BaseChatModel` 统一接口、`init_chat_model`、bind_tools、结构化输出、rate limiter | `ModelAdapter`、`create_model_provider()`、`StructuredOutputSpec`、`GovernedModelAdapter` | 已覆盖 |
 | **tools** | `@tool` 装饰器、`BaseTool`、`InjectedToolArg`、`StructuredTool` | `ToolSpec` / `ToolRegistry` / `ToolExecutor` | 已覆盖 |
 | **output_parsers** | JSON / XML / Pydantic / 逗号列表等解析器 | JSON 提取、JSON Schema 子集校验、decoder 和失败重试 | 部分覆盖（无 XML/Pydantic 专用解析器） |
-| **vectorstores / retrievers / embeddings** | 接口定义 | Core 协议、EmbeddingRetriever、Memory/Chroma/pgvector；独立 OpenAI/Gemini/Ollama 扩展 | 已覆盖核心协议和首批适配器 |
+| **vectorstores / retrievers / embeddings** | 接口定义 | Core 协议、EmbeddingRetriever、Memory/Chroma/FAISS/pgvector/Qdrant；独立 OpenAI/Gemini/Ollama 扩展 | 已覆盖核心协议和首批适配器 |
 | **documents** | `Document` 类型 | `Blob`、`Document`、`DocumentChunk`、`DocumentLocator` | 已覆盖 |
 | **document loaders / text splitters** | 加载器协议和独立 splitter 包 | Core 协议和纯文本加载；独立 MinerU 扩展；递归字符切分 | 已覆盖基础能力 |
 | **load / serialization** | LangChain 对象 JSON 序列化协议 | 类型白名单、Schema 版本、迁移注册表 | 已覆盖安全序列化核心 |
@@ -63,7 +63,7 @@
    - Core 采用显式 Python 组装和 Middleware，没有 Runnable 管道 DSL
 
 4. **第三方 Retrieval 适配器**
-   - 尚未提供 Milvus、Qdrant 和通用 OCR
+   - 尚未提供 Milvus 和通用 OCR
    - 这些实现应依赖 Core 协议，并作为可选扩展发布
 
 5. **更多专用输出解析器**

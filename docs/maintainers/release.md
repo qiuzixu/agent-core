@@ -34,7 +34,7 @@ python examples/basic_agent.py
 ## 3. 发布
 
 1. 合并经过 CI 的发布提交；
-2. 创建与版本一致的受保护 tag，例如 `v0.1.0`；
+2. 创建与发行版本一致的受保护 tag，例如 `v0.2.1`；
 3. 由 PyPI Trusted Publisher 从该 tag 构建并发布；
 4. 使用相同提交构建 VitePress 文档；
 5. 创建发布说明，包含主要变化、升级方式、已知限制和产物校验信息。

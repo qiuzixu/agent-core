@@ -10,7 +10,7 @@ Agent Loop 适合由模型动态决定下一步；状态机适合有固定流程
 ```python
 agent = ReActAgent(
     ...,
-    checkpointer=TimeTravelCheckpointer("./checkpoints"),
+    checkpointer=create_checkpointer("development", sqlite_path="./checkpoints.db"),
     thread_id="thread-1",
 )
 ```
@@ -20,11 +20,13 @@ agent = ReActAgent(
 | 实现 | 用途 |
 | --- | --- |
 | `MemoryCheckpointer` | 单元测试和临时执行 |
-| `TimeTravelCheckpointer` | 本地开发的最新快照 |
-| `TimeTravelCheckpointer` | 保留历史版本、查看和回滚 |
+| `SqliteCheckpointer` | 单机开发的持久化快照 |
+| `PostgresCheckpointer` | 多实例生产环境的持久化快照 |
+| `TimeTravelCheckpointer` | 文件持久化的历史版本、查看和回滚 |
 
-Checkpoint 保存消息、迭代次数、工具调用计数、最后响应和运行元数据。文件实现适合开发，
-多进程生产服务应使用共享的 Run/Workflow 存储或自行实现共享 `Checkpointer`。
+`create_checkpointer` 默认按测试、开发、生产环境分别选择 Memory、SQLite、PostgreSQL；
+生产环境需要 `postgres_url` 和 `zero-agent-core[production]`。Checkpoint 保存消息、迭代次数、
+工具调用计数、最后响应和运行元数据。`TimeTravelCheckpointer` 可在需要文件版本历史时单独使用。
 
 ## 构建状态机
 

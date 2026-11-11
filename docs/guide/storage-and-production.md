@@ -48,6 +48,8 @@ stores = {
 向量数据使用独立工厂：测试为 `InMemoryVectorStore`，开发为 `ChromaVectorStore`，生产为
 `PgVectorStore`。它不复用 SQLite Store，因为普通 SQLite 不具备向量距离索引；开发环境需要
 完整的文档、metadata 和本地持久化语义，因此使用 Chroma，而不是只提供索引算法的 FAISS。
+显式指定 `backend="faiss"` 或 `backend="qdrant"` 可选用这两个内置适配器，分别安装
+`zero-agent-core[faiss]` 或 `zero-agent-core[qdrant]`；这不会改变上述环境默认值。
 
 ## PostgreSQL 生命周期
 

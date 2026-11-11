@@ -55,6 +55,8 @@ nav:
       - Agent 开发知识体系: AGENT_DEVELOPMENT_KNOWLEDGE_SYSTEM.md
       - 协议总览: reference/protocol-overview.md
       - 公共 API: reference/public-api.md
+      - 检索模块总览: reference/retrieval-overview.md
+      - 向量存储选型: reference/vector-store-comparison.md
       - 配置参考: reference/configuration.md
       - 异常体系: reference/exceptions.md
       - 序列化概览: reference/serialization-overview.md

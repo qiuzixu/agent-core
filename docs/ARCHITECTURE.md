@@ -38,7 +38,7 @@ flowchart TB
     subgraph KNOWLEDGE["文档与检索"]
         DOCUMENTS["Blob / Document / DocumentChunk<br/>Loader / Parser / TextSplitter"]
         RETRIEVAL["Embeddings / Retriever / Reranker"]
-        VECTORSTORE["VectorStore<br/>Memory / Chroma / pgvector<br/>namespace / metadata / AccessContext"]
+        VECTORSTORE["VectorStore<br/>Memory / Chroma / FAISS / pgvector / Qdrant<br/>namespace / metadata / AccessContext"]
     end
 
     subgraph IO["模型、工具与外部协议"]
@@ -131,7 +131,7 @@ flowchart TB
 - `tools` 统一调度本地函数和 MCP 工具，模型只看到统一的 Tool Schema；
 - `middleware` 承载可组合的横切能力，例如审批、压缩、安全和可观测性；
 - `callbacks` 只观察生命周期事件，与 `EventSink` 共用 `RunEvent`，不能修改执行流程；
-- `documents` 定义外部语料及来源定位，`retrieval` 定义检索端口及 Memory、Chroma、pgvector
+- `documents` 定义外部语料及来源定位，`retrieval` 定义检索端口及 Memory、Chroma、FAISS、pgvector、Qdrant
   适配器；具体文档解析平台通过独立扩展包依赖这些协议；
 - `serialization` 只恢复白名单类型，不使用 pickle 或输入中的 Python 类路径；
 - `workflow` 提供确定性状态机和节点级恢复，上层 Agent 定义具体业务节点；
@@ -341,10 +341,10 @@ sequenceDiagram
     Retriever-->>Agent: RetrievalResult + score + locator
 ```
 
-Core 内置纯文本 Loader、递归字符切分器、内存 VectorStore、Chroma/pgvector 可选适配器和关键词
+Core 内置纯文本 Loader、递归字符切分器、内存 VectorStore、Chroma/FAISS/pgvector/Qdrant 可选适配器和关键词
 Retriever。自托管 MinerU HTTP 和模型 Embedding SDK 分别位于独立
 `zero-agent-core-mineru`、`zero-agent-core-embeddings` 包；MinerU 服务运行时、
-通用 OCR、Qdrant 和 FAISS 不成为 Core 基础依赖。
+通用 OCR 不属于 Core 基础依赖；四种外部向量后端均通过 optional extras 安装。
 
 ## 5. Multi-Agent 协调时序
 

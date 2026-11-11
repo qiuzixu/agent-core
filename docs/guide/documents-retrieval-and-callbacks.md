@@ -103,7 +103,7 @@ from agent_core import create_vector_store
 # 测试默认返回 InMemoryVectorStore。
 test_store = create_vector_store("testing", require_access=True)
 
-# 开发默认返回 ChromaVectorStore，需要安装 agent-core[chroma]。
+# 开发默认返回 ChromaVectorStore，需要安装 zero-agent-core[chroma]。
 dev_store = create_vector_store(
     "development",
     chroma_path="./data/chroma",
@@ -111,7 +111,7 @@ dev_store = create_vector_store(
     require_access=True,
 )
 
-# 生产默认返回 PgVectorStore，需要安装 agent-core[pgvector] 并完成异步初始化。
+# 生产默认返回 PgVectorStore，需要安装 zero-agent-core[pgvector] 并完成异步初始化。
 prod_store = create_vector_store(
     "production",
     postgres_url="postgresql://user:password@host/database",
@@ -122,12 +122,13 @@ prod_store = create_vector_store(
 await prod_store.initialize()
 ```
 
-Chroma 同时持久化向量、Document 和 metadata，适合本地开发。FAISS 是高性能索引库，
-不直接提供完整的文档存储、metadata 查询、租户权限和并发写语义，因此留作后续离线适配器。
+Chroma 同时持久化向量、Document 和 metadata，适合本地开发。FAISS 和 Qdrant 已提供
+可选适配器，分别适合单机索引和独立向量服务；它们不会改变环境默认映射。
 pgvector 复用 PostgreSQL 的事务、备份和部署体系，并在数据库查询中执行 namespace、JSONB metadata
 及用户/租户过滤。
 
-`backend="memory" | "chroma" | "pgvector"` 可以覆盖环境默认值。Core 不会在缺少依赖或生产连接
+`backend="memory" | "chroma" | "faiss" | "pgvector" | "qdrant"` 可以覆盖环境默认值。
+各后端依赖对应的 optional extra；Core 不会在缺少依赖或生产连接
 参数时静默降级。pgvector 的一个表只容纳一种向量维度；更换 Embedding 模型导致维度变化时，
 应使用新表并重新摄取文档。
 
