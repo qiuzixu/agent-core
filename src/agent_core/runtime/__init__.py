@@ -72,6 +72,7 @@ from agent_core.runtime.state import (
 from agent_core.runtime.store import MemoryRunStore
 
 __all__ = [
+    "AgentMode",
     "AgentRuntime",
     "AgentOutput",
     "MemoryEventSink",

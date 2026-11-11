@@ -58,7 +58,7 @@ class TimeoutBudgetMiddleware(Middleware):
         deadline = context.metadata.get("deadline")
         if deadline is None:
             return None
-        return max(0.0, deadline - time.monotonic())
+        return max(0.0, float(deadline) - time.monotonic())
 
     async def before_model(self, context: MiddlewareContext) -> MiddlewareResult:
         if not self._config.enabled:

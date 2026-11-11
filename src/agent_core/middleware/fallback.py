@@ -22,6 +22,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass, field
+from typing import Any
 
 from agent_core.middleware.base import (
     Middleware,
@@ -64,7 +65,7 @@ class FallbackMiddleware(Middleware):
         self._cache: list[_CacheEntry] = []
         self._failure_counts: dict[str, int] = {}  # {tool_name: consecutive_failures}
 
-    def _args_fingerprint(self, args: dict) -> str:
+    def _args_fingerprint(self, args: dict[str, Any]) -> str:
         return hashlib.sha256(json.dumps(args, sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()[:16]
 
     def _is_critical(self, tool_name: str) -> bool:
@@ -81,7 +82,7 @@ class FallbackMiddleware(Middleware):
                     best = e
         return best
 
-    def _store_cache(self, tool_name: str, args: dict, result: str) -> None:
+    def _store_cache(self, tool_name: str, args: dict[str, Any], result: str) -> None:
         fp = self._args_fingerprint(args)
         # 容量控制
         same_tool = [e for e in self._cache if e.tool_name == tool_name]

@@ -1,9 +1,11 @@
 """ACP stdio 服务端升级点测试。
 
-覆盖两项能力：
+覆盖以下能力：
 1. ``AcpCapabilities``：initialize 能力声明可配置，且未声明时回退旧的
    ``supports_load_session`` 标记（向后兼容）。
-2. ``session/cancel``：取消会话时立即终结该会话挂起的权限询问，
+2. ``session/load``：恢复会话时按需回放历史消息。
+3. ``session/request_permission``：兼容平铺和嵌套的审批响应。
+4. ``session/cancel``：取消会话时立即终结该会话挂起的权限询问，
    不再等待审批超时（fail-closed 语义），且不影响其他会话。
 """
 
@@ -11,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 from typing import Any
 
 from agent_core.acp import (
@@ -103,6 +106,14 @@ class _BlockingPermissionBackend:
         return None
 
 
+class _ReplayBackend(_LoadSessionBackend):
+    """声明会话恢复并回放历史消息的 Backend。"""
+
+    async def replay_session(self, _session: AcpSession, emit: Any) -> None:
+        await emit(AcpUpdate.user_text("历史问题"))
+        await emit(AcpUpdate.text("历史回答"))
+
+
 def _make_server(backend: Any) -> tuple[AcpStdioServer, io.StringIO]:
     stdout = io.StringIO()
     server = AcpStdioServer(backend, stdin=io.StringIO(), stdout=stdout, approval_timeout_seconds=60)
@@ -176,6 +187,62 @@ async def test_session_load_without_capability_raises_not_implemented() -> None:
         pass
     else:
         raise AssertionError("不支持会话恢复时应抛出 NotImplementedError")
+
+
+async def test_session_load_replays_history_updates() -> None:
+    """支持恢复的 Backend 应在返回前回放历史会话更新。"""
+    server, stdout = _make_server(_ReplayBackend())
+    result = await server._dispatch("session/load", {"sessionId": "s1", "cwd": "."})
+
+    assert result["sessionId"] == "s1"
+    updates = [json.loads(line) for line in stdout.getvalue().splitlines()]
+    assert [item["params"]["update"]["sessionUpdate"] for item in updates] == [
+        "user_message_chunk",
+        "agent_message_chunk",
+    ]
+    assert updates[0]["params"]["sessionId"] == "s1"
+
+
+async def test_permission_accepts_nested_selected_outcome() -> None:
+    """ACP Client 返回嵌套 outcome 时应正确识别选中的审批选项。"""
+    server, _ = _make_server(_LoadSessionBackend())
+
+    async def fake_request_client(*_args: object, **_kwargs: object) -> dict[str, Any]:
+        return {"outcome": {"outcome": "selected", "optionId": "approve_once"}}
+
+    server._request_client = fake_request_client  # type: ignore[method-assign]
+    result = await server._request_permission(
+        "s1",
+        {
+            "toolCall": {"toolCallId": "tool-1"},
+            "options": [
+                {"optionId": "approve_once", "name": "批准", "kind": "allow_once"},
+                {"optionId": "reject_once", "name": "拒绝", "kind": "reject_once"},
+            ],
+        },
+    )
+    assert result == "approve_once"
+
+
+async def test_permission_rejects_nested_cancelled_outcome() -> None:
+    """嵌套 cancelled outcome 应按拒绝处理。"""
+    server, _ = _make_server(_LoadSessionBackend())
+
+    async def fake_request_client(*_args: object, **_kwargs: object) -> dict[str, Any]:
+        return {"outcome": {"outcome": "cancelled"}}
+
+    server._request_client = fake_request_client  # type: ignore[method-assign]
+    result = await server._request_permission(
+        "s1",
+        {
+            "toolCall": {"toolCallId": "tool-1"},
+            "options": [
+                {"optionId": "approve_once", "name": "批准", "kind": "allow_once"},
+                {"optionId": "reject_once", "name": "拒绝", "kind": "reject_once"},
+            ],
+        },
+    )
+    assert result == "reject_once"
 
 
 async def test_cancel_clears_pending_permission_requests() -> None:

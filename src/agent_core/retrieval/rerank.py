@@ -198,5 +198,7 @@ class RerankingRetriever:
             kwargs["metadata"] = metadata
         result = add(documents, **kwargs)
         if inspect.iscoroutine(result):
-            return await result
-        return result
+            result = await result
+        if not isinstance(result, Sequence) or isinstance(result, (str, bytes)):
+            raise TypeError("add_documents 必须返回文档 ID 序列")
+        return [str(item) for item in result]

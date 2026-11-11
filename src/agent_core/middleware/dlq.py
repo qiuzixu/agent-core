@@ -82,16 +82,17 @@ class DLQMiddleware(Middleware):
     async def after_tool(self, context: MiddlewareContext) -> MiddlewareResult:
         if not self._config.enabled:
             return MiddlewareResult(action=MiddlewareAction.CONTINUE)
-        if context.tool_error is None:
+        tool_error = context.metadata.get("tool_error")
+        if tool_error is None:
             return MiddlewareResult(action=MiddlewareAction.CONTINUE)
 
-        tool_name = context.tool_call.get("name", "unknown") if context.tool_call else "unknown"
-        args = str(context.tool_call.get("args", ""))[:500] if context.tool_call else ""
+        tool_name = context.tool_name or "unknown"
+        args = str(context.tool_args)[:500]
         record = DeadLetterRecord(
             timestamp=time.time(),
             tool_name=tool_name,
             args_summary=args,
-            error=str(context.tool_error)[:500],
+            error=str(tool_error)[:500],
             session_id=getattr(context, "session_id", "") or "",
             user_id=getattr(context, "user_id", "") or "",
         )

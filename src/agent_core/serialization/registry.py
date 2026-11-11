@@ -240,7 +240,7 @@ def _decode_access(value: dict[str, Any]) -> AccessContext:
     raw_roles = value.get("roles", ["user"])
     if not isinstance(raw_roles, (list, tuple, set, frozenset)):
         raise SerializationError("AccessContext.roles 必须是可迭代集合")
-    roles = frozenset()
+    roles: frozenset[str] = frozenset()
     for role in raw_roles:
         text = str(role).strip()
         if not text:

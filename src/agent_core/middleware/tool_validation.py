@@ -65,7 +65,7 @@ class ToolValidationMiddleware(Middleware):
         errors: list[str] = []
         expected_type = schema.get("type")
         if expected_type:
-            type_map = {
+            type_map: dict[str, type[Any] | tuple[type[Any], ...]] = {
                 "object": dict, "array": list, "string": str,
                 "number": (int, float), "integer": int,
                 "boolean": bool, "null": type(None),

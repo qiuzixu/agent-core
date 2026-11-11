@@ -76,7 +76,7 @@ class PostgresAgentTaskStore(AgentTaskStore):
         self._pool: Any | None = None
 
     async def initialize(self) -> None:
-        import asyncpg  # type: ignore[import-untyped]
+        import asyncpg
 
         self._pool = await asyncpg.create_pool(self._dsn, min_size=1, max_size=5)
         assert self._pool is not None

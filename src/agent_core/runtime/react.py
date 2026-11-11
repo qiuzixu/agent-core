@@ -119,7 +119,7 @@ class _LoopEvent:
 
 
 
-class _SafeFormatDict(dict):
+class _SafeFormatDict(dict[str, Any]):
     """str.format_map 安全字典：未知占位符原样保留，不抛 KeyError。
 
     提示词模板可能包含旧版占位符（如 {history}）或用户自定义文本中的
@@ -932,6 +932,7 @@ class ReActAgent:
                 runtime_context.emit(
                     "tool_started",
                     tool_name=tc["name"],
+                    tool_call_id=tc.get("id"),
                     arguments=tool_ctx.tool_args,
                 )
 
@@ -945,6 +946,7 @@ class ReActAgent:
                     runtime_context.emit(
                         "tool_finished",
                         tool_name=tc["name"],
+                        tool_call_id=tc.get("id"),
                         success=False,
                         result={"error_kind": "approval", "error": result},
                     )
@@ -979,6 +981,7 @@ class ReActAgent:
                     runtime_context.emit(
                         "tool_finished",
                         tool_name=tc["name"],
+                        tool_call_id=tc.get("id"),
                         success=structured_result.success,
                         result=structured_result.to_dict(),
                     )
@@ -1018,6 +1021,7 @@ class ReActAgent:
                     runtime_context.emit(
                         "tool_finished",
                         tool_name=tool_call["name"],
+                        tool_call_id=tool_call.get("id"),
                         success=False,
                         result={"error_kind": "execution", "error": error_text},
                     )
@@ -1088,6 +1092,7 @@ class ReActAgent:
                         runtime_context.emit(
                             "tool_finished",
                             tool_name=tool_call["name"],
+                            tool_call_id=tool_call.get("id"),
                             success=False,
                             result={
                                 "error_kind": "priority_gate",

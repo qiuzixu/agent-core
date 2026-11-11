@@ -197,7 +197,17 @@ class AcpStdioServer:
         cwd = self._require_string(params, "cwd")
         session = await self._backend.load_session(session_id, cwd, self._mcp_servers(params))
         self._sessions[session.session_id] = session
+        await self._replay_session(session)
         return {"sessionId": session.session_id, "modes": [], "configOptions": []}
+
+    async def _replay_session(self, session: AcpSession) -> None:
+        """调用 Backend 的可选历史回放能力。"""
+        replay = getattr(self._backend, "replay_session", None)
+        if callable(replay):
+            await replay(
+                session,
+                lambda update: self._emit_update(session.session_id, update),
+            )
 
     async def _prompt(self, params: JsonObject) -> JsonObject:
         session_id = self._require_string(params, "sessionId")
@@ -264,10 +274,26 @@ class AcpStdioServer:
                 "options": options,
             },
         )
-        for key in ("selectedOptionId", "optionId", "outcome"):
-            value = result.get(key)
-            if isinstance(value, str) and value:
-                return value if value in allowed_option_ids else "reject_once"
+        return self._permission_option_id(result, allowed_option_ids)
+
+    @staticmethod
+    def _permission_option_id(result: JsonObject, allowed_option_ids: set[str]) -> str:
+        """兼容平铺和嵌套的 ACP 权限响应结构。"""
+        outcome = result.get("outcome")
+        if outcome == "cancelled":
+            return "reject_once"
+        if isinstance(outcome, dict) and outcome.get("outcome") == "cancelled":
+            return "reject_once"
+
+        candidates: list[object] = [result.get("selectedOptionId"), result.get("optionId")]
+        if isinstance(outcome, dict):
+            candidates.extend([outcome.get("selectedOptionId"), outcome.get("optionId")])
+            candidates.append(outcome.get("outcome"))
+        else:
+            candidates.append(outcome)
+        for value in candidates:
+            if isinstance(value, str) and value in allowed_option_ids:
+                return value
         return "reject_once"
 
     async def _request_client(self, session_id: str, method: str, params: JsonObject) -> JsonObject:
@@ -293,6 +319,11 @@ class AcpStdioServer:
         if update.kind == "thought" and isinstance(text, str):
             return {
                 "sessionUpdate": "agent_thought_chunk",
+                "content": {"type": "text", "text": text},
+            }
+        if update.kind == "user_text" and isinstance(text, str):
+            return {
+                "sessionUpdate": "user_message_chunk",
                 "content": {"type": "text", "text": text},
             }
         if update.kind == "tool_started":

@@ -9,6 +9,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 from agent_core.access import AccessContext
+from agent_core.protocol.messages import Message
 from agent_core.storage.session.base import (
     BaseSessionStore,
     _msg_to_row,

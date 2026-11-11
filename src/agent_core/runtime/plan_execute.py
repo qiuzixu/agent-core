@@ -222,11 +222,13 @@ class PlanExecuteAgent:
                 "plan_step_dependencies": list(step.depends_on),
             }
             try:
-                selected_executor = self._executor
+                selected_executor: SupportsRun | None = self._executor
                 if step.agent:
                     selected_executor = self._executors.get(step.agent)
                     if selected_executor is None:
                         raise ValueError(f"步骤 {step.id} 指定了未注册的执行 Agent：{step.agent}")
+                if selected_executor is None:
+                    raise RuntimeError(f"步骤 {step.id} 没有可用的执行 Agent")
                 output = answer_text(
                     await selected_executor.run(
                         instruction,

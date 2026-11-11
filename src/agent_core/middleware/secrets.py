@@ -15,7 +15,8 @@ import json
 import logging
 import os
 import re
-from typing import Protocol
+from collections.abc import Sequence
+from typing import Any, Protocol
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +59,7 @@ class FileSecretsProvider:
 class ChainedSecretsProvider:
     """按顺序尝试多个提供者。"""
 
-    def __init__(self, providers: list) -> None:
+    def __init__(self, providers: Sequence[SecretsProvider]) -> None:
         self._providers = providers
 
     def get(self, key: str) -> str | None:
@@ -76,7 +77,7 @@ class ChainedSecretsProvider:
 def resolve_secret(value: str, provider: SecretsProvider) -> str:
     """把 ${SECRET:KEY} 占位符替换为真实值。"""
 
-    def _sub(match: re.Match) -> str:
+    def _sub(match: re.Match[str]) -> str:
         key = match.group(1)
         resolved = provider.get(key)
         if resolved is None:
@@ -87,7 +88,7 @@ def resolve_secret(value: str, provider: SecretsProvider) -> str:
     return _SECRET_PATTERN.sub(_sub, value)
 
 
-def resolve_config(config, provider):
+def resolve_config(config: Any, provider: SecretsProvider) -> Any:
     """递归解析 dict/list/str 中的密钥占位符。"""
     if isinstance(config, dict):
         return {k: resolve_config(v, provider) for k, v in config.items()}

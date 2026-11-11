@@ -76,7 +76,10 @@ def _http_post_json(url: str, body: bytes, timeout: float) -> dict[str, Any]:
     """同步 HTTP POST JSON（在线程池中运行）。"""
     req = Request(url, data=body, headers={"Content-Type": "application/json"}, method="POST")
     with urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+        payload = json.loads(resp.read().decode("utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("A2A HTTP 响应必须是 JSON 对象")
+    return {str(key): value for key, value in payload.items()}
 
 
 class A2AAgentRegistry:

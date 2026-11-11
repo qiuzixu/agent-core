@@ -88,6 +88,10 @@ class DirectToClientTests(unittest.IsolatedAsyncioTestCase):
         parsed = json.loads(answer)
         self.assertEqual(parsed["answer"], "A")
         self.assertEqual(parsed["explanation"], "根据《航空法》第 X 条规定……")
+        started = [event for event in context.events if event.event_type == "tool_started"]
+        finished = [event for event in context.events if event.event_type == "tool_finished"]
+        self.assertEqual(started[0].payload["tool_call_id"], "call-1")
+        self.assertEqual(finished[0].payload["tool_call_id"], "call-1")
         # LLM 只被调用了一次（发起工具调用），没有被用来生成最终回复。
         self.assertEqual(model.call_count, 1)
 

@@ -55,6 +55,11 @@ class AcpUpdate:
         """构造可选展示的运行过程说明。"""
         return cls("thought", {"text": text})
 
+    @classmethod
+    def user_text(cls, text: str) -> AcpUpdate:
+        """构造会话恢复时回放给客户端的用户消息。"""
+        return cls("user_text", {"text": text})
+
 
 AcpEmitter = Callable[[AcpUpdate], Awaitable[None]]
 AcpPermissionRequester = Callable[[JsonObject], Awaitable[str]]
@@ -65,6 +70,7 @@ class AcpBackend(Protocol):
 
     可选属性 ``capabilities: AcpCapabilities`` 用于声明更细的协议能力；
     未提供时服务端回退读取 ``supports_load_session``，保持向后兼容。
+    支持会话恢复的 Backend 可同时实现 ``AcpSessionReplayer`` 回放历史消息。
     """
 
     agent_name: str
@@ -96,12 +102,19 @@ class AcpBackend(Protocol):
     async def cancel(self, session: AcpSession) -> None: ...
 
 
+class AcpSessionReplayer(Protocol):
+    """可选的历史回放能力，供支持 ``session/load`` 的 Backend 实现。"""
+
+    async def replay_session(self, session: AcpSession, emit: AcpEmitter) -> None: ...
+
+
 __all__ = [
     "AcpBackend",
     "AcpCapabilities",
     "AcpEmitter",
     "AcpPermissionRequester",
     "AcpSession",
+    "AcpSessionReplayer",
     "AcpUpdate",
     "JsonObject",
 ]

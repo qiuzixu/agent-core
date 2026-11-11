@@ -531,3 +531,4 @@ AgentTaskRetryScheduler（可选）
 | 2026-11-04 | 可靠投递与副作用去重 | 新增 `EventOutbox` / Memory/SQLite 实现，Runtime 先记录事件、Sink 成功后确认；新增 `ToolOperationStore` 与稳定 `operation_id`，ReAct 恢复时避免非幂等工具重复执行；PostgreSQL 任务初始化增加 advisory lock 与 schema version。均属于原有 Runtime/Tools/Storage 端口增强，模块边界和依赖方向不变。 |
 | 2026-11-09 | MCP 结构化错误透传 | `McpToolError` 增加 `structured_content`，MCP `isError=true` 时保留服务端结构化输出；上层可据此提取业务候选。属于通用 MCP 边界增强，不改变模块依赖方向。 |
 | 2026-11-08 | 知识图谱持久化与 GraphRAG 上下文 | KnowledgeGraphStore 增加 SQLite / PostgreSQL 后端与 `search_entities()` 词面检索；上层双端新增 `/graph/context`，把命中实体扩展为受控子图并文本化。Core 边界不变：仍不引入 Neo4j，不承载业务实体投影，模块关系图无需修改。 |
+| 2026-11-10 | ACP 会话恢复与事件关联修复 | 权限响应兼容嵌套 `outcome`；ReAct 工具事件透传稳定的 `tool_call_id`；新增可选 `AcpSessionReplayer` 和 `user_message_chunk` 回放，Vanilla 恢复会话时回放持久化历史。Core 仍只承载通用协议与回放端口，模块边界和依赖方向不变。 |

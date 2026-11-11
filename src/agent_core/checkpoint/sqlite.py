@@ -18,7 +18,7 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from agent_core.checkpoint.schema import (
     CHECKPOINT_SCHEMA_VERSION,
@@ -81,7 +81,7 @@ class SqliteCheckpointer:
             conn.executescript(_DDL)
 
     @contextmanager
-    def _connect(self):
+    def _connect(self) -> Generator[sqlite3.Connection, None, None]:
         with sqlite_connection(self._db_path) as conn:
             yield conn
 
@@ -251,7 +251,7 @@ class SqliteCheckpointer:
                     )""",
                     (thread_id, checkpoint_ns, thread_id, checkpoint_ns, keep_latest),
                 )
-                return cursor.rowcount
+                return int(cursor.rowcount)
 
         try:
             deleted = await _run_in_thread(_op)
@@ -270,7 +270,10 @@ class SqliteCheckpointer:
 
         keys = _LATEST_COLS.split(", ")
         value = dict(zip(keys, row, strict=True))
-        state = json.loads(value["state"])
+        state_payload = json.loads(value["state"])
+        if not isinstance(state_payload, dict):
+            raise CheckpointError("checkpoint state 必须是 JSON 对象")
+        state = cast(dict[str, Any], state_payload)
         # Schema 迁移：没有版本标记的旧状态从 v0 开始
         saved_version = int(value.get("schema_version", 0))
         if saved_version < CHECKPOINT_SCHEMA_VERSION:

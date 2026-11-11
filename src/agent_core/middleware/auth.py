@@ -22,7 +22,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, cast
 
 from agent_core.middleware.base import (
     Middleware,
@@ -68,7 +68,10 @@ def jwt_decode(token: str, secret: str, algorithm: str = "HS256") -> dict[str, A
         if len(parts) != 3:
             return None
         header_b64, payload_b64, sig_b64 = parts
-        header = json.loads(_b64url_decode(header_b64))
+        header_payload = json.loads(_b64url_decode(header_b64))
+        if not isinstance(header_payload, dict):
+            return None
+        header = cast(dict[str, Any], header_payload)
         if header.get("alg") != algorithm:
             return None
         message = f"{header_b64}.{payload_b64}"
@@ -76,7 +79,10 @@ def jwt_decode(token: str, secret: str, algorithm: str = "HS256") -> dict[str, A
         actual_sig = _b64url_decode(sig_b64)
         if not hmac.compare_digest(expected_sig, actual_sig):
             return None
-        payload = json.loads(_b64url_decode(payload_b64))
+        payload_value = json.loads(_b64url_decode(payload_b64))
+        if not isinstance(payload_value, dict):
+            return None
+        payload = cast(dict[str, Any], payload_value)
         # 过期检查
         if "exp" in payload and payload["exp"] < time.time():
             return None

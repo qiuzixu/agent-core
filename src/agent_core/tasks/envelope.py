@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 
@@ -39,7 +39,10 @@ class TaskEnvelope:
         """兼容 pydantic 风格的序列化接口。"""
         if mode == "json":
             import json
-            return json.loads(json.dumps(self.to_dict(), ensure_ascii=False, default=str))
+            payload = json.loads(json.dumps(self.to_dict(), ensure_ascii=False, default=str))
+            if not isinstance(payload, dict):
+                raise TypeError("任务信封序列化结果必须是对象")
+            return cast(dict[str, Any], payload)
         return self.to_dict()
 
     def model_dump_json(self, **kwargs: Any) -> str:
@@ -50,7 +53,7 @@ class TaskEnvelope:
     @classmethod
     def model_validate(cls, data: dict[str, Any]) -> "TaskEnvelope":
         """兼容 pydantic 风格的反序列化。"""
-        valid_fields = {f.name for f in cls.__dataclass_fields__.values()}  # type: ignore[attr-defined]
+        valid_fields = {f.name for f in cls.__dataclass_fields__.values()}
         filtered = {k: v for k, v in data.items() if k in valid_fields}
         return cls(**filtered)
 

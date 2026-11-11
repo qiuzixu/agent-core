@@ -12,6 +12,7 @@ import json
 import logging
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -41,7 +42,7 @@ class FileConfigCenter:
         self._last_mtime: float = 0.0
         self._last_check: float = 0.0
         self._lock = threading.Lock()
-        self._callbacks: list = []
+        self._callbacks: list[Callable[[dict[str, Any]], None]] = []
         if enabled:
             self._load()
 

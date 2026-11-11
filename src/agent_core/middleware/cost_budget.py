@@ -192,7 +192,7 @@ class CostBudgetMiddleware(Middleware):
         return self._tracker
 
     def _get_user_id(self, context: MiddlewareContext) -> str:
-        return context.metadata.get("user_id", "anonymous")
+        return str(context.metadata.get("user_id") or "anonymous")
 
     def _estimate_tokens(self, context: MiddlewareContext) -> tuple[int, int]:
         """从 metadata 中提取 token 用量，或从消息长度估算。"""

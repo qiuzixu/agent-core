@@ -63,7 +63,10 @@ def decay_score(record: Any, config: MemoryDecayConfig, *, now: datetime | None 
     if updated is None:
         return importance_of(record, config)
     age_hours = max(0.0, (current - updated).total_seconds() / 3600.0)
-    return importance_of(record, config) * (0.5 ** (age_hours / max(config.half_life_hours, 0.001)))
+    return float(
+        importance_of(record, config)
+        * (0.5 ** (age_hours / max(config.half_life_hours, 0.001)))
+    )
 
 
 def select_forgetting(

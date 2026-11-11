@@ -189,7 +189,15 @@ class ToolResult:
     success: bool
     value: Any = None
     error: str | None = None
-    error_kind: Literal["", "not_found", "invalid_arguments", "timeout", "approval", "execution"] = ""
+    error_kind: Literal[
+        "",
+        "not_found",
+        "invalid_arguments",
+        "timeout",
+        "approval",
+        "forbidden",
+        "execution",
+    ] = ""
     retryable: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
     # 声明此结果直接返回给客户端（跳过 LLM 二次生成）。

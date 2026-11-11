@@ -41,7 +41,7 @@ class SelfCheckConfig:
     )
 
 
-def _get_tool_calls(response: Any) -> list:
+def _get_tool_calls(response: Any) -> list[Any]:
     """兼容 dict / object 提取 tool_calls。"""
     if response is None:
         return []

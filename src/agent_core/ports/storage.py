@@ -11,7 +11,13 @@ from typing import Any, Protocol, runtime_checkable
 
 from agent_core.access import AccessContext
 from agent_core.protocol.messages import Message
-from agent_core.protocol.runtime import ApprovalRecord, ApprovalStatus, RunContext, RunEvent
+from agent_core.protocol.runtime import (
+    ApprovalRecord,
+    ApprovalStatus,
+    RunContext,
+    RunEvent,
+    ToolResult,
+)
 
 
 class ApprovalStore(Protocol):

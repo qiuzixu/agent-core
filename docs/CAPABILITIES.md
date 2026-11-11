@@ -141,7 +141,7 @@ Skill 层已经实现：
 - 重名检查和未知工具检查；
 - 必填参数及基础类型校验；
 - 同步和异步工具统一调用；
-- 工具超时、异常包装和结构化 `ToolResult`；
+- 工具超时、异常包装和结构化 `ToolResult`（`error_kind` 区分参数错误、超时、审批、权限拒绝、执行失败等）；
 - 非幂等工具必须提供稳定 `operation_id`；可注入 `ToolOperationStore`，恢复/重试时复用成功结果；
 - 多个工具调用并发执行；
 - 工具定义转换为模型 Tool Calling 格式。
@@ -335,11 +335,13 @@ ACP 模块提供通用 JSON-RPC/stdio 服务端，已经支持：
 - `session/prompt`；
 - `session/cancel`；
 - `session/update` 流式通知；
-- `session/request_permission` 双向审批请求；
-- 文本、思考过程、工具开始和工具结束更新。
+- `session/request_permission` 双向审批请求，兼容平铺和嵌套的 `outcome` 响应；
+- 用户消息、Agent 文本、思考过程、工具开始和工具结束更新；
+- 工具事件携带稳定的 `tool_call_id`，便于客户端关联并发工具调用；
+- 可选 `replay_session()` 历史回放接口，供声明 `loadSession=true` 的后端恢复会话。
 
 Core 只定义 `AcpBackend` 端口和协议服务端。具体 Agent 负责把自己的 Runtime、会话和审批机制
-适配到该端口。
+适配到该端口；需要恢复历史消息的 Backend 同时实现可选的 `AcpSessionReplayer`。
 
 ## 13. 可观测性和错误体系
 

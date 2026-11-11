@@ -66,13 +66,15 @@ AcpSession(
 
 | `kind` | ACP 更新 | 用途 |
 | --- | --- | --- |
+| `user_text` | `user_message_chunk` | 会话恢复时回放历史用户消息 |
 | `text` | `agent_message_chunk` | 可展示给用户的文本片段 |
 | `thought` | `agent_thought_chunk` | 可选展示的运行过程说明 |
 | `tool_started` | `tool_call` | 工具开始及输入 |
 | `tool_finished` | `tool_call_update` | 工具结果和成功状态 |
 
-`AcpUpdate.text()` 和 `AcpUpdate.thought()` 是常用构造方法。工具事件使用
-`AcpUpdate(kind, payload)`，并应提供稳定的 `toolCallId`，使开始和结束事件能够对应。
+`AcpUpdate.text()`、`AcpUpdate.thought()` 和 `AcpUpdate.user_text()` 是常用构造方法。工具事件使用
+`AcpUpdate(kind, payload)`，`payload["toolCallId"]` 应来自 Runtime 的稳定 `tool_call_id`，使开始和
+结束事件能够对应。
 
 ### `AcpEmitter` 与 `AcpPermissionRequester`
 
@@ -92,6 +94,7 @@ AcpSession(
 | `supports_load_session` | 声明是否支持恢复会话 |
 | `create_session()` | 创建应用会话，并返回 ACP 与应用会话的映射 |
 | `load_session()` | 从持久化状态恢复会话 |
+| `replay_session()` | 可选能力：通过 `emit()` 回放历史消息，供声明 `loadSession=true` 的 Backend 使用 |
 | `prompt()` | 调用真实 Agent，通过回调发送更新和请求审批 |
 | `cancel()` | 取消该会话当前正在执行的任务或 Run |
 
@@ -114,7 +117,7 @@ AcpSession(
 | --- | --- |
 | `initialize` | 校验协议版本，返回 Agent 信息与能力声明 |
 | `session/new` | 生成 session ID，调用 `backend.create_session()` |
-| `session/load` | 在 Backend 声明支持时调用 `backend.load_session()` |
+| `session/load` | 在 Backend 声明支持时调用 `backend.load_session()`，并调用可选的 `backend.replay_session()` 回放历史 |
 | `session/prompt` | 提取文本内容并调用 `backend.prompt()` |
 | `session/cancel` | 调用 `backend.cancel()`，同时取消服务端 prompt 任务 |
 
@@ -123,7 +126,8 @@ AcpSession(
 `session/update` 是不需要响应的 JSON-RPC notification。它用于发送文本、思考过程和工具状态。
 
 `session/request_permission` 是反向 JSON-RPC request。服务端生成请求 ID，把等待结果的 Future 保存到
-`_pending_client_requests`，然后等待客户端响应。默认等待 300 秒，超时按 `reject_once` 处理。
+`_pending_client_requests`，然后等待客户端响应。响应支持平铺和嵌套 `outcome` 结构；默认等待 300 秒，
+超时或无法识别选项时按 `reject_once` 处理。
 
 ### 一次提示的完整时序
 
@@ -197,8 +201,9 @@ await run_acp_stdio(MyAcpBackend(runtime))
 ### Vanilla Agent
 
 `VanillaAcpBackend` 把 ACP `session_id` 直接映射为 `RuntimeCompat` 的 `thread_id`，创建真实 Run，
-轮询并转发模型、工具和审批事件。它支持持久化会话恢复；用户作出 ACP 审批决定后，通过恢复命令
-创建后续 Run。取消操作会调用 Runtime 的 `cancel_run()`。
+轮询并转发模型、工具和审批事件。它支持持久化会话恢复，并通过 `replay_session()` 回放历史用户、
+助手和工具消息；用户作出 ACP 审批决定后，通过恢复命令创建后续 Run。取消操作会调用 Runtime 的
+`cancel_run()`。
 
 ACP Client 传入的 MCP 配置不会覆盖系统配置的 Gateway。
 

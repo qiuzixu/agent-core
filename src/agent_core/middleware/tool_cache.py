@@ -105,12 +105,12 @@ class ToolCacheMiddleware(Middleware):
         self._config = config or ToolCacheConfig()
         self._store = store or InMemoryToolCacheStore(self._config.max_entries)
 
-    def _args_fp(self, args: dict) -> str:
+    def _args_fp(self, args: dict[str, Any]) -> str:
         return hashlib.sha256(
             json.dumps(args, sort_keys=True, ensure_ascii=False, default=str).encode()
         ).hexdigest()[:20]
 
-    def _fingerprint(self, tool_name: str, args: dict) -> str:
+    def _fingerprint(self, tool_name: str, args: dict[str, Any]) -> str:
         return hashlib.sha256(
             f"{tool_name}:{self._args_fp(args)}".encode()
         ).hexdigest()[:24]
@@ -152,6 +152,6 @@ class ToolCacheMiddleware(Middleware):
     async def after_model(self, context: MiddlewareContext) -> MiddlewareResult:
         return MiddlewareResult(action=MiddlewareAction.CONTINUE)
 
-    def get_stats(self) -> dict:
+    def get_stats(self) -> dict[str, Any]:
         return {"enabled": self._config.enabled, "store_type": type(self._store).__name__}
 

@@ -96,7 +96,7 @@ def apply_retention(policy: RetentionPolicy, *, now: datetime | None = None) -> 
         archive_dir = Path(policy.archive_directory) if policy.archive_directory else path.parent
         archive_dir.mkdir(parents=True, exist_ok=True)
         archive_name = f"{path.stem}.{current.strftime('%Y%m%dT%H%M%S')}{path.suffix}"
-        archive_path = archive_directory / archive_name
+        archive_path = archive_dir / archive_name
         path.replace(archive_path)
         result["archived"] = str(archive_path)
         # 原路径重新写回保留下来的行（归档后文件消失，重建保留集）。

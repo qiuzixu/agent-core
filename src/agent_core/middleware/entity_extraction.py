@@ -20,6 +20,7 @@ import os
 import re
 import time
 from dataclasses import asdict, dataclass
+from typing import Any
 
 from agent_core.middleware.base import (
     Middleware,
@@ -136,11 +137,15 @@ class EntityExtractionMiddleware(Middleware):
         return MiddlewareResult(action=MiddlewareAction.CONTINUE)
 
     @staticmethod
-    def search_entities(path: str, entity_type: str, limit: int = 10) -> list[dict]:
+    def search_entities(
+        path: str,
+        entity_type: str,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
         """查询最近的指定类型实体（供"上次那个地方"场景使用）。"""
         if not os.path.isfile(path):
             return []
-        results: list[dict] = []
+        results: list[dict[str, Any]] = []
         try:
             with open(path, encoding="utf-8") as f:
                 for line in f:

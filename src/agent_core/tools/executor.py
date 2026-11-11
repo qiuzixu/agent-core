@@ -8,7 +8,7 @@ import json
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 from agent_core.ports.storage import ToolOperationStore
 from agent_core.protocol.runtime import ToolResult
@@ -328,10 +328,13 @@ class ToolExecutor:
                 if self._operation_store is not None and operation_id is not None:
                     claim = getattr(self._operation_store, "claim", None)
                     if callable(claim):
-                        owner, cached = await claim(
-                            operation_id,
-                            tool_name=tool_name,
-                            arguments_hash=arguments_hash,
+                        owner, cached = cast(
+                            tuple[bool, ToolResult | None],
+                            await claim(
+                                operation_id,
+                                tool_name=tool_name,
+                                arguments_hash=arguments_hash,
+                            ),
                         )
                         if not owner and cached is None:
                             return ToolResult(
