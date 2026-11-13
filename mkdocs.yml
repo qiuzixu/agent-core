@@ -56,7 +56,11 @@ nav:
       - 协议总览: reference/protocol-overview.md
       - 公共 API: reference/public-api.md
       - 检索模块总览: reference/retrieval-overview.md
+      - Rerank 两阶段检索: reference/rerank-两阶段检索.md
       - 向量存储选型: reference/vector-store-comparison.md
+      - 文档处理总览: reference/documents-overview.md
+      - 可观测性总览: reference/observability-overview.md
+      - Skills 总览: reference/skills-overview.md
       - 配置参考: reference/configuration.md
       - 异常体系: reference/exceptions.md
       - 序列化概览: reference/serialization-overview.md
@@ -65,7 +69,12 @@ nav:
       - Agent 生态对照: reference/ecosystem-comparison.md
   - 维护者:
       - 发布流程: maintainers/release.md
+      - PyPI 发布排查: pypi-publish-troubleshooting.md
       - 贡献指南: https://github.com/qiuzixu/agent-core/blob/main/CONTRIBUTING.md
+
+  - 博客:
+      - zero-agent-core 发布说明: blog/zero-agent-core.md
+      - 零依赖 Agent 内核设计: blog/zero-dependency-agent-kernel.md
 
 markdown_extensions:
   - admonition
